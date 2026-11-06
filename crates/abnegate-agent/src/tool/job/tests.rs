@@ -1439,43 +1439,50 @@ fn recording_git(directory: &Path, record: &Path) {
         .expect("the stand-in is made executable");
 }
 
-/// A child's environment is readable by anything running as the same user,
-/// so git, asked where a run's exclude file is, is handed the context's
-/// environment and none of the host's. A stand-in `git` first on the path
-/// writes down what it was handed, in a re-run whose environment alone holds
-/// the secrets.
-#[tokio::test]
-async fn the_exclude_lookup_never_sees_a_host_only_secret() {
-    const NAME: &str = "tool::job::tests::the_exclude_lookup_never_sees_a_host_only_secret";
-    if std::env::var(CHILD_TEST).as_deref() != Ok(NAME) {
-        let record = directory();
-        let programs = record.path().join("programs");
-        std::fs::create_dir(&programs).expect("a directory for the stand-in");
-        recording_git(&programs, &record.path().join(RECORDED_ENVIRONMENT));
-        let checkout = record.path().join("checkout");
-        std::fs::create_dir(&checkout).expect("the run's own checkout is created");
-        repository(&checkout);
-        let path = std::env::join_paths(std::iter::once(programs).chain(std::env::split_paths(
-            &std::env::var_os("PATH").unwrap_or_default(),
-        )))
-        .expect("the path joins");
-        let output = tokio::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", NAME, "--nocapture"])
-            .env(CHILD_TEST, NAME)
-            .env(RECORD, record.path())
-            .envs(HOST_SECRETS.iter().copied())
-            .env("PATH", path)
-            .output()
-            .await
-            .unwrap();
-        assert_passed(&output);
-        return;
+/// A name the context's policy passes through, which git is handed with the
+/// host's value.
+const PASSED_THROUGH: (&str, &str) = ("CORPORATE_CA", "/etc/ssl/corporate.pem");
+
+/// Whether this is the parent of test `name`, which has already re-run it
+/// alone with the host's secrets and [`PASSED_THROUGH`] in its environment
+/// and a recording `git` first on its path, and seen it pass.
+async fn ran_with_recording_git(name: &str) -> bool {
+    if std::env::var(CHILD_TEST).as_deref() == Ok(name) {
+        return false;
     }
+    let record = directory();
+    let programs = record.path().join("programs");
+    std::fs::create_dir(&programs).expect("a directory for the stand-in");
+    recording_git(&programs, &record.path().join(RECORDED_ENVIRONMENT));
+    let checkout = record.path().join("checkout");
+    std::fs::create_dir(&checkout).expect("the run's own checkout is created");
+    repository(&checkout);
+    let path = std::env::join_paths(std::iter::once(programs).chain(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )))
+    .expect("the path joins");
+    let output = tokio::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", name, "--nocapture"])
+        .env(CHILD_TEST, name)
+        .env(RECORD, record.path())
+        .envs(HOST_SECRETS.iter().copied())
+        .env(PASSED_THROUGH.0, PASSED_THROUGH.1)
+        .env("PATH", path)
+        .output()
+        .await
+        .unwrap();
+    assert_passed(&output);
+    true
+}
+
+/// Every variable the exclude lookup handed the recording `git`, after a job
+/// started with `context` in the run's own checkout settles.
+async fn handed_to_the_exclude_lookup(context: ToolContext) -> String {
     let record = PathBuf::from(std::env::var_os(RECORD).expect("the parent names the record"));
     let session = task();
     let started = Jobs::spawn(
         &JobCommand::shell("exit 0"),
-        &ToolContext::default()
+        &context
             .within(record.join("checkout"))
             .with_session(session),
     )
@@ -1484,12 +1491,33 @@ async fn the_exclude_lookup_never_sees_a_host_only_secret() {
     assert_eq!(settles(session, &started.id).await, JobStatus::Exited(0));
     Jobs::kill_session(session).await;
 
-    let handed = std::fs::read_to_string(record.join(RECORDED_ENVIRONMENT))
-        .expect("the exclude lookup started git");
-    let names: Vec<&str> = handed
+    std::fs::read_to_string(record.join(RECORDED_ENVIRONMENT))
+        .expect("the exclude lookup started git")
+}
+
+fn variable_names(handed: &str) -> Vec<&str> {
+    handed
         .lines()
         .filter_map(|line| line.split_once('=').map(|(name, _)| name))
-        .collect();
+        .collect()
+}
+
+/// A child's environment is readable by anything running as the same user,
+/// so git, asked where a run's exclude file is, is handed the context's
+/// environment and none of the host's. A stand-in `git` first on the path
+/// writes down what it was handed, in a re-run whose environment alone holds
+/// the secrets.
+#[tokio::test]
+async fn the_exclude_lookup_never_sees_a_host_only_secret() {
+    if ran_with_recording_git("tool::job::tests::the_exclude_lookup_never_sees_a_host_only_secret")
+        .await
+    {
+        return;
+    }
+
+    let handed = handed_to_the_exclude_lookup(ToolContext::default()).await;
+
+    let names = variable_names(&handed);
     for (name, value) in HOST_SECRETS {
         assert!(
             !handed.contains(value),
@@ -1500,6 +1528,43 @@ async fn the_exclude_lookup_never_sees_a_host_only_secret() {
         names.contains(&"PATH"),
         "the exclude lookup was not handed the context's environment: {names:?}"
     );
+    assert!(
+        !names.contains(&PASSED_THROUGH.0),
+        "the allowlist alone passed {}: {names:?}",
+        PASSED_THROUGH.0
+    );
+}
+
+/// An install whose git needs more than the allowlist, a corporate
+/// certificate bundle say, names it in the context's policy, and the exclude
+/// lookup hands git the host's value for it, and still none of the host's
+/// secrets.
+#[tokio::test]
+async fn the_exclude_lookup_hands_git_a_name_the_context_allows() {
+    if ran_with_recording_git(
+        "tool::job::tests::the_exclude_lookup_hands_git_a_name_the_context_allows",
+    )
+    .await
+    {
+        return;
+    }
+    let policy = crate::tool::EnvironmentPolicy::allowlist().allow([PASSED_THROUGH.0]);
+
+    let handed =
+        handed_to_the_exclude_lookup(ToolContext::default().with_environment(policy)).await;
+
+    let names = variable_names(&handed);
+    let (name, value) = PASSED_THROUGH;
+    assert!(
+        handed.lines().any(|line| line == format!("{name}={value}")),
+        "the exclude lookup was not handed the allowed {name}: {names:?}"
+    );
+    for (name, value) in HOST_SECRETS {
+        assert!(
+            !handed.contains(value),
+            "the exclude lookup was handed the host's {name}, among {names:?}"
+        );
+    }
 }
 
 /// A background job starts through the same routing as a command: through

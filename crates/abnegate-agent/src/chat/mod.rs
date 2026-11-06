@@ -12,7 +12,11 @@
 //! [`Resolver`] finds the effective context [`Capacity`] of the deployment a
 //! model alias routes to, and whether its engine thinks or reads images; an
 //! endpoint that publishes no deployment metadata is given a configured
-//! context instead.
+//! context instead. A caller that learns a window another way builds its
+//! [`Capacity`] directly, with [`Capacity::reported`] for a window whatever
+//! serves the model reported and [`Capacity::unknown`] when there is none,
+//! and reads the window an Ollama model's metadata names for its
+//! architecture with [`Capacity::native_window`].
 
 mod capacity;
 mod deployment;

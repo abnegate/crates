@@ -1,7 +1,13 @@
+use serde_json::Value;
+
 use super::Source;
 
 /// Why an endpoint with no configured context has no known capacity.
 const UNDISCLOSED: &str = "The endpoint publishes no deployment metadata.";
+
+/// Why a deployment whose server reported a window of zero has no known
+/// capacity.
+const UNREPORTED: &str = "The deployment's server reported no context window.";
 
 /// Why an endpoint's configured context is used as its capacity.
 const ASSUMED: &str =
@@ -56,6 +62,34 @@ impl Capacity {
             reason: None,
             identity: identity.into(),
         }
+    }
+
+    /// The window reported for `identity` by whatever serves it, an inference
+    /// runtime or a coding agent, with nothing else declared: no Ollama
+    /// override, no reasoning, undeclared vision and no reason given.
+    ///
+    /// A reported window of zero is no window, so the capacity is unknown and
+    /// says why.
+    pub fn reported(identity: impl Into<String>, limit: u64) -> Self {
+        if limit == 0 {
+            return Self::unknown(identity, UNREPORTED);
+        }
+        Self::new(identity, Some(limit), Source::Runtime)
+    }
+
+    /// No window known for `identity`, and the `reason` why.
+    pub fn unknown(identity: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self::new(identity, None, Source::Unknown).with_reason(reason)
+    }
+
+    /// The context window an Ollama `model_info` object names for its own
+    /// architecture: `<general.architecture>.context_length`, when positive.
+    pub fn native_window(model_info: &Value) -> Option<u64> {
+        let architecture = model_info.get("general.architecture")?.as_str()?;
+        model_info
+            .get(format!("{architecture}.context_length"))?
+            .as_u64()
+            .filter(|value| *value > 0)
     }
 
     /// The same capacity, with `tokens` of context requested from Ollama
@@ -121,14 +155,12 @@ impl Capacity {
         }
     }
 
-    pub(super) fn unknown(model: &str, reason: &str) -> Self {
-        Self::new(model, None, Source::Unknown).with_reason(reason)
-    }
-
-    pub(super) fn assumed(model: &str, configured: Option<u64>) -> Self {
+    pub(super) fn assumed(identity: impl Into<String>, configured: Option<u64>) -> Self {
         match configured {
-            Some(limit) => Self::new(model, Some(limit), Source::Configured).with_reason(ASSUMED),
-            None => Self::unknown(model, UNDISCLOSED),
+            Some(limit) => {
+                Self::new(identity, Some(limit), Source::Configured).with_reason(ASSUMED)
+            }
+            None => Self::unknown(identity, UNDISCLOSED),
         }
     }
 }

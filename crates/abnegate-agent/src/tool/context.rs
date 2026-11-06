@@ -26,7 +26,8 @@ const DEFAULT_SEARCH_TIMEOUT: Duration = Duration::from_secs(20);
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ToolContext {
-    /// The root file tools stay beneath and commands run in by default.
+    /// The directory commands run in by default, and the root file tools stay
+    /// beneath unless the context is [`unrestricted`](Self::unrestricted).
     pub working_directory: PathBuf,
     /// The whole environment a spawned child is given: by default each
     /// [`DEFAULT_ENVIRONMENT`](super::DEFAULT_ENVIRONMENT) name this process
@@ -36,10 +37,10 @@ pub struct ToolContext {
     pub maximum_file_size: usize,
     /// How long a command runs when its call names no limit of its own.
     pub command_timeout: Duration,
-    /// How long `search_code` or `list_files` walks, or waits on `rg`, before
-    /// it reports what it found so far as stopped early. Twenty seconds by
-    /// default. The tools' outer bound runs past it, so a search out of time
-    /// still answers.
+    /// How long `search_code` or `list_files` walks, or waits on `rg` and
+    /// any walk after it together, before it reports what it found so far as
+    /// stopped early. Twenty seconds by default. The tools' outer bound runs
+    /// past it, so a search out of time still answers.
     pub search_timeout: Duration,
     /// Whether tools may act outside `working_directory`.
     ///

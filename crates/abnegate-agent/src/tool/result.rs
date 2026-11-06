@@ -68,6 +68,8 @@ impl ToolResult {
 
 #[cfg(test)]
 mod tests {
+    use abnegate_secret::REDACTED;
+
     use super::*;
     use crate::tool::MAXIMUM_TOOL_OUTPUT_CHARACTERS;
 
@@ -95,11 +97,9 @@ mod tests {
             "printenv\nGITHUB_TOKEN=ghp_",
             "0123456789abcdefghij\n"
         ));
-        assert_eq!(
-            result.output.as_deref(),
-            Some("printenv\nGITHUB_TOKEN=[REDACTED]\n")
-        );
-        assert_eq!(result.to_message(), "printenv\nGITHUB_TOKEN=[REDACTED]\n");
+        let expected = format!("printenv\nGITHUB_TOKEN={REDACTED}\n");
+        assert_eq!(result.output.as_deref(), Some(expected.as_str()));
+        assert_eq!(result.to_message(), expected);
     }
 
     #[test]
@@ -107,6 +107,51 @@ mod tests {
         let result = ToolResult::error("\u{1b}]0;stolen title\u{7}command not found\r\n");
         assert_eq!(result.error.as_deref(), Some("command not found\n"));
         assert_eq!(result.to_message(), "Error: command not found\n");
+    }
+
+    #[test]
+    fn success_redacts_a_credential_split_by_an_invisible_character() {
+        let result = ToolResult::success(concat!(
+            "fatal: ghp_",
+            "0123\u{200B}456789abcdefghij rejected"
+        ));
+        assert_eq!(result.output, Some(format!("fatal: {REDACTED} rejected")));
+    }
+
+    #[test]
+    fn success_strips_bidirectional_overrides() {
+        let result = ToolResult::success("access = \u{202E}nimda\u{202C} check");
+        assert_eq!(result.output.as_deref(), Some("access = nimda check"));
+    }
+
+    #[test]
+    fn error_strips_a_whole_two_byte_escape() {
+        let result = ToolResult::error("a\u{1b}7b\u{1b}cc");
+        assert_eq!(result.error.as_deref(), Some("abc"));
+        assert_eq!(result.to_message(), "Error: abc");
+    }
+
+    #[test]
+    fn error_strips_an_escape_with_intermediates() {
+        let result = ToolResult::error("a\u{1b}(Bb");
+        assert_eq!(result.error.as_deref(), Some("ab"));
+        assert_eq!(result.to_message(), "Error: ab");
+    }
+
+    #[test]
+    fn error_strips_a_start_of_string_with_its_payload() {
+        let result = ToolResult::error("a\u{1b}Xhidden\u{1b}\\b");
+        assert_eq!(result.error.as_deref(), Some("ab"));
+        assert_eq!(result.to_message(), "Error: ab");
+    }
+
+    #[test]
+    fn success_drops_emoji_joiners_and_variation_selectors() {
+        let result = ToolResult::success("\u{2764}\u{FE0F} \u{1F468}\u{200D}\u{1F469}");
+        assert_eq!(
+            result.output.as_deref(),
+            Some("\u{2764} \u{1F468}\u{1F469}")
+        );
     }
 
     #[test]

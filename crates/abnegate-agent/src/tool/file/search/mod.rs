@@ -26,8 +26,10 @@ use super::confine;
 use super::read_text;
 use super::resolve;
 use super::walk::OUT_OF_TIME;
+use super::walk::UNREADABLE;
 use super::walk::Visit;
 use super::walk::Walk;
+use super::walk::walking;
 use crate::tool::TIMEOUT_SLACK;
 use crate::tool::Tool;
 use crate::tool::ToolContext;
@@ -39,18 +41,14 @@ pub(super) const MAXIMUM_SEARCH_RESULTS: usize = 100;
 
 const RIPGREP: &str = "rg";
 
+const OPERATION: &str = "search";
+
 /// What ripgrep exits with when it searched everything and matched nothing.
 const RIPGREP_NO_MATCHES: i32 = 1;
 
 /// Widest matching line ripgrep prints whole; a wider one is cut to a
 /// preview, so one minified file cannot fill a result.
 const RIPGREP_MAXIMUM_COLUMNS: &str = "400";
-
-/// Why a search reports only part of the tree when ripgrep fails after
-/// printing matches, a file or directory it could not read making it exit 2
-/// once it has searched the rest, or when the walk could not read a
-/// directory or a code file.
-const UNREADABLE: &str = "some files could not be read";
 
 /// Build output and dependency trees a search walks past.
 const SKIPPED_DIRECTORIES: &[&str] = &[
@@ -89,8 +87,9 @@ const CODE_EXTENSIONS: &[&str] = &[
 /// walked instead. The walk searches code files only, those with a source,
 /// script, markup, configuration or text extension such as `rs`, `sh`,
 /// `json`, `md` or `txt`, and passes over hidden entries, build trees, links
-/// and files past the context's `maximum_file_size`. A search that runs past
-/// the context's [`search_timeout`](ToolContext::search_timeout), that `rg`
+/// and files past the context's `maximum_file_size`. `rg` and any walk after
+/// it share one [`search_timeout`](ToolContext::search_timeout), so a walk
+/// has only the time `rg` left it. A search that runs past it, that `rg`
 /// could not read all of, or whose walk could not read a directory or a code
 /// file, returns the matches it found, marked as stopped early.
 pub struct SearchCodeTool;
@@ -139,6 +138,7 @@ impl Tool for SearchCodeTool {
         parameters: Value,
         context: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
+        let deadline = Instant::now() + context.search_timeout;
         let parameters: SearchCodeParameters = serde_json::from_value(parameters)
             .map_err(|error| ToolError::InvalidParameters(error.to_string()))?;
 
@@ -152,35 +152,79 @@ impl Tool for SearchCodeTool {
             .unwrap_or(MAXIMUM_SEARCH_RESULTS)
             .min(MAXIMUM_SEARCH_RESULTS);
 
-        if let Some(result) =
-            search_ripgrep(&parameters, &search_path, maximum_results, context).await
-        {
-            return Ok(result);
-        }
-
-        let context = context.clone();
-        tokio::task::spawn_blocking(move || {
-            let (results, stopped) = search_tree(
-                &search_path,
-                &parameters.pattern,
-                parameters.case_sensitive,
-                maximum_results,
-                &context,
-            );
-            format_search_results(results, maximum_results, stopped)
-        })
-        .await
-        .map_err(|error| ToolError::Execution(format!("The search did not finish: {error}")))
+        search(parameters, search_path, maximum_results, deadline, context).await
     }
 }
 
+/// Search `search_path` through `rg`, or by walking it when `rg` hands the
+/// search over, both until the one `deadline`.
+async fn search(
+    parameters: SearchCodeParameters,
+    search_path: PathBuf,
+    maximum_results: usize,
+    deadline: Instant,
+    context: &ToolContext,
+) -> Result<ToolResult, ToolError> {
+    if let Some(result) = search_ripgrep(
+        &parameters,
+        &search_path,
+        maximum_results,
+        deadline,
+        context,
+    )
+    .await
+    {
+        return Ok(result);
+    }
+
+    search_walking(
+        search_path,
+        parameters.pattern,
+        parameters.case_sensitive,
+        maximum_results,
+        deadline,
+        context,
+    )
+    .await
+}
+
+/// A search of the tree at `search_path` by walking it until `deadline`, off
+/// the async workers, given up once its caller stops waiting.
+pub(super) async fn search_walking(
+    search_path: PathBuf,
+    pattern: String,
+    case_sensitive: bool,
+    maximum_results: usize,
+    deadline: Instant,
+    context: &ToolContext,
+) -> Result<ToolResult, ToolError> {
+    let deadline = deadline.into_std();
+    walking(OPERATION, deadline, context, move |walk, context| {
+        let (results, incomplete) = search_walk(
+            walk,
+            &search_path,
+            &pattern,
+            case_sensitive,
+            maximum_results,
+            context,
+        );
+        format_search_results(results, maximum_results, incomplete)
+    })
+    .await
+}
+
+/// The answer a search gives; one that stopped early, or could not read part
+/// of the tree, with nothing found claims only that nothing was found so far.
 fn format_search_results(
     results: Vec<String>,
     maximum_results: usize,
-    stopped: Option<&'static str>,
+    incomplete: Option<&'static str>,
 ) -> ToolResult {
     let mut output = if results.is_empty() {
-        "No matches found".to_string()
+        match incomplete {
+            Some(_) => "No matches found so far".to_string(),
+            None => "No matches found".to_string(),
+        }
     } else {
         let truncated = if results.len() >= maximum_results {
             format!("\n\n... (truncated at {maximum_results} results)")
@@ -193,14 +237,15 @@ fn format_search_results(
             results.join("\n"),
         )
     };
-    if let Some(reason) = stopped {
-        output.push_str(&format!("\n[search stopped early: {reason}]"));
+    if let Some(reason) = incomplete {
+        output.push_str(&format!("\n[{OPERATION} stopped early: {reason}]"));
     }
     ToolResult::success(output)
 }
 
-/// Lines under `root` holding `pattern`, as `path:line: text`, and why the
-/// walk stopped short of the whole tree if it did.
+/// Lines under `root` holding `pattern`, as `path:line: text`, and why
+/// `walk` stopped short of the whole tree, or could not read part of it, if
+/// it did.
 ///
 /// Only code files are searched: a file whose extension is not one of
 /// [`CODE_EXTENSIONS`] is never read. Hidden entries, build trees and links
@@ -209,7 +254,8 @@ fn format_search_results(
 /// A directory, or a code file, that could not be read is left out, and the
 /// search says so with [`UNREADABLE`], as a search through `rg` does; so
 /// does a search whose `root` itself could not be read.
-pub(super) fn search_tree(
+pub(super) fn search_walk(
+    walk: &mut Walk,
     root: &Path,
     pattern: &str,
     case_sensitive: bool,
@@ -223,7 +269,6 @@ pub(super) fn search_tree(
     };
     let mut results = Vec::new();
     let mut unreadable = false;
-    let mut walk = Walk::new(context.search_timeout, context);
     let walked = walk.run(root, |entry, file_type| {
         if results.len() >= maximum_results {
             return Visit::Stop;
@@ -308,11 +353,12 @@ async fn search_ripgrep(
     parameters: &SearchCodeParameters,
     search_path: &Path,
     maximum_results: usize,
+    deadline: Instant,
     context: &ToolContext,
 ) -> Option<ToolResult> {
     let mut command = process::command(RIPGREP, context);
     command.args(ripgrep_arguments(parameters, search_path, maximum_results));
-    ripgrep(command, search_path, maximum_results, context).await
+    ripgrep(command, search_path, maximum_results, deadline, context).await
 }
 
 /// The first four keep the host out of what a search reads: `--no-config` a
@@ -368,7 +414,7 @@ fn ripgrep_arguments(
 }
 
 /// Read `command`'s matches as they arrive, and stop it once
-/// `maximum_results` are in or the context's `search_timeout` has passed.
+/// `maximum_results` are in or `deadline` has passed.
 ///
 /// Nothing is buffered beyond the matches kept: a search that matches every
 /// line of a large tree costs `maximum_results` lines, not the whole of its
@@ -379,6 +425,7 @@ async fn ripgrep(
     mut command: Command,
     search_path: &Path,
     maximum_results: usize,
+    deadline: Instant,
     context: &ToolContext,
 ) -> Option<ToolResult> {
     let mut child = command
@@ -389,13 +436,12 @@ async fn ripgrep(
         .spawn()
         .ok()?;
     let mut stdout = BufReader::new(child.stdout.take()?);
-    let deadline = Instant::now() + context.search_timeout;
 
     let mut results = Vec::new();
     let mut judged: Option<(PathBuf, bool)> = None;
     let mut name = Vec::new();
     let mut found = Vec::new();
-    let stopped = loop {
+    let incomplete = loop {
         if results.len() >= maximum_results {
             break None;
         }
@@ -432,10 +478,10 @@ async fn ripgrep(
 
     let _ = child.start_kill();
     let _ = child.wait().await;
-    if results.is_empty() && stopped == Some(UNREADABLE) {
+    if results.is_empty() && incomplete == Some(UNREADABLE) {
         return None;
     }
-    Some(format_search_results(results, maximum_results, stopped))
+    Some(format_search_results(results, maximum_results, incomplete))
 }
 
 /// Read ripgrep's next `path\0number:text` record into `name` and `found`,
@@ -508,6 +554,8 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
 
     use tempfile::TempDir;
 
@@ -519,6 +567,7 @@ mod tests {
     use crate::test_support::expired;
     use crate::test_support::timed;
     use crate::tool::EnvironmentPolicy;
+    use crate::tool::file::tests::search_tree;
 
     /// The variable ripgrep reads the path of its configuration file from.
     const CONFIGURATION: &str = "RIPGREP_CONFIG_PATH";
@@ -772,6 +821,12 @@ mod tests {
         }
     }
 
+    /// The deadline a [`patient`] search is given, which only a test that
+    /// moves the clock past [`TIMEOUT`] reaches.
+    fn patient_deadline() -> Instant {
+        Instant::now() + TIMEOUT
+    }
+
     /// A context rooted at `root` that searches for as long as any test
     /// waits.
     fn patient(root: &Path) -> ToolContext {
@@ -802,8 +857,11 @@ mod tests {
             printed(&root, "a.rs", "1:match")
         );
 
-        let (result, waited) =
-            timed(ripgrep(shell(&line), &root, 5, &patient(&root)), &started).await;
+        let (result, waited) = timed(
+            ripgrep(shell(&line), &root, 5, patient_deadline(), &patient(&root)),
+            &started,
+        )
+        .await;
 
         let output = result
             .expect("the reader keeps what it read")
@@ -826,7 +884,13 @@ mod tests {
         );
 
         let (result, waited) = expired(
-            ripgrep(shell(&line), &root, MAXIMUM_SEARCH_RESULTS, &patient(&root)),
+            ripgrep(
+                shell(&line),
+                &root,
+                MAXIMUM_SEARCH_RESULTS,
+                patient_deadline(),
+                &patient(&root),
+            ),
             &spoken,
         )
         .await;
@@ -859,7 +923,13 @@ mod tests {
         );
 
         let (result, waited) = expired(
-            ripgrep(shell(&line), &root, MAXIMUM_SEARCH_RESULTS, &patient(&root)),
+            ripgrep(
+                shell(&line),
+                &root,
+                MAXIMUM_SEARCH_RESULTS,
+                patient_deadline(),
+                &patient(&root),
+            ),
             &spoken,
         )
         .await;
@@ -888,9 +958,15 @@ mod tests {
         let (_tree, root) = tree();
         let line = format!("{}; exit 2", printed(&root, "a.rs", "3:first"));
 
-        let result = ripgrep(shell(&line), &root, MAXIMUM_SEARCH_RESULTS, &patient(&root))
-            .await
-            .expect("the matches rg printed are kept");
+        let result = ripgrep(
+            shell(&line),
+            &root,
+            MAXIMUM_SEARCH_RESULTS,
+            patient_deadline(),
+            &patient(&root),
+        )
+        .await
+        .expect("the matches rg printed are kept");
 
         let output = result.output.unwrap();
         assert!(output.starts_with("Found 1 matches"), "{output}");
@@ -1048,6 +1124,65 @@ mod tests {
         assert_eq!(stopped, Some(UNREADABLE));
     }
 
+    #[test]
+    fn an_abandoned_search_walk_reads_no_further() {
+        let tree = TempDir::new().expect("a tree to search");
+        fs::write(tree.path().join("found.rs"), MARKER).expect("a file to search");
+        let context = patient(tree.path());
+        let searched = |abandoned: bool| {
+            let mut walk = Walk::new(
+                (Instant::now() + context.search_timeout).into_std(),
+                Arc::new(AtomicBool::new(abandoned)),
+                &context,
+            );
+            search_walk(
+                &mut walk,
+                tree.path(),
+                MARKER,
+                false,
+                MAXIMUM_SEARCH_RESULTS,
+                &context,
+            )
+        };
+
+        let (results, stopped) = searched(false);
+        assert_eq!(files(&results.join("\n")), ["found.rs"]);
+        assert_eq!(stopped, None);
+        assert_eq!(searched(true), (Vec::new(), Some("abandoned")));
+    }
+
+    /// The walk a failed `rg` handed the search to was given a whole
+    /// `search_timeout` of its own, so `rg` and the walk together could run
+    /// past the tool's outer limit, which threw away whatever the walk had
+    /// found. Here `rg` cannot start and the deadline has already passed, so
+    /// a walk given the time `rg` left reads nothing.
+    #[tokio::test]
+    async fn a_walk_after_rg_has_only_the_time_rg_left_it() {
+        let (_tree, root) = tree();
+        fs::write(root.join("found.rs"), MARKER).expect("a file to search");
+        let directory = TempDir::new().expect("a directory without rg");
+        let context = impersonated(&root, directory.path()).with_search_timeout(TIMEOUT);
+        let parameters =
+            serde_json::from_value(json!({"pattern": MARKER})).expect("the parameters parse");
+
+        let output = search(
+            parameters,
+            root.clone(),
+            MAXIMUM_SEARCH_RESULTS,
+            Instant::now(),
+            &context,
+        )
+        .await
+        .expect("a search out of time still answers")
+        .output
+        .unwrap();
+
+        assert_eq!(
+            output,
+            "No matches found so far\n[search stopped early: out of time]"
+        );
+    }
+
     #[tokio::test]
     async fn a_search_that_fails_hands_over_to_the_walk() {
         let (_tree, root) = tree();
@@ -1056,6 +1191,7 @@ mod tests {
             shell("exit 2"),
             &root,
             MAXIMUM_SEARCH_RESULTS,
+            patient_deadline(),
             &patient(&root),
         )
         .await;

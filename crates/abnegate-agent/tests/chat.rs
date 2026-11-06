@@ -157,3 +157,80 @@ fn a_capacity_carries_what_the_deployment_reported() {
         Some("the runtime reported its loaded context")
     );
 }
+
+#[test]
+fn a_reported_window_is_a_runtime_limit_with_nothing_else_declared() {
+    let reported = Capacity::reported("qwen3:8b", 40_960);
+    assert_eq!(reported.identity, "qwen3:8b");
+    assert_eq!(reported.limit, Some(40_960));
+    assert_eq!(reported.source, Source::Runtime);
+    assert!(reported.ollama.is_none());
+    assert!(!reported.reasoning);
+    assert!(reported.vision.is_none());
+    assert!(reported.reason.is_none());
+}
+
+#[test]
+fn a_reported_window_of_zero_is_an_unknown_capacity() {
+    let reported = Capacity::reported("qwen3:8b", 0);
+    assert_eq!(reported.identity, "qwen3:8b");
+    assert_eq!(reported.limit, None, "a zero window is no window");
+    assert_eq!(reported.source, Source::Unknown);
+    assert!(reported.ollama.is_none());
+    assert!(
+        reported
+            .reason
+            .as_deref()
+            .is_some_and(|reason| !reason.is_empty()),
+        "an unknown capacity says why: {reported:?}"
+    );
+}
+
+#[test]
+fn an_unknown_capacity_says_why() {
+    let unknown = Capacity::unknown("auto", "the runtime reported no window");
+    assert_eq!(unknown.identity, "auto");
+    assert_eq!(unknown.limit, None);
+    assert_eq!(unknown.source, Source::Unknown);
+    assert!(unknown.ollama.is_none());
+    assert!(!unknown.reasoning);
+    assert!(unknown.vision.is_none());
+    assert_eq!(
+        unknown.reason.as_deref(),
+        Some("the runtime reported no window")
+    );
+}
+
+#[test]
+fn the_native_window_is_the_one_its_architecture_names() {
+    assert_eq!(
+        Capacity::native_window(
+            &json!({"general.architecture": "qwen3", "qwen3.context_length": 40960})
+        ),
+        Some(40_960)
+    );
+    assert_eq!(
+        Capacity::native_window(
+            &json!({"general.architecture": "qwen3", "llama.context_length": 4096})
+        ),
+        None,
+        "another architecture's window is not this model's"
+    );
+    assert_eq!(
+        Capacity::native_window(
+            &json!({"general.architecture": "qwen3", "qwen3.context_length": 0})
+        ),
+        None,
+        "a zero window is no window"
+    );
+    assert_eq!(
+        Capacity::native_window(&json!({"qwen3.context_length": 40960})),
+        None,
+        "a window without an architecture names nothing"
+    );
+    assert_eq!(
+        Capacity::native_window(&json!("opaque")),
+        None,
+        "metadata that is not an object has no window"
+    );
+}

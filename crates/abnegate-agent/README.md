@@ -3,9 +3,10 @@
 The parts an LLM agent is built from: a tool registry the model acts through, a
 ReAct loop that drives it, and the context, history and session handling a long
 conversation needs. `ToolRegistry` holds file, command and background-job tools,
-each declaring its own tier; file tools stay beneath the working directory, and
-commands run in a process group of their own that sees only the allowlisted
-environment the `ToolContext` names. `Agent` runs the loop over any
+each declaring its own tier; file tools stay beneath the working directory
+unless the context is unrestricted, and never reach what it denies. Commands run
+in a process group of their own that sees only the allowlisted environment the
+`ToolContext` names. `Agent` runs the loop over any
 `abnegate_llm::CompletionProvider` (ask the model, run the tools it calls, feed
 their results back, until it answers), and a call whose tier needs confirming
 runs only once `AgentCallback::approve` allows it, which by default it does not.
@@ -62,9 +63,11 @@ and search, and any write or command it asks for is refused.
 
 A search or a listing walks for the context's `search_timeout`, 20 seconds
 unless `ToolContext::with_search_timeout` sets another, and then reports what
-it found so far, marked as stopped early. `search_code` shows a match only when
-the file it is in lies beneath the searched directory and stays beneath the
-working directory once its links are resolved.
+it found so far, marked as stopped early. Once its caller gives up on it, a
+walk stops at its next entry rather than reading on to its own limit.
+`search_code` shows a match only when the file it is in lies beneath the
+searched directory and, once its links are resolved, stays beneath the working
+directory unless the context is unrestricted.
 
 A registry without `wait_for`, such as one serving a coding agent whose own
 loop cannot park on it, serves each tool that tells the model to wait in its

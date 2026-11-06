@@ -8,8 +8,9 @@
 //! [`tool`] holds the [`Tool`] trait and a [`ToolRegistry`] of file, command
 //! and background-job tools. Every tool declares its own [`tool::Tier`], so
 //! batching and confirmation read a call's consequences from the tool itself.
-//! File tools stay beneath the working directory, resolving each path once
-//! against a descriptor for the root so a symlink swapped in after the check
+//! File tools stay beneath the working directory unless the context is
+//! unrestricted, and never reach what it denies. Each path is resolved once
+//! against a descriptor for the root, so a symlink swapped in after the check
 //! is never followed. Commands run in a process group of their own, killed
 //! whole when they finish or overrun, and see only the allowlisted
 //! environment the [`ToolContext`] names.

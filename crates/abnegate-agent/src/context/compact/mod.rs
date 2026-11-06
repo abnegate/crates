@@ -14,6 +14,7 @@ use abnegate_llm::Message;
 use abnegate_llm::RequestOptions;
 use abnegate_llm::Role;
 use abnegate_llm::ToolDefinition;
+use abnegate_llm::finish_reason;
 use group::groups;
 use input::Input;
 use serde::Serialize;
@@ -289,7 +290,7 @@ async fn summarize(
                     .with_temperature(TEMPERATURE),
             )
             .await?;
-        if completion.finish_reason.as_deref() == Some("length")
+        if completion.finish_reason.as_deref() == Some(finish_reason::LENGTH)
             || completion
                 .message
                 .tool_calls

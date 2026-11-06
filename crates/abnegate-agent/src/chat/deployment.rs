@@ -141,7 +141,10 @@ impl Deployment {
             .and_then(|entry| entry.get("context_length"))
             .and_then(Value::as_u64)
             .filter(|value| *value > 0);
-        let advertised = shown.as_ref().and_then(native_limit);
+        let advertised = shown
+            .as_ref()
+            .and_then(|body| body.get("model_info"))
+            .and_then(Capacity::native_window);
         let requested = route.litellm_params.num_ctx.filter(|value| *value > 0);
         let reasoning = shown.as_ref().is_some_and(ollama_thinking);
         let vision = shown.as_ref().and_then(ollama_vision);
@@ -351,15 +354,6 @@ fn provider_reasoning(model: &Value) -> bool {
                 )
             })
         })
-}
-
-fn native_limit(body: &Value) -> Option<u64> {
-    let metadata = body.get("model_info")?;
-    let architecture = metadata.get("general.architecture")?.as_str()?;
-    metadata
-        .get(format!("{architecture}.context_length"))?
-        .as_u64()
-        .filter(|value| *value > 0)
 }
 
 fn configured_limit(parameters: &str) -> Option<u64> {
