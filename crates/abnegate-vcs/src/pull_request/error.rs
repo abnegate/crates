@@ -25,11 +25,11 @@ pub enum PullRequestError {
     Refused {
         /// The HTTP status GitHub answered with.
         status: u16,
-        /// GitHub's own words about it, from its answer alone and never from
-        /// the request, with anything shaped like a credential redacted, on
-        /// one line and bounded: its message and the details it listed, or,
-        /// where it gave neither, the start of its answer; empty where its
-        /// answer was empty.
+        /// GitHub's own words about it: the message and the details its JSON
+        /// answer listed, with anything shaped like a credential redacted, on
+        /// one line and bounded. Empty where the answer carried neither or was
+        /// not GitHub's JSON, since the raw answer never reaches an error, and
+        /// never taken from the request.
         message: String,
     },
 

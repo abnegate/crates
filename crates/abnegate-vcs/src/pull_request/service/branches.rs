@@ -247,8 +247,9 @@ mod tests {
                 (422, "Cannot delete this protected branch"),
             ),
             (
-                ResponseTemplate::new(422).set_body_string("<html>Reference does not exist</html>"),
-                (422, "<html>Reference does not exist</html>"),
+                ResponseTemplate::new(422)
+                    .set_body_string("<html>Reference does not exist RAW-SENTINEL</html>"),
+                (422, ""),
             ),
             (ResponseTemplate::new(500), (500, "")),
         ] {

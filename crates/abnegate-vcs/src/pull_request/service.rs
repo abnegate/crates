@@ -109,11 +109,6 @@ const RATE_LIMIT: &str = "rate limit";
 /// Most of GitHub's own words carried into an error.
 const MAXIMUM_ERROR_BYTES: usize = 1024;
 
-/// Most of the start of an answer that carried no words of GitHub's kept in
-/// [`PullRequestError::Refused`]: enough to tell a proxy's page or a gateway's
-/// apology apart, and no more of whatever the server chose to send.
-const MAXIMUM_EXCERPT_BYTES: usize = 200;
-
 /// What joins GitHub's words when several are carried on one line.
 const SEPARATOR: &str = "; ";
 
@@ -261,9 +256,8 @@ const GIT_SUFFIX: &str = ".git";
 /// [`PullRequestError::PullRequestNotFound`] where GitHub says which of the two
 /// is missing; [`PullRequestError::is_not_found`] is `true` for either. Of a
 /// refusal's answer, an error keeps only GitHub's own message and details,
-/// sanitised and bounded, or, where it gave neither, the first 200 bytes of
-/// the answer, sanitised the same way: never more of the raw answer, and
-/// never anything from the request, the token included.
+/// sanitised and bounded: never the raw answer, and never anything from the
+/// request, the token included.
 ///
 /// A read that walks every page itself and returns a list, such as
 /// [`Self::fetch_files`] or [`Self::fetch_reviews`], takes a hundred rows a
@@ -1126,7 +1120,7 @@ fn limits_the_rate(status: StatusCode) -> bool {
 /// A refusal no status explains, named by its status and GitHub's own words,
 /// which come from its answer alone and never from the request.
 fn unexpected(status: StatusCode, refusal: &GitHubRefusal) -> PullRequestError {
-    PullRequestError::refused(status.as_u16(), refusal.words())
+    PullRequestError::refused(status.as_u16(), refusal.summary())
 }
 
 /// An answer named by its status alone.
@@ -1241,15 +1235,6 @@ pub(super) fn summarised<'a>(said: impl IntoIterator<Item = &'a str>) -> String 
         line.push_str(&cleaned);
     }
     bounded(&line).to_string()
-}
-
-/// The start of an answer that carried no words of GitHub's, fit to carry in
-/// an error: read as text, sanitised and made one line as [`summarised`]
-/// makes GitHub's words, and only then cut to [`MAXIMUM_EXCERPT_BYTES`], so
-/// that a credential is redacted whole rather than cut short of being seen.
-pub(super) fn excerpted(body: &[u8]) -> String {
-    let line = cleaned(&String::from_utf8_lossy(body));
-    line[..line.floor_char_boundary(MAXIMUM_EXCERPT_BYTES)].to_string()
 }
 
 /// `words` sanitised, with every run of whitespace, control characters and
@@ -2123,38 +2108,48 @@ mod tests {
         }
     }
 
-    /// GitHub's message is what explains a refusal; the rest of a JSON answer
-    /// is whatever the server chose to send, and has no place in an error a log
+    /// GitHub's message is what explains a refusal; the rest of its answer is
+    /// whatever the server chose to send, and has no place in an error a log
     /// keeps.
     #[tokio::test]
-    async fn an_error_names_github_s_message_and_never_the_rest_of_its_answer() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .respond_with(
-                ResponseTemplate::new(500)
-                    .set_body_string(r#"{"message":"boom","documentation_url":"RAW-SENTINEL"}"#),
-            )
-            .mount(&server)
-            .await;
-        let service = stand_in(&server).await;
+    async fn an_error_names_github_s_message_and_never_its_raw_body() {
+        for (body, words, expected) in [
+            (
+                r#"{"message":"boom","documentation_url":"RAW-SENTINEL"}"#,
+                "boom",
+                "GitHub refused the request with status 500: boom",
+            ),
+            (
+                "<html>RAW-SENTINEL</html>",
+                "",
+                "GitHub refused the request with status 500",
+            ),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(500).set_body_string(body))
+                .mount(&server)
+                .await;
+            let service = stand_in(&server).await;
 
-        let failure = service
-            .fetch_mergeability(&seven(&service), &token())
-            .await
-            .unwrap_err();
+            let failure = service
+                .fetch_mergeability(&seven(&service), &token())
+                .await
+                .unwrap_err();
 
-        assert!(
-            matches!(failure, PullRequestError::Refused { status: 500, ref message } if message == "boom"),
-            "{failure:?}"
-        );
-        assert_eq!(
-            failure.to_string(),
-            "GitHub refused the request with status 500: boom"
-        );
-        assert!(
-            !format!("{failure:?}").contains("RAW-SENTINEL"),
-            "{failure:?}"
-        );
+            assert!(
+                matches!(
+                    failure,
+                    PullRequestError::Refused { status: 500, ref message } if message == words
+                ),
+                "{failure:?}"
+            );
+            assert_eq!(failure.to_string(), expected);
+            assert!(
+                !format!("{failure:?}").contains("RAW-SENTINEL"),
+                "{failure:?}"
+            );
+        }
 
         let server = MockServer::start().await;
         Mock::given(method("POST"))

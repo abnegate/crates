@@ -177,37 +177,37 @@ async fn a_failure_of_github_s_own_is_refused_with_its_status_and_never_sent_aga
     }
 }
 
+/// The raw answer is whatever the server chose to send, so an answer that is
+/// not GitHub's JSON, or that carries no message or detail, gives no words.
 #[tokio::test]
-async fn an_answer_without_github_s_words_is_refused_with_its_start() {
-    let failure = reading(
-        ResponseTemplate::new(502)
-            .set_body_string("<html>\n  <body>\n    <h1>502 Bad Gateway</h1>\n  </body>\n</html>"),
-    )
-    .await;
+async fn an_answer_without_github_s_words_is_refused_with_none_of_its_body() {
+    for body in [
+        "<html>\n  <body>\n    <h1>502 Bad Gateway RAW-SENTINEL</h1>\n  </body>\n</html>",
+        "upstream connect error RAW-SENTINEL",
+        r#"{"documentation_url":"https://docs.github.com/RAW-SENTINEL"}"#,
+    ] {
+        let failure = reading(ResponseTemplate::new(502).set_body_string(body)).await;
 
-    assert!(
-        refused_with(
-            &failure,
-            502,
-            "<html> <body> <h1>502 Bad Gateway</h1> </body> </html>"
-        ),
-        "{failure:?}"
-    );
+        assert!(refused_with(&failure, 502, ""), "{body}: {failure:?}");
+        assert!(
+            !format!("{failure} {failure:?}").contains("RAW-SENTINEL"),
+            "{body}: {failure:?}"
+        );
+    }
 }
 
 #[tokio::test]
-async fn the_start_of_a_long_answer_is_cut_to_its_bound_on_a_character() {
-    let failure = reading(ResponseTemplate::new(500).set_body_string("a".repeat(10_000))).await;
-    assert!(
-        refused_with(&failure, 500, &"a".repeat(MAXIMUM_EXCERPT_BYTES)),
-        "{failure:?}"
-    );
+async fn a_long_message_stays_within_the_bound_on_github_s_words() {
+    let long = "é".repeat(4096);
+    let failure =
+        reading(ResponseTemplate::new(500).set_body_json(json!({ "message": long }))).await;
 
-    let wide = format!("a{}", "é".repeat(10_000));
-    let failure = reading(ResponseTemplate::new(500).set_body_string(wide)).await;
-    let cut = format!("a{}", "é".repeat((MAXIMUM_EXCERPT_BYTES - 1) / 2));
-    assert!(refused_with(&failure, 500, &cut), "{failure:?}");
-    assert!(cut.len() <= MAXIMUM_EXCERPT_BYTES, "{}", cut.len());
+    assert!(refused_with(&failure, 500, bounded(&long)), "{failure:?}");
+    let PullRequestError::Refused { message, .. } = failure else {
+        unreachable!("the refusal was matched above");
+    };
+    assert!(message.len() <= MAXIMUM_ERROR_BYTES, "{}", message.len());
+    assert!(message.len() < long.len(), "{}", message.len());
 }
 
 #[tokio::test]
@@ -222,7 +222,8 @@ async fn an_empty_answer_is_refused_with_no_words() {
 }
 
 /// A refusal is built from GitHub's answer alone: the token a request carried
-/// never reaches the error, and one GitHub echoes back is redacted.
+/// never reaches the error, and one GitHub echoes back in its message is
+/// redacted.
 #[tokio::test]
 async fn a_refusal_never_carries_the_token_the_request_was_sent_with() {
     for sent in [SHAPED_TOKEN, PLAIN_TOKEN] {
@@ -245,24 +246,25 @@ async fn a_refusal_never_carries_the_token_the_request_was_sent_with() {
         assert!(!rendered.contains(sent), "{rendered}");
     }
 
-    for body in [
-        json!({ "message": format!("Bad credentials: {SHAPED_TOKEN}") }).to_string(),
-        format!("<p>Bad credentials: {SHAPED_TOKEN}</p>"),
-    ] {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .respond_with(ResponseTemplate::new(500).set_body_string(body.clone()))
-            .mount(&server)
-            .await;
-        let service = stand_in(&server).await;
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(500)
+                .set_body_json(json!({ "message": format!("Bad credentials: {SHAPED_TOKEN}") })),
+        )
+        .mount(&server)
+        .await;
+    let service = stand_in(&server).await;
 
-        let failure = service
-            .fetch_pull(&seven(&service), &SecretValue::new(SHAPED_TOKEN))
-            .await
-            .unwrap_err();
+    let failure = service
+        .fetch_pull(&seven(&service), &SecretValue::new(SHAPED_TOKEN))
+        .await
+        .unwrap_err();
 
-        let rendered = format!("{failure} {failure:?}");
-        assert!(!rendered.contains(SHAPED_TOKEN), "{body}: {rendered}");
-        assert!(rendered.contains("[REDACTED]"), "{body}: {rendered}");
-    }
+    assert!(
+        refused_with(&failure, 500, "Bad credentials: [REDACTED]"),
+        "{failure:?}"
+    );
+    let rendered = format!("{failure} {failure:?}");
+    assert!(!rendered.contains(SHAPED_TOKEN), "{rendered}");
 }

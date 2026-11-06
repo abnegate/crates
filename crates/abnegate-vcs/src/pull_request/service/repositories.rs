@@ -424,7 +424,7 @@ mod tests {
                     matches!(
                         refused,
                         PullRequestError::Refused { status: 500, message }
-                            if message == "name already exists"
+                            if message.is_empty()
                     )
                 },
             ),

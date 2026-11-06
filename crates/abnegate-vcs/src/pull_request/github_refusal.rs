@@ -1,4 +1,3 @@
-use crate::pull_request::service::excerpted;
 use crate::pull_request::service::summarised;
 use serde_json::Value;
 
@@ -9,52 +8,34 @@ const MESSAGE: &str = "message";
 const ERRORS: &str = "errors";
 
 /// What GitHub said in refusing a request: its message and each detail listed
-/// under `errors`, and, only where its answer carried neither, the start of
-/// that answer.
+/// under `errors`, and nothing else its answer carried.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct GitHubRefusal {
     message: Option<String>,
     errors: Vec<String>,
-    excerpt: String,
 }
 
 impl GitHubRefusal {
     /// GitHub's words in an error body. A detail is either an object carrying
-    /// a message or a bare string. A body that is not GitHub's JSON, or that
-    /// carries neither a message nor a detail, says nothing, and only its
-    /// start is kept, as [`excerpted`] cuts it.
+    /// a message or a bare string; a body that is not GitHub's JSON says
+    /// nothing.
     pub(super) fn parse(body: &[u8]) -> Self {
         let Ok(Value::Object(answer)) = serde_json::from_slice::<Value>(body) else {
-            return Self::unspoken(body);
+            return Self::default();
         };
-        let message = answer
-            .get(MESSAGE)
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        let errors: Vec<String> = answer
-            .get(ERRORS)
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(detail)
-            .map(str::to_string)
-            .collect();
-        match message.is_none() && errors.is_empty() {
-            true => Self::unspoken(body),
-            false => Self {
-                message,
-                errors,
-                excerpt: String::new(),
-            },
-        }
-    }
-
-    /// A refusal whose `body` carried no words of GitHub's, kept only as the
-    /// start of it.
-    fn unspoken(body: &[u8]) -> Self {
         Self {
-            excerpt: excerpted(body),
-            ..Self::default()
+            message: answer
+                .get(MESSAGE)
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            errors: answer
+                .get(ERRORS)
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(detail)
+                .map(str::to_string)
+                .collect(),
         }
     }
 
@@ -70,16 +51,6 @@ impl GitHubRefusal {
     /// it grows too long to carry in an error.
     pub(super) fn summary(&self) -> String {
         summarised(self.said())
-    }
-
-    /// What an error carries of the refusal: its [`Self::summary`], or, where
-    /// GitHub gave neither a message nor a detail, the start of its answer.
-    pub(super) fn words(&self) -> String {
-        let summary = self.summary();
-        match summary.is_empty() {
-            true => self.excerpt.clone(),
-            false => summary,
-        }
     }
 
     fn said(&self) -> impl Iterator<Item = &str> {
@@ -141,34 +112,7 @@ mod tests {
         ] {
             let silent = GitHubRefusal::parse(unspoken);
             assert!(!silent.mentions("already exists"), "{unspoken:?}");
-            assert_eq!(silent.summary(), "", "{unspoken:?}");
-        }
-    }
-
-    #[test]
-    fn an_answer_without_github_s_words_is_carried_as_its_start_alone() {
-        for (body, words) in [
-            (
-                &br#"{"message":"Server Error","documentation_url":"https://docs"}"#[..],
-                "Server Error",
-            ),
-            (
-                br#"{"errors":["name already exists"]}"#,
-                "name already exists",
-            ),
-            (br#"{"message":""}"#, ""),
-            (
-                b"<html>\n  <body>Bad gateway</body>\n</html>",
-                "<html> <body>Bad gateway</body> </html>",
-            ),
-            (
-                br#"{"documentation_url":"https://docs"}"#,
-                r#"{"documentation_url":"https://docs"}"#,
-            ),
-            (b"\xff\xfeunreadable", "\u{FFFD}\u{FFFD}unreadable"),
-            (b"", ""),
-        ] {
-            assert_eq!(GitHubRefusal::parse(body).words(), words, "{body:?}");
+            assert_eq!(silent, GitHubRefusal::default(), "{unspoken:?}");
         }
     }
 

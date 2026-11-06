@@ -768,11 +768,7 @@ mod tests {
                 true,
                 r#"Refused { status: 500, message: "Changes must be made through a pull request." }"#,
             ),
-            (
-                ResponseTemplate::new(502).set_body_string("<p>Bad gateway</p>"),
-                true,
-                r#"Refused { status: 502, message: "<p>Bad gateway</p>" }"#,
-            ),
+            (silent(502), true, r#"Refused { status: 502, message: "" }"#),
         ] {
             let server = MockServer::start().await;
             Mock::given(method("PUT"))
@@ -919,7 +915,7 @@ mod tests {
             ),
             (
                 ResponseTemplate::new(502).set_body_string("<p>Bad gateway</p>"),
-                r#"Refused { status: 502, message: "<p>Bad gateway</p>" }"#.to_string(),
+                r#"Refused { status: 502, message: "" }"#.to_string(),
             ),
             (
                 ResponseTemplate::new(200).set_body_string("not an answer"),
