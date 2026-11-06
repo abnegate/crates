@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.10](https://github.com/abnegate/crates/compare/abnegate-vcs/v0.1.9...abnegate-vcs/v0.1.10) - 2026-11-06
+
+### Added
+
+- *(vcs)* register GitHub Apps from a manifest and list installations, repositories and branches ([#55](https://github.com/abnegate/crates/pull/55))
+
 ## [0.1.9](https://github.com/abnegate/crates/compare/abnegate-vcs/v0.1.8...abnegate-vcs/v0.1.9) - 2026-11-06
 
 ### Added
