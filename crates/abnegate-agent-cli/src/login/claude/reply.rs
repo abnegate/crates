@@ -48,7 +48,8 @@ impl Reply {
     }
 }
 
-fn single<'a>(pairs: &'a [(String, String)], name: &str) -> Option<&'a str> {
+/// The value `name` is given in `pairs`, when it is given exactly once.
+pub(crate) fn single<'a>(pairs: &'a [(String, String)], name: &str) -> Option<&'a str> {
     let mut values = pairs
         .iter()
         .filter(|(key, _)| key == name)

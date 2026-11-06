@@ -6,6 +6,7 @@ use crate::login::claude::CALLBACK_PATH;
 use crate::login::claude::Endpoints;
 use crate::login::claude::LOOPBACK_HOST;
 use crate::login::claude::LOOPBACK_SCHEME;
+use crate::login::claude::reply::single;
 
 const SEPARATOR: char = '#';
 const UNREADABLE: &str = "Paste the code Claude showed, as code#state, or the whole callback URL";
@@ -91,16 +92,12 @@ impl Code {
             return Err(LoginError::Malformed(FOREIGN));
         }
 
-        let parameter = |name: &str| {
-            url.query_pairs()
-                .find(|(key, _)| key == name)
-                .map(|(_, value)| value.into_owned())
-        };
-        if parameter("error").is_some() {
+        let pairs = url.query_pairs().into_owned().collect::<Vec<_>>();
+        if pairs.iter().any(|(key, _)| key == "error") {
             return Err(LoginError::Malformed(DECLINED));
         }
-        match (parameter("code"), parameter("state")) {
-            (Some(value), Some(state)) => Self::new(&value, &state),
+        match (single(&pairs, "code"), single(&pairs, "state")) {
+            (Some(value), Some(state)) => Self::new(value, state),
             _ => Err(LoginError::Malformed(INCOMPLETE)),
         }
     }
@@ -254,5 +251,16 @@ mod tests {
             Code::parse(&endpoints, PASTED_URL),
             Err(LoginError::Malformed(FOREIGN))
         ));
+    }
+
+    #[test]
+    fn a_callback_naming_its_code_twice_is_incomplete() {
+        assert_eq!(
+            refusal(
+                "https://platform.claude.com/oauth/code/callback\
+                 ?code=fake-code&code=other-code&state=fake-state"
+            ),
+            INCOMPLETE
+        );
     }
 }
