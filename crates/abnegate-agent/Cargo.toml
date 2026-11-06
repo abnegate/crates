@@ -4,7 +4,7 @@ description = "A ReAct agent loop with a sandbox-aware tool registry, background
 keywords = ["agent", "llm", "tools", "mcp", "react"]
 categories = ["asynchronous", "development-tools", "text-processing"]
 readme = "README.md"
-version = "0.1.12"
+version = "0.1.13"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -22,7 +22,7 @@ default = []
 mcp = ["dep:rmcp", "dep:abnegate-agent-cli"]
 
 [dependencies]
-abnegate-agent-cli = { path = "../abnegate-agent-cli", version = "0.1.12", optional = true }
+abnegate-agent-cli = { path = "../abnegate-agent-cli", version = "0.1.13", optional = true }
 abnegate-config = { path = "../abnegate-config", version = "0.1.8" }
 abnegate-exec = { path = "../abnegate-exec", version = "0.1.11" }
 abnegate-llm = { path = "../abnegate-llm", version = "0.1.10" }
