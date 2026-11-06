@@ -86,12 +86,16 @@ impl InstallationIssuer {
     }
 
     /// Trade `jwt`, from [`crate::pull_request::ApplicationClaims::sign`], for
-    /// a token scoped to `installation`.
+    /// a token scoped to `installation`. An empty `jwt` is
+    /// [`ApplicationError::AuthenticationRequired`], with nothing sent.
     pub async fn issue(
         &self,
         jwt: &SecretValue,
         installation: InstallationId,
     ) -> Result<InstallationToken, ApplicationError> {
+        if jwt.is_empty() {
+            return Err(ApplicationError::AuthenticationRequired);
+        }
         let request = self
             .client
             .post(self.endpoint(installation)?)
@@ -429,5 +433,25 @@ mod tests {
 
         assert!(matches!(error, ApplicationError::Response));
         assert!(!error.to_string().contains("ghs_leaky"));
+    }
+
+    #[tokio::test]
+    async fn an_empty_jwt_is_refused_unsent() {
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(issued())
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let error = stand_in(&server)
+            .issue(&SecretValue::new(""), installation())
+            .await
+            .expect_err("an empty JWT is never sent");
+
+        assert!(
+            matches!(error, ApplicationError::AuthenticationRequired),
+            "{error:?}"
+        );
     }
 }

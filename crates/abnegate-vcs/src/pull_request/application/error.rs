@@ -50,6 +50,11 @@ pub enum ApplicationError {
     /// would name no path segment, or the one before it.
     #[error("The GitHub App manifest code is empty or a dot segment, so it cannot be sent.")]
     InvalidCode,
+
+    /// The GitHub App request was given an empty JWT or installation token,
+    /// and was refused unsent, since GitHub answers none of them without one.
+    #[error("The GitHub App request needs a JWT or token, and none was given.")]
+    AuthenticationRequired,
 }
 
 impl ApplicationError {

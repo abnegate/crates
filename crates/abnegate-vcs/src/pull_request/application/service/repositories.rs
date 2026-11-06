@@ -39,7 +39,7 @@ impl ApplicationService {
             asked,
         );
         let answer: GitHubInstallationRepositories =
-            parsed(&answered(self.authorized(Method::GET, url, token)).await?)?;
+            parsed(&answered(self.authorized(Method::GET, url, token)?).await?)?;
         let read = answer.repositories.len();
 
         let repositories = answer
