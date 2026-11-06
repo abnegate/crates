@@ -838,6 +838,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_thread_on_two_overlapping_pages_counts_once() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(body_json(counted(None)))
+            .respond_with(page(
+                json!([state("PRRT_1", false), state("PRRT_2", true)]),
+                true,
+                Some("Y3Vyc29yOjE="),
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(body_json(counted(Some("Y3Vyc29yOjE="))))
+            .respond_with(page(
+                json!([state("PRRT_2", true), state("PRRT_3", false)]),
+                false,
+                None,
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+
+        let count = service
+            .fetch_review_thread_counts(&seven(&service), &token())
+            .await
+            .unwrap();
+
+        assert_eq!(count, ReviewThreadCount::new(2, 1));
+    }
+
+    #[tokio::test]
     async fn a_cursor_that_never_runs_out_is_counted_only_so_far() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
