@@ -235,7 +235,7 @@ mod tests {
     const OPERATION: &str = "walk";
 
     /// A deadline no test reaches.
-    fn soon() -> Instant {
+    fn unreached() -> Instant {
         Instant::now() + PATIENCE
     }
 
@@ -316,7 +316,7 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         let context = ToolContext::default();
 
-        let walk = walking(OPERATION, soon(), &context, move |walk, _| {
+        let walk = walking(OPERATION, unreached(), &context, move |walk, _| {
             while walk.exhausted().is_none() {
                 std::thread::sleep(Duration::from_millis(1));
             }
@@ -344,10 +344,15 @@ mod tests {
             }
         });
 
-        let heard = walking(OPERATION, soon(), &ToolContext::default(), move |_, _| {
-            let _ = started.send(());
-            answered.recv_timeout(PATIENCE).is_ok()
-        })
+        let heard = walking(
+            OPERATION,
+            unreached(),
+            &ToolContext::default(),
+            move |_, _| {
+                let _ = started.send(());
+                answered.recv_timeout(PATIENCE).is_ok()
+            },
+        )
         .await
         .expect("the walk finishes");
 
@@ -355,11 +360,11 @@ mod tests {
         assert!(heard, "the walk held the worker its answer needed");
     }
 
-    /// Every walk that never finished was reported as "the file operation",
-    /// where a listing and a search each used to name themselves.
+    /// A walk that never finishes names the operation, a listing or a
+    /// search, that did not.
     #[tokio::test]
     async fn a_walk_that_never_finishes_names_its_operation() {
-        let failed = walking("listing", soon(), &ToolContext::default(), |_, _| {
+        let failed = walking("listing", unreached(), &ToolContext::default(), |_, _| {
             panic!("the walk breaks down")
         })
         .await;

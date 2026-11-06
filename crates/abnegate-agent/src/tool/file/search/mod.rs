@@ -182,7 +182,7 @@ async fn search(
         parameters.pattern,
         parameters.case_sensitive,
         maximum_results,
-        deadline.into_std(),
+        deadline,
         context,
     )
     .await
@@ -195,9 +195,10 @@ pub(super) async fn search_walking(
     pattern: String,
     case_sensitive: bool,
     maximum_results: usize,
-    deadline: std::time::Instant,
+    deadline: Instant,
     context: &ToolContext,
 ) -> Result<ToolResult, ToolError> {
+    let deadline = deadline.into_std();
     walking(OPERATION, deadline, context, move |walk, context| {
         let (results, incomplete) = search_walk(
             walk,
@@ -822,7 +823,7 @@ mod tests {
 
     /// The deadline a [`patient`] search is given, which only a test that
     /// moves the clock past [`TIMEOUT`] reaches.
-    fn soon() -> Instant {
+    fn patient_deadline() -> Instant {
         Instant::now() + TIMEOUT
     }
 
@@ -857,7 +858,7 @@ mod tests {
         );
 
         let (result, waited) = timed(
-            ripgrep(shell(&line), &root, 5, soon(), &patient(&root)),
+            ripgrep(shell(&line), &root, 5, patient_deadline(), &patient(&root)),
             &started,
         )
         .await;
@@ -887,7 +888,7 @@ mod tests {
                 shell(&line),
                 &root,
                 MAXIMUM_SEARCH_RESULTS,
-                soon(),
+                patient_deadline(),
                 &patient(&root),
             ),
             &spoken,
@@ -926,7 +927,7 @@ mod tests {
                 shell(&line),
                 &root,
                 MAXIMUM_SEARCH_RESULTS,
-                soon(),
+                patient_deadline(),
                 &patient(&root),
             ),
             &spoken,
@@ -961,7 +962,7 @@ mod tests {
             shell(&line),
             &root,
             MAXIMUM_SEARCH_RESULTS,
-            soon(),
+            patient_deadline(),
             &patient(&root),
         )
         .await
@@ -1130,7 +1131,7 @@ mod tests {
         let context = patient(tree.path());
         let searched = |abandoned: bool| {
             let mut walk = Walk::new(
-                std::time::Instant::now() + context.search_timeout,
+                (Instant::now() + context.search_timeout).into_std(),
                 Arc::new(AtomicBool::new(abandoned)),
                 &context,
             );
@@ -1190,7 +1191,7 @@ mod tests {
             shell("exit 2"),
             &root,
             MAXIMUM_SEARCH_RESULTS,
-            soon(),
+            patient_deadline(),
             &patient(&root),
         )
         .await;

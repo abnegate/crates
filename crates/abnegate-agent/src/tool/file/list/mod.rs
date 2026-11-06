@@ -75,6 +75,7 @@ impl Tool for ListFilesTool {
         parameters: Value,
         context: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
+        let deadline = Instant::now() + context.search_timeout;
         let parameters: ListFilesParameters = serde_json::from_value(parameters)
             .map_err(|error| ToolError::InvalidParameters(error.to_string()))?;
 
@@ -87,7 +88,6 @@ impl Tool for ListFilesTool {
             )));
         }
 
-        let deadline = Instant::now() + context.search_timeout;
         walking(OPERATION, deadline, context, move |walk, _| {
             list(walk, &full_path, &parameters)
         })

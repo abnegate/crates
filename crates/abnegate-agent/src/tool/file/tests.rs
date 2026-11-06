@@ -2815,7 +2815,7 @@ async fn a_search_out_of_time_does_not_claim_there_are_no_matches() {
         SECRET.to_string(),
         true,
         MAXIMUM_SEARCH_RESULTS,
-        Instant::now() + context.search_timeout,
+        tokio::time::Instant::now() + context.search_timeout,
         &context,
     )
     .await
