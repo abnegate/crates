@@ -208,7 +208,9 @@ impl<'server> CodexServer<'server> {
 /// `duration` in whole seconds, rounded up so that a wait shorter than a
 /// second is never written as none at all.
 fn seconds(duration: Duration) -> u64 {
-    duration.as_secs() + u64::from(duration.subsec_nanos() > 0)
+    duration
+        .as_secs()
+        .saturating_add(u64::from(duration.subsec_nanos() > 0))
 }
 
 /// Whether `url` holds user-info or a query string, either of which can
@@ -469,6 +471,23 @@ mod tests {
         assert_eq!(
             arguments[1],
             r#"mcp_servers.host={ "url" = "http://127.0.0.1:9/mcp", "default_tools_approval_mode" = "approve" }"#
+        );
+    }
+
+    /// A timeout too long to round up any further, or to write as a TOML
+    /// integer, reaches Codex as the longest one its keys hold.
+    #[test]
+    fn the_longest_timeouts_reach_codex_as_the_longest_it_can_hold() {
+        let server = McpServer::remote("http://127.0.0.1:9/mcp")
+            .with_tool_timeout(Duration::MAX)
+            .with_startup_timeout(Duration::MAX);
+        let mut placeholders = Placeholders::under("TEST");
+
+        let arguments = CodexServer::new(&server).arguments("host", &mut placeholders);
+
+        assert_eq!(
+            arguments[1],
+            r#"mcp_servers.host={ "url" = "http://127.0.0.1:9/mcp", "tool_timeout_sec" = 9223372036854775807, "startup_timeout_sec" = 9223372036854775807, "default_tools_approval_mode" = "approve" }"#
         );
     }
 

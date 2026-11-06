@@ -121,6 +121,7 @@ const CODEX_WITHHELD_OPTIONS: &[&str] = &[
     "--output-last-message",
     "--output-schema",
     "-c",
+    "-o",
 ];
 
 /// The Codex configuration a run that
@@ -284,7 +285,9 @@ pub struct CliSettings {
     /// its start and its end, each at most half the limit and cut on a
     /// character boundary, around a line saying how many bytes were left
     /// out. Each such event waits in the stream until it is read, so this
-    /// bounds what one tool call costs a caller that falls behind.
+    /// bounds what a tool printed that a caller who falls behind holds; the
+    /// arguments of the call it names are handed on whole, as in
+    /// [`AgentEvent::Tool`](crate::AgentEvent::Tool).
     pub tool_output_limit: usize,
     /// Set in the child's environment on top of what it is given from the
     /// host, so an explicit value always wins. Every value is treated as a
@@ -456,9 +459,9 @@ pub struct CliSettings {
     /// profile or a feature. Claude passes only [`READ_ONLY_SWITCHES`] and
     /// [`READ_ONLY_OPTIONS`], as a read-only run does. Codex passes only
     /// `--ephemeral`, `--oss`, `--strict-config`, `--color`, `--disable`,
-    /// `--local-provider`, `--output-last-message`, `--output-schema`, and a
-    /// `-c` or `--config` override of `model`, `model_provider`,
-    /// `model_providers`, `oss_provider`, `service_tier`,
+    /// `--local-provider`, `--output-last-message` or `-o`,
+    /// `--output-schema`, and a `-c` or `--config` override of `model`,
+    /// `model_provider`, `model_providers`, `oss_provider`, `service_tier`,
     /// `model_context_window`, `model_auto_compact_token_limit`,
     /// `model_reasoning_effort`, `model_reasoning_summary`,
     /// `model_verbosity`, `hide_agent_reasoning` or
@@ -1871,6 +1874,9 @@ mod tests {
             "--output-schema",
             "/tmp/schema.json",
             "--output-last-message=/tmp/last.txt",
+            "-o",
+            "/tmp/last.txt",
+            "-o/tmp/last.txt",
             "-c",
             r#"model="o3""#,
             "-c",
