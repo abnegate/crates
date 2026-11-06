@@ -35,7 +35,9 @@ use crate::parser::claude::CliUsage;
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum AgentEvent {
-    /// A fragment of the agent's prose, in streaming order.
+    /// A block of the agent's prose, in streaming order. Every block after
+    /// the first starts with a paragraph break, `\n\n`, so that the blocks
+    /// read apart when joined.
     Text(String),
     /// A tool the agent ran for itself, reported and never replayed.
     Tool(ToolCall),

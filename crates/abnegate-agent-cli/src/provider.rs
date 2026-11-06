@@ -377,6 +377,7 @@ impl CliProvider {
                 started.clone(),
             )
             .forwarding(events)
+            .in_directory(self.settings.working_directory.clone())
             .run(spawned.child.stdout.take()),
         );
         let diagnostics = tokio::spawn(
@@ -634,6 +635,7 @@ mod tests {
     use super::report;
     use crate::PROSE_EXCEEDED;
     use crate::STDERR_HEADING;
+    use crate::activity::activity;
     use crate::agent_stream::AgentStream;
     use crate::environment::LOCALE;
     use crate::event::AgentEvent;
@@ -831,7 +833,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.0
         assert_eq!(completion.provider, "claude");
         assert_eq!(
             completion.message.content.as_deref(),
-            Some("Looking now. It is empty.")
+            Some("Looking now. \n\nIt is empty.")
         );
         assert_eq!(completion.finish_reason.as_deref(), Some("success"));
 
@@ -1160,7 +1162,10 @@ echo '{"type":"result","subtype":"error_max_turns","is_error":true,"result":"","
                 _ => None,
             })
             .collect();
-        assert_eq!(texts, [NARRATION, FINAL_REPORT]);
+        assert_eq!(
+            texts,
+            [NARRATION.to_string(), format!("\n\n{FINAL_REPORT}")]
+        );
         let [.., AgentEvent::Answer(answer), AgentEvent::Finished { .. }] = delivered.as_slice()
         else {
             panic!("expected the answer, then the finish: {delivered:?}");
@@ -1179,7 +1184,10 @@ echo '{"type":"result","subtype":"error_max_turns","is_error":true,"result":"","
         let execution = execute(&provider, &[Message::user("Check the deploy.")]).await;
 
         assert_eq!(execution.stdout.answer.as_deref(), Some(FINAL_REPORT));
-        assert_eq!(execution.stdout.text, format!("{NARRATION}{FINAL_REPORT}"));
+        assert_eq!(
+            execution.stdout.text,
+            format!("{NARRATION}\n\n{FINAL_REPORT}")
+        );
         assert_eq!(execution.stdout.reply(), FINAL_REPORT);
         let journal = recorded(&execution.log.expect("log files").events);
         let completed: Value = journal
@@ -1468,7 +1476,7 @@ sleep 120"#,
 
         assert_eq!(
             completion.message.content.as_deref(),
-            Some("Looking now. It is empty.")
+            Some("Looking now. \n\nIt is empty.")
         );
     }
 
@@ -1564,7 +1572,7 @@ sleep 120"#,
                 _ => None,
             })
             .collect();
-        assert_eq!(texts, ["Looking now. ", "It is empty."]);
+        assert_eq!(texts, ["Looking now. ", "\n\nIt is empty."]);
         let tool = delivered
             .iter()
             .position(
@@ -1573,7 +1581,7 @@ sleep 120"#,
             .expect("the tool call");
         let second = delivered
             .iter()
-            .position(|event| matches!(event, AgentEvent::Text(text) if text == "It is empty."))
+            .position(|event| matches!(event, AgentEvent::Text(text) if text == "\n\nIt is empty."))
             .expect("the second text");
         assert!(tool < second, "{delivered:?}");
         assert!(
@@ -1591,6 +1599,46 @@ sleep 120"#,
         assert_eq!(folded.session, executed.session);
         assert_eq!(folded.structured, executed.structured);
         assert_eq!(folded.cost, executed.cost);
+    }
+
+    /// The blocks a host's agent writes either side of a call of the host's
+    /// own tools are kept apart, and the call itself is left to the host.
+    #[tokio::test]
+    async fn a_host_agents_answer_keeps_its_blocks_apart() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = r#"
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"I will look first."}]}}'
+echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_01","name":"mcp__host__list_files","input":{"path":"."}}]}}'
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Found it."}]}}'
+echo '{"type":"result","subtype":"success","is_error":false}'
+"#;
+        let provider = CliProvider::agent(AgentKind::Claude, settings(&directory, script));
+        let messages = [Message::user("Find it.")];
+
+        let (delivered, failure, _) = collected(streamed(&provider, &messages).await).await;
+
+        assert!(failure.is_none(), "{failure:?}");
+        let spoken: String = delivered
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::Text(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(spoken, "I will look first.\n\nFound it.");
+        let listed: Vec<String> = delivered
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::Tool(call) => activity(call, &["mcp__host__"]),
+                _ => None,
+            })
+            .collect();
+        assert!(listed.is_empty(), "{listed:?}");
+
+        let folded: StdoutParseResult = delivered.into_iter().collect();
+        assert_eq!(folded.text, spoken);
+        let completion = run(&provider, &messages).await.expect("an answer");
+        assert_eq!(completion.message.content.as_deref(), Some(spoken.as_str()));
     }
 
     #[tokio::test]
@@ -3905,7 +3953,7 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
         );
         assert_eq!(
             std::fs::read_to_string(&files.stdout).expect("the prose log"),
-            "Looking now. It is empty."
+            "Looking now. \n\nIt is empty."
         );
         assert_eq!(
             std::fs::read_to_string(&files.stderr).expect("the stderr log"),
@@ -4538,7 +4586,8 @@ echo '{"type":"turn.failed","error":{"message":"You have hit your usage limit. T
     }
 
     /// A turn usage credits carry past the plan's window is logged once, with
-    /// the window, and never with its credential.
+    /// the window and the turn's working directory, and never with its
+    /// credential.
     #[test]
     fn a_turn_on_usage_credits_is_logged_once_with_its_window() {
         const TOKEN: &str = concat!(
@@ -4557,6 +4606,7 @@ echo '{"type":"turn.failed","error":{"message":"You have hit your usage limit. T
         let provider = CliProvider::agent(
             AgentKind::Claude,
             settings(&directory, &replaying(&directory, &stream))
+                .with_working_directory(directory.path())
                 .with_credential(Credential::key("ANTHROPIC_API_KEY", TOKEN)),
         );
 
@@ -4578,6 +4628,18 @@ echo '{"type":"turn.failed","error":{"message":"You have hit your usage limit. T
         assert_eq!(credited.len(), 1, "{logged}");
         assert!(credited[0].contains("INFO"), "{logged}");
         assert!(credited[0].contains("five_hour"), "{logged}");
+        assert!(
+            credited[0].contains(&format!("directory={}", directory.path().display())),
+            "{logged}"
+        );
+        assert_eq!(
+            logged
+                .lines()
+                .filter(|line| line.contains("INFO") && line.contains("abnegate_agent_cli::reader"))
+                .count(),
+            1,
+            "{logged}"
+        );
         assert!(!logged.contains(TOKEN), "{logged}");
     }
 
