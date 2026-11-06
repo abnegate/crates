@@ -185,7 +185,9 @@ exits having saved a regular-file `auth.json` there, and gives nothing up
 when a wait on it is abandoned, such as by a timeout. `cancel`, dropping the
 `Device`, and the code's expiry each stop codex, terminating its whole group
 and killing what is left of it after a grace period, and remove the staging
-directory. `Staging::promote` moves the login into a home in one rename,
+directory, unless codex had already saved a login there: a stopped codex that
+exits cleanly leaving an `auth.json` that names an account resolves `outcome`
+to its `Staging` all the same. `Staging::promote` moves the login into a home in one rename,
 `codex::signed_in` says whether a home holds one, and `Account` reads whose
 ChatGPT login it is, its `key` telling one login from another.
 `DeviceLogin::logout` runs `codex logout` against a home, and `Limits` bounds

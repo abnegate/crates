@@ -491,13 +491,9 @@ async fn limits_past_what_the_clock_can_count_are_waited_out() {
     assert!(!staging(&root).exists(), "the staging directory was left");
 }
 
-/// Run on a current-thread runtime, the task watching the sign-in is first
-/// polled only once the test yields, after codex has exited with its login
-/// saved and its code has expired: the login is kept.
-#[tokio::test]
-async fn a_login_saved_as_its_code_expires_is_kept() {
-    let directory = TempDir::new().expect("a temporary directory");
-    let root = root(&directory);
+/// A codex that saves `auth` as its login, prints a prompt whose code has
+/// already expired, and waits to be stopped, exiting cleanly when it is.
+fn saving_as_it_expires(directory: &TempDir, auth: &str) -> (PathBuf, PathBuf) {
     let expiring = String::from_utf8_lossy(SUCCESS_PROMPT)
         .replace("expires in 15 minutes", "expires in 0 minutes");
     assert_ne!(
@@ -505,29 +501,60 @@ async fn a_login_saved_as_its_code_expires_is_kept() {
         SUCCESS_PROMPT,
         "the fixture's expiry moved"
     );
-    let prompt = capture(&directory, "prompt", expiring.as_bytes());
-    let written = capture(&directory, "auth.json", WRITTEN.as_bytes());
+    let prompt = capture(directory, "prompt", expiring.as_bytes());
+    let written = capture(directory, "auth.json", auth.as_bytes());
     let leader = directory.path().join("leader");
     let codex = fake(
-        &directory,
+        directory,
         &arguments(),
         &format!(
-            "echo $$ > '{}'\ncp '{written}' \"$CODEX_HOME/auth.json\"\ncat '{prompt}'\nexit 0",
+            "trap 'exit 0' TERM\necho $$ > '{}'\ncp '{written}' \"$CODEX_HOME/auth.json\"\ncat '{prompt}'\nsleep 60 &\nwait",
             leader.display()
         ),
     );
-    let limits = Limits::default().with_grace(Duration::ZERO);
+    (codex, leader)
+}
+
+#[tokio::test]
+async fn a_login_saved_as_its_code_expires_is_kept() {
+    let directory = TempDir::new().expect("a temporary directory");
+    let root = root(&directory);
+    let (codex, leader) = saving_as_it_expires(&directory, WRITTEN);
 
     let mut device = login(&codex, environment())
-        .with_limits(limits)
+        .with_limits(Limits::default().with_grace(Duration::from_millis(200)))
         .start(&root)
         .await
         .expect("a prompt");
-    assert!(ended(process(&leader)), "codex did not exit");
-    std::thread::sleep(Duration::from_millis(20));
-    let result = finish(&mut device).await;
+    let staged = finish(&mut device).await.expect("the saved login");
 
-    assert!(result.is_ok(), "{result:?}");
+    assert!(ended(process(&leader)), "codex was left running");
+    assert_eq!(
+        staged.account().map(|account| account.id),
+        Some(ACCOUNT.to_string())
+    );
+}
+
+#[tokio::test]
+async fn a_half_written_login_as_its_code_expires_is_discarded() {
+    let directory = TempDir::new().expect("a temporary directory");
+    let root = root(&directory);
+    let (codex, leader) = saving_as_it_expires(&directory, &WRITTEN[..WRITTEN.len() / 2]);
+
+    let mut device = login(&codex, environment())
+        .with_limits(Limits::default().with_grace(Duration::from_millis(200)))
+        .start(&root)
+        .await
+        .expect("a prompt");
+    let result = finish(&mut device).await;
+    let prompt = device.prompt().clone();
+
+    assert!(
+        matches!(&result, Err(LoginError::Expired { expires_at, .. }) if *expires_at == prompt.expires_at),
+        "{result:?}"
+    );
+    assert!(ended(process(&leader)), "codex was left running");
+    assert!(!staging(&root).exists(), "the staging directory was left");
 }
 
 #[tokio::test]

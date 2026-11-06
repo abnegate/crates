@@ -21,7 +21,6 @@ use crate::login::codex::LOGIN;
 use crate::login::codex::Prompt;
 use crate::login::codex::Staging;
 use crate::login::codex::prompt::NO_LINK;
-use crate::login::codex::signed_in;
 use crate::login::output;
 use crate::login::output::READ;
 use crate::login::output::collect;
@@ -265,8 +264,8 @@ async fn ended(
 
 /// Sees a pending sign-in through: the caller cancels, codex exits, or the
 /// code expires, in that order when more than one has happened. A codex the
-/// expiry stops having already exited cleanly with a login saved is a
-/// sign-in like any other.
+/// expiry stops that exits cleanly, leaving a login that names an account,
+/// is a sign-in like any other.
 async fn watch(
     mut process: Process,
     stdout: ChildStdout,
@@ -299,7 +298,7 @@ async fn watch(
         () = sleep_until(expiry) => {
             let status = process.stop().await;
             stderr.abort();
-            if status.is_some_and(|status| status.success()) && signed_in(staging.path()) {
+            if status.is_some_and(|status| status.success()) && staging.account().is_some() {
                 Ok(staging)
             } else {
                 Err(LoginError::Expired { expires_at: prompt.expires_at })
