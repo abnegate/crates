@@ -133,7 +133,7 @@ impl PullRequestService {
     ) -> PullRequestResult<()> {
         let number = reference.number().to_string();
         let url = self.repository_endpoint(reference.repository(), &["issues", &number])?;
-        answered(
+        self.answered(
             self.request(Method::PATCH, url, token, ACCEPT)
                 .json(&GitHubIssueRequest::from(update)),
         )

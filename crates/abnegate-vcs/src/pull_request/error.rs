@@ -1,6 +1,7 @@
 use crate::branch_name::BranchName;
 use crate::parse_error::ParseError;
 use crate::pull_request::JobLogError;
+use crate::pull_request::RateLimit;
 use thiserror::Error;
 
 /// What went wrong asking GitHub about, or acting on, a pull request or a
@@ -24,6 +25,20 @@ pub enum PullRequestError {
     /// GitHub's rate limit was reached; the request can be retried later.
     #[error("GitHub's rate limit was reached")]
     RateLimited,
+
+    /// GitHub's rate limit for the token is spent until it resets, so waiting
+    /// before then will not help. Only a service built with
+    /// [`PullRequestService::with_retry_after`](crate::pull_request::PullRequestService::with_retry_after)
+    /// reports it, for a 403 or 429 whose `x-ratelimit-remaining` is 0. A
+    /// GraphQL answer of 200 whose errors name `RATE_LIMITED` is
+    /// [`PullRequestError::RateLimited`], never this.
+    #[error("GitHub's rate limit is exhausted until it resets")]
+    #[non_exhaustive]
+    QuotaExhausted {
+        /// What GitHub said of the limit, including when it resets, boxed so
+        /// that every other error stays small.
+        rate_limit: Box<RateLimit>,
+    },
 
     /// What was asked for does not exist, or the token cannot see it.
     #[error("Not found, or not visible to this token")]
@@ -102,6 +117,16 @@ pub enum PullRequestError {
     /// be.
     #[error(transparent)]
     Parse(#[from] ParseError),
+}
+
+impl PullRequestError {
+    /// GitHub's rate limit for the token is spent until it resets, as
+    /// `rate_limit` says.
+    pub fn quota_exhausted(rate_limit: RateLimit) -> Self {
+        Self::QuotaExhausted {
+            rate_limit: Box::new(rate_limit),
+        }
+    }
 }
 
 /// A pull request operation, or what went wrong with it.

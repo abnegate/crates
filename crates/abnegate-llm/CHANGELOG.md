@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.10](https://github.com/abnegate/crates/compare/abnegate-llm/v0.1.9...abnegate-llm/v0.1.10) - 2026-11-06
+
+### Added
+
+- *(llm)* Ollama and OpenAI-compatible embeddings, a generic downloader, and HuggingFace adapter browsing ([#50](https://github.com/abnegate/crates/pull/50))
+
 ## [0.1.9](https://github.com/abnegate/crates/compare/abnegate-llm/v0.1.8...abnegate-llm/v0.1.9) - 2026-11-05
 
 ### Added

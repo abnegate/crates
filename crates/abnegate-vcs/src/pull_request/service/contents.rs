@@ -35,7 +35,9 @@ impl PullRequestService {
         let repository = reference.repository();
         let url = self.repository_endpoint(repository, &["pulls", &number])?;
 
-        let response = answered(self.request(Method::GET, url, token, DIFF)).await?;
+        let response = self
+            .answered(self.request(Method::GET, url, token, DIFF))
+            .await?;
         excerpt(response, limit).await
     }
 
@@ -61,7 +63,9 @@ impl PullRequestService {
         let mut url = self.repository_endpoint(repository, &segments)?;
         url.query_pairs_mut().append_pair("ref", revision.as_str());
 
-        let response = answered(self.request(Method::GET, url, token, RAW)).await?;
+        let response = self
+            .answered(self.request(Method::GET, url, token, RAW))
+            .await?;
         if listing(response.headers()) {
             return Err(PullRequestError::GitHubApi(NOT_A_FILE.to_string()));
         }

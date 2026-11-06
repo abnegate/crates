@@ -4,7 +4,7 @@ description = "Git operations over the git command line: branches, worktrees, me
 keywords = ["git", "worktree", "merge", "pull-request", "github"]
 categories = ["development-tools"]
 readme = "README.md"
-version = "0.1.8"
+version = "0.1.9"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -19,12 +19,13 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
-github = ["dep:chrono", "dep:hex", "dep:hmac", "dep:reqwest", "dep:sha2"]
+github = ["dep:abnegate-http", "dep:chrono", "dep:hex", "dep:hmac", "dep:reqwest", "dep:sha2"]
 github-app = ["github", "dep:jsonwebtoken"]
 testing = []
 
 [dependencies]
-abnegate-secret = { path = "../abnegate-secret", version = "0.1.6" }
+abnegate-http = { path = "../abnegate-http", version = "0.1.5", optional = true }
+abnegate-secret = { path = "../abnegate-secret", version = "0.1.7" }
 base64 = { workspace = true }
 chrono = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }

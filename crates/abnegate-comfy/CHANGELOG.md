@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3](https://github.com/abnegate/crates/compare/abnegate-comfy/v0.2.2...abnegate-comfy/v0.2.3) - 2026-11-06
+
+### Other
+
+- updated the following local packages: abnegate-secret, abnegate-llm, abnegate-exec
+
 ## [0.2.2](https://github.com/abnegate/crates/compare/abnegate-comfy/v0.2.1...abnegate-comfy/v0.2.2) - 2026-11-05
 
 ### Other

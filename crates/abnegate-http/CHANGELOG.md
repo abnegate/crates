@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5](https://github.com/abnegate/crates/compare/abnegate-http/v0.1.4...abnegate-http/v0.1.5) - 2026-11-06
+
+### Added
+
+- *(http)* parse retry-after and publish contains_standalone_status ([#48](https://github.com/abnegate/crates/pull/48))
+
 ## [0.1.4](https://github.com/abnegate/crates/compare/abnegate-http/v0.1.3...abnegate-http/v0.1.4) - 2026-11-03
 
 ### Added
