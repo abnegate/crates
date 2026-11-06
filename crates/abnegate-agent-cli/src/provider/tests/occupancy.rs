@@ -12,6 +12,8 @@ use tempfile::TempDir;
 use super::collected;
 use super::request;
 use super::settings;
+use super::survivors;
+use super::written_pid;
 use crate::event::AgentEvent;
 use crate::kind::AgentKind;
 use crate::occupancy::Occupancy;
@@ -290,11 +292,19 @@ exit 1
 async fn a_dropped_codex_stream_never_reads_its_rollout() {
     let directory = TempDir::new().expect("a temporary directory");
     let home = home(Some(ROLLOUT), None);
-    let script = r#"echo '{"type":"thread.started","thread_id":"019b2c41-0000-7000-8000-000000000001"}'
-sleep 1
-echo '{"type":"turn.completed"}'
-"#;
-    let provider = CliProvider::agent(AgentKind::Codex, codex(&directory, home.path(), script));
+    let leader = directory.path().join("leader");
+    let exited = directory.path().join("exited");
+    let script = format!(
+        r#"echo $$ > '{}'
+echo '{{"type":"thread.started","thread_id":"019b2c41-0000-7000-8000-000000000001"}}'
+sleep 5
+touch '{}'
+echo '{{"type":"turn.completed"}}'
+"#,
+        leader.display(),
+        exited.display()
+    );
+    let provider = CliProvider::agent(AgentKind::Codex, codex(&directory, home.path(), &script));
 
     let mut stream = provider
         .stream(request(&[Message::user("hi")]))
@@ -307,9 +317,18 @@ echo '{"type":"turn.completed"}'
         matches!(first, Some(Ok(AgentEvent::Session(_)))),
         "{first:?}"
     );
+    let group = written_pid(&leader).await;
     drop(stream);
-    tokio::time::sleep(Duration::from_secs(3)).await;
 
+    let survivors = survivors(group).await;
+    assert!(
+        survivors.is_empty(),
+        "dropping the stream left {survivors:?} running"
+    );
+    assert!(
+        !exited.exists(),
+        "the agent exited by itself, so the run was never stopped"
+    );
     assert!(!read::under(home.path()), "a dropped run read its rollout");
 }
 
