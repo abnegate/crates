@@ -36,7 +36,10 @@
 //! reads a leading slash command as one; nothing in such a prompt is
 //! escaped. A
 //! run can start the agent's own [`Session`] under an id of the caller's
-//! choosing or resume one, and confine Codex to a [`CodexSandbox`]. A
+//! choosing or resume one, and confine Codex to a [`CodexSandbox`]; a
+//! session's file can be [found](Session::locate) in one home and
+//! [carried](Session::carry) into another, so a run signed in there resumes
+//! it. A
 //! Claude or Codex run can attach [`mcp`] servers, and a Claude run can
 //! restrict its tools, or be confined to reading its working directory with
 //! [`CliSettings::read_only`], and
@@ -252,7 +255,9 @@ pub use crate::parser::claude::RateLimitReport;
 pub use crate::parser::claude::StreamEvent;
 pub use crate::provider::CliProvider;
 pub use crate::question::BlockingQuestion;
+pub use crate::session::Carried;
 pub use crate::session::Session;
+pub use crate::session::SessionError;
 pub use crate::settings::CLOUD_CREDENTIALS;
 pub use crate::settings::CliSettings;
 pub use crate::settings::DEFAULT_JOURNAL_LIMIT;
