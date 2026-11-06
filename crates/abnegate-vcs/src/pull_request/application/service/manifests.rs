@@ -119,9 +119,10 @@ mod tests {
         server
     }
 
-    /// Asserts `rendered` repeats no credential, the code, or where it was
-    /// sent.
-    fn assert_echoes_nothing(rendered: &str, server: &MockServer) {
+    /// Asserts neither rendering of `error` repeats a credential, the code,
+    /// or where it was sent.
+    fn assert_echoes_nothing(error: &ApplicationError, server: &MockServer) {
+        let rendered = format!("{error} {error:?}");
         for leaked in [
             CODE,
             CLIENT_SECRET,
@@ -203,6 +204,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_code_holding_a_query_or_fragment_stays_one_path_segment() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/app-manifests/x%3Fy%23z/conversions"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(conversion()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        stand_in(&server).convert_manifest("x?y#z").await.unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests[0].url.query(), None);
+        assert_eq!(requests[0].url.fragment(), None);
+    }
+
+    #[tokio::test]
     async fn an_empty_or_dot_segment_code_is_refused_before_it_is_sent() {
         let server = MockServer::start().await;
         Mock::given(any())
@@ -237,7 +255,7 @@ mod tests {
             .expect_err("a 404 is a failure");
 
         assert!(matches!(error, ApplicationError::Status(404)), "{error:?}");
-        assert_echoes_nothing(&error.to_string(), &server);
+        assert_echoes_nothing(&error, &server);
     }
 
     #[tokio::test]
@@ -256,7 +274,7 @@ mod tests {
             .expect_err("a 422 is a failure");
 
         assert!(matches!(error, ApplicationError::Status(422)), "{error:?}");
-        assert_echoes_nothing(&error.to_string(), &server);
+        assert_echoes_nothing(&error, &server);
     }
 
     #[tokio::test]
@@ -287,7 +305,7 @@ mod tests {
                 matches!(error, ApplicationError::Status(refused) if refused == status),
                 "{status}: {error:?}"
             );
-            assert_echoes_nothing(&error.to_string(), &server);
+            assert_echoes_nothing(&error, &server);
             target.verify().await;
         }
     }
@@ -309,7 +327,7 @@ mod tests {
             .expect_err("an answer past the limit is never parsed in part");
 
         assert!(matches!(error, ApplicationError::Response), "{error:?}");
-        assert_echoes_nothing(&error.to_string(), &server);
+        assert_echoes_nothing(&error, &server);
     }
 
     #[tokio::test]
@@ -328,7 +346,7 @@ mod tests {
             .expect_err("an App without its private key cannot sign a JWT");
 
         assert!(matches!(error, ApplicationError::Response), "{error:?}");
-        assert_echoes_nothing(&error.to_string(), &server);
+        assert_echoes_nothing(&error, &server);
     }
 
     #[tokio::test]
@@ -356,7 +374,7 @@ mod tests {
             .await
             .expect_err("a closed port is a failure");
 
-        let rendered = error.to_string();
+        let rendered = format!("{error} {error:?}");
         assert!(matches!(error, ApplicationError::Transport(_)), "{error:?}");
         assert!(
             !rendered.contains("127.0.0.1")

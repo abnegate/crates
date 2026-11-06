@@ -150,7 +150,7 @@ mod tests {
     }
 
     /// `count` installations, numbered from 1.
-    fn rows(count: u64) -> Value {
+    fn listed(count: u64) -> Value {
         Value::Array((1..=count).map(row).collect())
     }
 
@@ -169,8 +169,8 @@ mod tests {
         NonZeroU32::new(number).unwrap()
     }
 
-    fn per_page(rows: u8) -> NonZeroU8 {
-        NonZeroU8::new(rows).unwrap()
+    fn rows(count: u8) -> NonZeroU8 {
+        NonZeroU8::new(count).unwrap()
     }
 
     /// A service asking a stand-in that answers every `GET` with `body`.
@@ -281,7 +281,7 @@ mod tests {
                 .await
                 .expect_err("a 401 is a failure"),
             service
-                .list_installations(&jwt(), page(1), per_page(30))
+                .list_installations(&jwt(), page(1), rows(30))
                 .await
                 .expect_err("a 401 is a failure"),
         ];
@@ -305,32 +305,32 @@ mod tests {
             .and(header("Authorization", "Bearer header.payload.signature"))
             .and(header(API_VERSION_HEADER, API_VERSION))
             .and(header("Accept", ACCEPT))
-            .respond_with(ResponseTemplate::new(200).set_body_json(rows(2)))
+            .respond_with(ResponseTemplate::new(200).set_body_json(listed(2)))
             .expect(1)
             .mount(&server)
             .await;
 
-        let listed = stand_in(&server)
-            .list_installations(&jwt(), page(2), per_page(2))
+        let installations = stand_in(&server)
+            .list_installations(&jwt(), page(2), rows(2))
             .await
             .unwrap();
 
-        assert_eq!(listed.items, vec![read(1), read(2)]);
-        assert_eq!(listed.next, Some(page(3)));
+        assert_eq!(installations.items, vec![read(1), read(2)]);
+        assert_eq!(installations.next, Some(page(3)));
     }
 
     #[tokio::test]
     async fn a_short_page_of_installations_is_the_last() {
         let server = MockServer::start().await;
 
-        let listed = answering(&server, rows(1))
+        let installations = answering(&server, listed(1))
             .await
-            .list_installations(&jwt(), page(2), per_page(2))
+            .list_installations(&jwt(), page(2), rows(2))
             .await
             .unwrap();
 
-        assert_eq!(listed.items, vec![read(1)]);
-        assert_eq!(listed.next, None);
+        assert_eq!(installations.items, vec![read(1)]);
+        assert_eq!(installations.next, None);
     }
 
     #[tokio::test]
@@ -340,18 +340,18 @@ mod tests {
             .and(path(INSTALLATIONS_PATH))
             .and(query_param("per_page", "100"))
             .and(query_param("page", "1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(rows(0)))
+            .respond_with(ResponseTemplate::new(200).set_body_json(listed(0)))
             .expect(1)
             .mount(&server)
             .await;
 
-        let listed = stand_in(&server)
-            .list_installations(&jwt(), page(1), per_page(255))
+        let installations = stand_in(&server)
+            .list_installations(&jwt(), page(1), rows(255))
             .await
             .unwrap();
 
-        assert!(listed.items.is_empty());
-        assert_eq!(listed.next, None);
+        assert!(installations.items.is_empty());
+        assert_eq!(installations.next, None);
     }
 
     #[tokio::test]
@@ -365,7 +365,7 @@ mod tests {
             let server = MockServer::start().await;
             let error = answering(&server, json!([row(1), unreadable, row(3)]))
                 .await
-                .list_installations(&jwt(), page(1), per_page(3))
+                .list_installations(&jwt(), page(1), rows(3))
                 .await
                 .expect_err("a page is never returned without a row it holds");
 
@@ -379,7 +379,7 @@ mod tests {
         let padding = " ".repeat(MAXIMUM_ANSWER_BYTES);
         for (answered, body) in [
             (INSTALLATION_PATH, row(67890)),
-            (INSTALLATIONS_PATH, rows(1)),
+            (INSTALLATIONS_PATH, listed(1)),
         ] {
             Mock::given(method("GET"))
                 .and(path(answered))
@@ -393,53 +393,51 @@ mod tests {
         let service = stand_in(&server);
 
         let fetched = service.fetch_installation(&jwt(), installation()).await;
-        let listed = service
-            .list_installations(&jwt(), page(1), per_page(30))
-            .await;
+        let installations = service.list_installations(&jwt(), page(1), rows(30)).await;
 
         assert!(
             matches!(fetched, Err(ApplicationError::Response)),
             "{fetched:?}"
         );
         assert!(
-            matches!(listed, Err(ApplicationError::Response)),
-            "{listed:?}"
+            matches!(installations, Err(ApplicationError::Response)),
+            "{installations:?}"
         );
     }
 
     #[tokio::test]
     async fn a_redirected_read_is_refused_rather_than_followed() {
-        let target = MockServer::start().await;
-        Mock::given(any())
-            .respond_with(ResponseTemplate::new(200).set_body_json(rows(1)))
-            .expect(0)
-            .mount(&target)
-            .await;
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .respond_with(
-                ResponseTemplate::new(302)
-                    .insert_header("Location", format!("{}{INSTALLATIONS_PATH}", target.uri())),
-            )
-            .expect(2)
-            .mount(&server)
-            .await;
-        let service = stand_in(&server);
+        for status in [302, 307] {
+            let target = MockServer::start().await;
+            Mock::given(any())
+                .respond_with(ResponseTemplate::new(200).set_body_json(listed(1)))
+                .expect(0)
+                .mount(&target)
+                .await;
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(
+                    ResponseTemplate::new(status)
+                        .insert_header("Location", format!("{}{INSTALLATIONS_PATH}", target.uri())),
+                )
+                .expect(2)
+                .mount(&server)
+                .await;
+            let service = stand_in(&server);
 
-        let fetched = service.fetch_installation(&jwt(), installation()).await;
-        let listed = service
-            .list_installations(&jwt(), page(1), per_page(30))
-            .await;
+            let fetched = service.fetch_installation(&jwt(), installation()).await;
+            let installations = service.list_installations(&jwt(), page(1), rows(30)).await;
 
-        assert!(
-            matches!(fetched, Err(ApplicationError::Status(302))),
-            "{fetched:?}"
-        );
-        assert!(
-            matches!(listed, Err(ApplicationError::Status(302))),
-            "{listed:?}"
-        );
-        target.verify().await;
+            assert!(
+                matches!(fetched, Err(ApplicationError::Status(refused)) if refused == status),
+                "{status}: {fetched:?}"
+            );
+            assert!(
+                matches!(installations, Err(ApplicationError::Status(refused)) if refused == status),
+                "{status}: {installations:?}"
+            );
+            target.verify().await;
+        }
     }
 
     #[tokio::test]
@@ -453,20 +451,18 @@ mod tests {
             tokio::time::timeout(GUARD, service.fetch_installation(&jwt(), installation()))
                 .await
                 .expect("the body read is bounded by the service's timeout");
-        let listed = tokio::time::timeout(
-            GUARD,
-            service.list_installations(&jwt(), page(1), per_page(30)),
-        )
-        .await
-        .expect("the body read is bounded by the service's timeout");
+        let installations =
+            tokio::time::timeout(GUARD, service.list_installations(&jwt(), page(1), rows(30)))
+                .await
+                .expect("the body read is bounded by the service's timeout");
 
         assert!(
             matches!(fetched, Err(ApplicationError::Transport(_))),
             "{fetched:?}"
         );
         assert!(
-            matches!(listed, Err(ApplicationError::Transport(_))),
-            "{listed:?}"
+            matches!(installations, Err(ApplicationError::Transport(_))),
+            "{installations:?}"
         );
     }
 
@@ -522,7 +518,7 @@ mod tests {
             .await
             .expect_err("a 401 is a failure");
 
-        let rendered = error.to_string();
+        let rendered = format!("{error} {error:?}");
         assert!(matches!(error, ApplicationError::Status(401)), "{error:?}");
         assert!(!rendered.contains("header.payload.signature"));
         assert!(!rendered.contains("/app/installations"));
@@ -569,7 +565,7 @@ mod tests {
             .await
             .expect_err("a closed port is a failure");
 
-        let rendered = error.to_string();
+        let rendered = format!("{error} {error:?}");
         assert!(matches!(error, ApplicationError::Transport(_)), "{error:?}");
         assert!(
             !rendered.contains("127.0.0.1") && !rendered.contains("/app/installations"),

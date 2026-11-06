@@ -475,6 +475,7 @@ mod tests {
         }
     }
 
+    /// Where acme/project's branches are listed.
     const BRANCHES: &str = "/repos/acme/project/branches";
 
     /// What GitHub sends on every branch, without which a row is unreadable.

@@ -114,7 +114,7 @@ mod tests {
             "private": repository.private,
             "archived": repository.archived,
             "html_url": repository.html_url,
-            "default_branch": repository.default_branch.as_ref(),
+            "default_branch": repository.default_branch.as_str(),
             "visibility": if repository.private { "private" } else { "public" },
             "permissions": { "admin": false, "push": true, "pull": true }
         })
@@ -266,7 +266,7 @@ mod tests {
             .await
             .expect_err("a 401 is a failure");
 
-        let rendered = error.to_string();
+        let rendered = format!("{error} {error:?}");
         assert!(matches!(error, ApplicationError::Status(401)), "{error:?}");
         assert!(!rendered.contains("ghs_installationtokenvalue"));
         assert!(!rendered.contains(REPOSITORIES_PATH));
@@ -291,7 +291,7 @@ mod tests {
             .await
             .expect_err("an answer past the limit is never parsed in part");
 
-        let rendered = error.to_string();
+        let rendered = format!("{error} {error:?}");
         assert!(matches!(error, ApplicationError::Response), "{error:?}");
         assert!(!rendered.contains("ghs_installationtokenvalue"));
         assert!(!rendered.contains("project-1"));
@@ -320,7 +320,7 @@ mod tests {
                 .await
                 .expect_err("a redirect must not carry the token onward");
 
-            let rendered = error.to_string();
+            let rendered = format!("{error} {error:?}");
             assert!(
                 matches!(error, ApplicationError::Status(refused) if refused == status),
                 "{status}: {error:?}"
@@ -340,7 +340,7 @@ mod tests {
         .await
         .expect_err("a closed port is a failure");
 
-        let rendered = error.to_string();
+        let rendered = format!("{error} {error:?}");
         assert!(matches!(error, ApplicationError::Transport(_)), "{error:?}");
         assert!(
             !rendered.contains("127.0.0.1") && !rendered.contains(REPOSITORIES_PATH),

@@ -199,7 +199,7 @@ mod tests {
     }
 
     #[test]
-    fn github_s_own_api_is_asked_by_default() {
+    fn githubs_own_api_is_asked_by_default() {
         assert_eq!(
             installation_endpoint(&ApplicationService::new().unwrap()),
             "https://api.github.com/app/installations/67890"
