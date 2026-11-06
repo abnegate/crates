@@ -26,8 +26,10 @@ use super::confine;
 use super::read_text;
 use super::resolve;
 use super::walk::OUT_OF_TIME;
+use super::walk::UNREADABLE;
 use super::walk::Visit;
 use super::walk::Walk;
+use super::walk::walking;
 use crate::tool::TIMEOUT_SLACK;
 use crate::tool::Tool;
 use crate::tool::ToolContext;
@@ -39,18 +41,14 @@ pub(super) const MAXIMUM_SEARCH_RESULTS: usize = 100;
 
 const RIPGREP: &str = "rg";
 
+const OPERATION: &str = "search";
+
 /// What ripgrep exits with when it searched everything and matched nothing.
 const RIPGREP_NO_MATCHES: i32 = 1;
 
 /// Widest matching line ripgrep prints whole; a wider one is cut to a
 /// preview, so one minified file cannot fill a result.
 const RIPGREP_MAXIMUM_COLUMNS: &str = "400";
-
-/// Why a search reports only part of the tree when ripgrep fails after
-/// printing matches, a file or directory it could not read making it exit 2
-/// once it has searched the rest, or when the walk could not read a
-/// directory or a code file.
-const UNREADABLE: &str = "some files could not be read";
 
 /// Build output and dependency trees a search walks past.
 const SKIPPED_DIRECTORIES: &[&str] = &[
@@ -158,29 +156,52 @@ impl Tool for SearchCodeTool {
             return Ok(result);
         }
 
-        let context = context.clone();
-        tokio::task::spawn_blocking(move || {
-            let (results, stopped) = search_tree(
-                &search_path,
-                &parameters.pattern,
-                parameters.case_sensitive,
-                maximum_results,
-                &context,
-            );
-            format_search_results(results, maximum_results, stopped)
-        })
+        search_walking(
+            search_path,
+            parameters.pattern,
+            parameters.case_sensitive,
+            maximum_results,
+            context,
+        )
         .await
-        .map_err(|error| ToolError::Execution(format!("The search did not finish: {error}")))
     }
 }
 
+/// A search of the tree at `search_path` by walking it, off the async
+/// workers, given up once its caller stops waiting.
+pub(super) async fn search_walking(
+    search_path: PathBuf,
+    pattern: String,
+    case_sensitive: bool,
+    maximum_results: usize,
+    context: &ToolContext,
+) -> Result<ToolResult, ToolError> {
+    walking(OPERATION, context, move |walk, context| {
+        let (results, incomplete) = search_walk(
+            walk,
+            &search_path,
+            &pattern,
+            case_sensitive,
+            maximum_results,
+            context,
+        );
+        format_search_results(results, maximum_results, incomplete)
+    })
+    .await
+}
+
+/// The answer a search gives; one that stopped early, or could not read part
+/// of the tree, with nothing found claims only that nothing was found so far.
 fn format_search_results(
     results: Vec<String>,
     maximum_results: usize,
-    stopped: Option<&'static str>,
+    incomplete: Option<&'static str>,
 ) -> ToolResult {
     let mut output = if results.is_empty() {
-        "No matches found".to_string()
+        match incomplete {
+            Some(_) => "No matches found so far".to_string(),
+            None => "No matches found".to_string(),
+        }
     } else {
         let truncated = if results.len() >= maximum_results {
             format!("\n\n... (truncated at {maximum_results} results)")
@@ -193,14 +214,15 @@ fn format_search_results(
             results.join("\n"),
         )
     };
-    if let Some(reason) = stopped {
-        output.push_str(&format!("\n[search stopped early: {reason}]"));
+    if let Some(reason) = incomplete {
+        output.push_str(&format!("\n[{OPERATION} stopped early: {reason}]"));
     }
     ToolResult::success(output)
 }
 
-/// Lines under `root` holding `pattern`, as `path:line: text`, and why the
-/// walk stopped short of the whole tree if it did.
+/// Lines under `root` holding `pattern`, as `path:line: text`, and why
+/// `walk` stopped short of the whole tree, or could not read part of it, if
+/// it did.
 ///
 /// Only code files are searched: a file whose extension is not one of
 /// [`CODE_EXTENSIONS`] is never read. Hidden entries, build trees and links
@@ -209,7 +231,8 @@ fn format_search_results(
 /// A directory, or a code file, that could not be read is left out, and the
 /// search says so with [`UNREADABLE`], as a search through `rg` does; so
 /// does a search whose `root` itself could not be read.
-pub(super) fn search_tree(
+pub(super) fn search_walk(
+    walk: &mut Walk,
     root: &Path,
     pattern: &str,
     case_sensitive: bool,
@@ -223,7 +246,6 @@ pub(super) fn search_tree(
     };
     let mut results = Vec::new();
     let mut unreadable = false;
-    let mut walk = Walk::new(context.search_timeout, context);
     let walked = walk.run(root, |entry, file_type| {
         if results.len() >= maximum_results {
             return Visit::Stop;
@@ -395,7 +417,7 @@ async fn ripgrep(
     let mut judged: Option<(PathBuf, bool)> = None;
     let mut name = Vec::new();
     let mut found = Vec::new();
-    let stopped = loop {
+    let incomplete = loop {
         if results.len() >= maximum_results {
             break None;
         }
@@ -432,10 +454,10 @@ async fn ripgrep(
 
     let _ = child.start_kill();
     let _ = child.wait().await;
-    if results.is_empty() && stopped == Some(UNREADABLE) {
+    if results.is_empty() && incomplete == Some(UNREADABLE) {
         return None;
     }
-    Some(format_search_results(results, maximum_results, stopped))
+    Some(format_search_results(results, maximum_results, incomplete))
 }
 
 /// Read ripgrep's next `path\0number:text` record into `name` and `found`,
@@ -508,6 +530,8 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
 
     use tempfile::TempDir;
 
@@ -519,6 +543,7 @@ mod tests {
     use crate::test_support::expired;
     use crate::test_support::timed;
     use crate::tool::EnvironmentPolicy;
+    use crate::tool::file::tests::search_tree;
 
     /// The variable ripgrep reads the path of its configuration file from.
     const CONFIGURATION: &str = "RIPGREP_CONFIG_PATH";
@@ -1046,6 +1071,33 @@ mod tests {
         };
         assert_eq!(files(&results.join("\n")), ["found.rs"]);
         assert_eq!(stopped, Some(UNREADABLE));
+    }
+
+    #[test]
+    fn an_abandoned_search_walk_reads_no_further() {
+        let tree = TempDir::new().expect("a tree to search");
+        fs::write(tree.path().join("found.rs"), MARKER).expect("a file to search");
+        let context = patient(tree.path());
+        let searched = |abandoned: bool| {
+            let mut walk = Walk::new(
+                std::time::Instant::now() + context.search_timeout,
+                Arc::new(AtomicBool::new(abandoned)),
+                &context,
+            );
+            search_walk(
+                &mut walk,
+                tree.path(),
+                MARKER,
+                false,
+                MAXIMUM_SEARCH_RESULTS,
+                &context,
+            )
+        };
+
+        let (results, stopped) = searched(false);
+        assert_eq!(files(&results.join("\n")), ["found.rs"]);
+        assert_eq!(stopped, None);
+        assert_eq!(searched(true), (Vec::new(), Some("abandoned")));
     }
 
     #[tokio::test]

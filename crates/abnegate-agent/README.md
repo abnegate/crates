@@ -62,9 +62,11 @@ and search, and any write or command it asks for is refused.
 
 A search or a listing walks for the context's `search_timeout`, 20 seconds
 unless `ToolContext::with_search_timeout` sets another, and then reports what
-it found so far, marked as stopped early. `search_code` shows a match only when
-the file it is in lies beneath the searched directory and stays beneath the
-working directory once its links are resolved.
+it found so far, marked as stopped early. Once its caller gives up on it, a
+walk stops at its next entry rather than reading on to its own limit.
+`search_code` shows a match only when the file it is in lies beneath the
+searched directory and stays beneath the working directory once its links are
+resolved.
 
 A registry without `wait_for`, such as one serving a coding agent whose own
 loop cannot park on it, serves each tool that tells the model to wait in its

@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -22,7 +23,9 @@ use super::read::FILE_PAGE_CHARACTERS;
 use super::read::page_text;
 use super::read::select_lines;
 use super::search::MAXIMUM_SEARCH_RESULTS;
-use super::search::search_tree;
+use super::search::search_walk;
+use super::search::search_walking;
+use super::walk::Walk;
 use super::withheld::Withheld;
 use super::write::WriteFileParameters;
 use crate::test_support::captured_logs;
@@ -61,6 +64,30 @@ fn create_test_context(directory: &Path) -> ToolContext {
         application: crate::Application::default(),
         ..ToolContext::default()
     }
+}
+
+/// [`search_walk`] on a walk of its own, given the context's
+/// `search_timeout`.
+pub(super) fn search_tree(
+    root: &Path,
+    pattern: &str,
+    case_sensitive: bool,
+    maximum_results: usize,
+    context: &ToolContext,
+) -> (Vec<String>, Option<&'static str>) {
+    let mut walk = Walk::new(
+        Instant::now() + context.search_timeout,
+        Arc::default(),
+        context,
+    );
+    search_walk(
+        &mut walk,
+        root,
+        pattern,
+        case_sensitive,
+        maximum_results,
+        context,
+    )
 }
 
 #[test]
@@ -1666,7 +1693,7 @@ fn inode(path: &Path) -> u64 {
 }
 
 fn mode(path: &Path) -> u32 {
-    std::os::unix::fs::PermissionsExt::mode(&fs::metadata(path).unwrap().permissions()) & 0o7777
+    fs::metadata(path).unwrap().permissions().mode() & 0o7777
 }
 
 fn patch(path: &str, old: &str, new: &str) -> serde_json::Value {
@@ -1681,7 +1708,7 @@ async fn apply_patch_renames_a_complete_file_into_place() {
     let directory = tempdir().unwrap();
     let file = directory.path().join("main.rs");
     fs::write(&file, "fn main() { a(); }\n").unwrap();
-    fs::set_permissions(&file, std::os::unix::fs::PermissionsExt::from_mode(0o640)).unwrap();
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o640)).unwrap();
     let before = inode(&file);
     let context = create_test_context(directory.path());
 
@@ -2772,5 +2799,100 @@ async fn the_file_tools_refuse_a_processs_proc_entry() {
     assert!(
         host.expect("a file about the host rather than a process")
             .success
+    );
+}
+
+/// A tool's outer limit discards the walk, and whatever it found, when it
+/// fires, so the walk has to answer first.
+#[test]
+fn a_walk_answers_before_its_tools_outer_limit() {
+    let directory = tempdir().unwrap();
+    let context = create_test_context(directory.path());
+
+    for tool in [&SearchCodeTool as &dyn Tool, &ListFilesTool] {
+        assert!(
+            context.search_timeout < tool.timeout(&context),
+            "{}: {:?} against {:?}",
+            tool.name(),
+            context.search_timeout,
+            tool.timeout(&context)
+        );
+    }
+}
+
+/// A search that ran out of time before finding anything answered that
+/// there were no matches, as if it had read the whole tree.
+#[tokio::test]
+async fn a_search_out_of_time_does_not_claim_there_are_no_matches() {
+    let directory = tempdir().unwrap();
+    fs::write(directory.path().join(LEAF), SECRET).unwrap();
+    let context = create_test_context(directory.path()).with_search_timeout(Duration::ZERO);
+
+    let found = search_walking(
+        context.working_directory.clone(),
+        SECRET.to_string(),
+        true,
+        MAXIMUM_SEARCH_RESULTS,
+        &context,
+    )
+    .await
+    .expect("a search out of time still answers")
+    .output
+    .unwrap();
+
+    assert_eq!(
+        found,
+        "No matches found so far\n[search stopped early: out of time]"
+    );
+}
+
+#[tokio::test]
+async fn a_listing_out_of_time_does_not_claim_there_are_no_files() {
+    let directory = tempdir().unwrap();
+    fs::write(directory.path().join(LEAF), "").unwrap();
+    let context = create_test_context(directory.path()).with_search_timeout(Duration::ZERO);
+
+    let listed = ListFilesTool
+        .execute(serde_json::json!({"path": "."}), &context)
+        .await
+        .expect("a listing out of time still answers")
+        .output
+        .unwrap();
+
+    assert_eq!(
+        listed,
+        "No files found so far\n[listing stopped early: out of time]"
+    );
+}
+
+/// A recursive listing left out a subtree it could not read without a word,
+/// so what it listed passed for the whole tree.
+#[tokio::test]
+async fn a_listing_says_when_part_of_the_tree_could_not_be_read() {
+    let directory = tempdir().unwrap();
+    fs::create_dir(directory.path().join("open")).unwrap();
+    fs::write(directory.path().join("open").join(LEAF), "").unwrap();
+    let closed = directory.path().join("closed");
+    fs::create_dir(&closed).unwrap();
+    fs::write(closed.join(SECRET_FILE), "").unwrap();
+    fs::set_permissions(&closed, fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::read_dir(&closed).is_ok() {
+        fs::set_permissions(&closed, fs::Permissions::from_mode(0o755)).unwrap();
+        eprintln!("skipping: {} stayed readable", closed.display());
+        return;
+    }
+    let context = create_test_context(directory.path());
+
+    let listed = ListFilesTool
+        .execute(
+            serde_json::json!({"path": ".", "recursive": true}),
+            &context,
+        )
+        .await;
+    fs::set_permissions(&closed, fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert_eq!(
+        listed.expect("a listing").output.unwrap(),
+        format!("open/{LEAF}\n[listing stopped early: some files could not be read]")
     );
 }

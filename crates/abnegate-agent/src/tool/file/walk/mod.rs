@@ -1,3 +1,4 @@
+mod abandon;
 mod visit;
 
 use std::collections::HashSet;
@@ -6,9 +7,12 @@ use std::fs::DirEntry;
 use std::fs::FileType;
 use std::path::Path;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::time::Instant;
 
+use abandon::Abandon;
 pub(super) use visit::Visit;
 
 use super::identity::Identity;
@@ -24,6 +28,12 @@ pub(super) const MAXIMUM_WALK_ENTRIES: usize = 100_000;
 
 pub(super) const OUT_OF_TIME: &str = "out of time";
 
+/// Why a walk, or a search, reports only part of the tree when a directory
+/// or a file in it could not be read.
+pub(super) const UNREADABLE: &str = "some files could not be read";
+
+const ABANDONED: &str = "abandoned";
+
 const TOO_MANY_ENTRIES: &str = "too many entries";
 
 const TOO_DEEP: &str = "too deep";
@@ -35,8 +45,10 @@ const TOO_DEEP: &str = "too deep";
 /// hard-linked directory) is entered once, so a tree that loops back on
 /// itself still ends. An entry the context withholds is neither shown nor
 /// entered, whatever name the walk reaches it by. Depth, entry and time
-/// budgets bound whatever is left.
+/// budgets bound whatever is left, and a walk whose caller gives up stops at
+/// its next entry.
 pub(super) struct Walk {
+    abandoned: Arc<AtomicBool>,
     deadline: Instant,
     remaining: usize,
     visited: HashSet<Identity>,
@@ -46,9 +58,15 @@ pub(super) struct Walk {
 }
 
 impl Walk {
-    pub(super) fn new(limit: Duration, context: &ToolContext) -> Self {
+    /// A walk that stops once `deadline` passes or `abandoned` is raised.
+    pub(super) fn new(
+        deadline: Instant,
+        abandoned: Arc<AtomicBool>,
+        context: &ToolContext,
+    ) -> Self {
         Self {
-            deadline: Instant::now() + limit,
+            abandoned,
+            deadline,
             remaining: MAXIMUM_WALK_ENTRIES,
             visited: HashSet::new(),
             withheld: Withheld::of(context),
@@ -119,8 +137,8 @@ impl Walk {
                 }
                 Visit::Descend => {}
             }
-            if Instant::now() >= self.deadline {
-                self.stopped = Some(OUT_OF_TIME);
+            if let Some(reason) = self.overdue() {
+                self.stopped = Some(reason);
                 return Ok(());
             }
         }
@@ -130,6 +148,15 @@ impl Walk {
     fn exhausted(&self) -> Option<&'static str> {
         if self.remaining == 0 {
             return Some(TOO_MANY_ENTRIES);
+        }
+        self.overdue()
+    }
+
+    /// Why the walk may not go on, whatever is left of its entries: its
+    /// caller gave up, or its time ran out.
+    fn overdue(&self) -> Option<&'static str> {
+        if self.abandoned.load(Ordering::Relaxed) {
+            return Some(ABANDONED);
         }
         if Instant::now() >= self.deadline {
             return Some(OUT_OF_TIME);
@@ -168,11 +195,49 @@ impl Walk {
     }
 }
 
+/// Run `work` on a walk given the context's `search_timeout`, and on a copy
+/// of the context, on the blocking pool, where reading a large tree holds a
+/// thread of its own rather than the async worker the caller's other tasks
+/// are waiting on.
+///
+/// A blocking thread cannot be cancelled, so a caller that stops waiting,
+/// dropping this future, abandons the walk instead, and it ends at its next
+/// entry. A walk that never finishes is reported as the `operation`, such as
+/// a listing or a search, that did not.
+pub(super) async fn walking<Value: Send + 'static>(
+    operation: &'static str,
+    context: &ToolContext,
+    work: impl FnOnce(&mut Walk, &ToolContext) -> Value + Send + 'static,
+) -> Result<Value, ToolError> {
+    let abandoned = Arc::new(AtomicBool::new(false));
+    let _abandon = Abandon(Arc::clone(&abandoned));
+    let deadline = Instant::now() + context.search_timeout;
+    let context = context.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut walk = Walk::new(deadline, abandoned, &context);
+        work(&mut walk, &context)
+    })
+    .await
+    .map_err(|error| ToolError::Execution(format!("The {operation} did not finish: {error}")))
+}
+
 #[cfg(test)]
 mod tests {
     use std::os::unix::fs::symlink;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use tokio::sync::oneshot;
 
     use super::*;
+    use crate::test_support::PATIENCE;
+
+    const OPERATION: &str = "walk";
+
+    /// A walk given `limit` from now that nobody abandons.
+    fn walk_for(limit: Duration, context: &ToolContext) -> Walk {
+        Walk::new(Instant::now() + limit, Arc::default(), context)
+    }
 
     fn names(root: &Path) -> (Vec<String>, Option<&'static str>) {
         names_withholding(root, &ToolContext::default())
@@ -182,7 +247,7 @@ mod tests {
         root: &Path,
         context: &ToolContext,
     ) -> (Vec<String>, Option<&'static str>) {
-        let mut walk = Walk::new(context.search_timeout, context);
+        let mut walk = walk_for(context.search_timeout, context);
         let mut seen = Vec::new();
         walk.run(root, |entry, _| {
             seen.push(
@@ -232,11 +297,99 @@ mod tests {
     fn a_walk_out_of_time_says_so() {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("file"), "x").unwrap();
-        let mut walk = Walk::new(Duration::ZERO, &ToolContext::default());
+        let mut walk = walk_for(Duration::ZERO, &ToolContext::default());
 
         walk.run(root.path(), |_, _| Visit::Descend).unwrap();
 
         assert_eq!(walk.stopped(), Some("out of time"));
+    }
+
+    /// A walk on a blocking thread outlived a caller that gave up on it,
+    /// reading the tree until its own time ran out.
+    #[tokio::test]
+    async fn a_walk_stops_once_its_caller_gives_up() {
+        let (sender, receiver) = mpsc::channel();
+        let context = ToolContext::default();
+
+        let walk = walking(OPERATION, &context, move |walk, _| {
+            while walk.exhausted().is_none() {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            sender.send(walk.exhausted()).unwrap();
+        });
+        let _ = tokio::time::timeout(Duration::from_millis(1), walk).await;
+
+        let reason = receiver
+            .recv_timeout(PATIENCE)
+            .expect("the walk must stop once nobody is waiting for it");
+        assert_eq!(reason, Some(ABANDONED));
+    }
+
+    /// A walk awaited on a runtime of one worker hears from a task on that
+    /// same runtime only once it has started, so it can finish only when it
+    /// runs on a thread of its own: a walk run on the worker, even after
+    /// yielding it once, holds the worker the task needs to answer.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_walk_runs_off_the_worker_that_awaits_it() {
+        let (started, on_start) = oneshot::channel();
+        let (answer, answered) = mpsc::channel();
+        let answerer = tokio::spawn(async move {
+            if on_start.await.is_ok() {
+                let _ = answer.send(());
+            }
+        });
+
+        let heard = walking(OPERATION, &ToolContext::default(), move |_, _| {
+            let _ = started.send(());
+            answered.recv_timeout(PATIENCE).is_ok()
+        })
+        .await
+        .expect("the walk finishes");
+
+        answerer.await.expect("the answerer runs");
+        assert!(heard, "the walk held the worker its answer needed");
+    }
+
+    /// Every walk that never finished was reported as "the file operation",
+    /// where a listing and a search each used to name themselves.
+    #[tokio::test]
+    async fn a_walk_that_never_finishes_names_its_operation() {
+        let failed = walking("listing", &ToolContext::default(), |_, _| {
+            panic!("the walk breaks down")
+        })
+        .await;
+
+        let Err(ToolError::Execution(message)) = failed else {
+            panic!("a walk that broke down answered {failed:?}");
+        };
+        assert!(
+            message.starts_with("The listing did not finish: "),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn an_abandoned_walk_reads_no_further() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("file"), "x").unwrap();
+        let context = ToolContext::default();
+        let walked = |abandoned: bool| {
+            let mut walk = Walk::new(
+                Instant::now() + context.search_timeout,
+                Arc::new(AtomicBool::new(abandoned)),
+                &context,
+            );
+            let mut seen = 0;
+            walk.run(root.path(), |_, _| {
+                seen += 1;
+                Visit::Descend
+            })
+            .unwrap();
+            (seen, walk.stopped())
+        };
+
+        assert_eq!(walked(false), (1, None));
+        assert_eq!(walked(true), (0, Some(ABANDONED)));
     }
 
     /// The time was checked only before an entry, so a visit that ran past
@@ -246,7 +399,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("file"), "x").unwrap();
         let limit = Duration::from_millis(50);
-        let mut walk = Walk::new(limit, &ToolContext::default());
+        let mut walk = walk_for(limit, &ToolContext::default());
 
         walk.run(root.path(), |_, _| {
             std::thread::sleep(limit * 2);
