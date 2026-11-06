@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.14](https://github.com/abnegate/crates/compare/abnegate-agent/v0.1.13...abnegate-agent/v0.1.14) - 2026-11-06
+
+### Added
+
+- *(abnegate-agent)* bring the agent tools and chat level with the host ([#63](https://github.com/abnegate/crates/pull/63))
+
 ## [0.1.13](https://github.com/abnegate/crates/compare/abnegate-agent/v0.1.12...abnegate-agent/v0.1.13) - 2026-11-06
 
 ### Added
