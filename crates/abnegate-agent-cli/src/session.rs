@@ -39,6 +39,9 @@ const SESSIONS: &str = "sessions";
 const ROLLOUT: &str = "rollout-";
 const EXTENSION: &str = ".jsonl";
 const STAGING: &str = ".carrying-";
+/// A copy of a Claude session, relative to its home, and when it was written.
+type Found = (PathBuf, SystemTime);
+
 /// How many folders, a year's, a month's and a day's, a rollout sits in
 /// within Codex's sessions folder.
 const DATE_DEPTH: usize = 3;
@@ -178,7 +181,12 @@ impl Session {
                     source,
                 })?;
         }
-        for (copy, _) in copies(home, &self.id) {
+        let projects = home.join(PROJECTS);
+        let copies = every_copy(home, &self.id).map_err(|source| SessionError::Filesystem {
+            path: projects,
+            source,
+        })?;
+        for (copy, _) in copies {
             let copy = home.join(copy);
             if !same_file(&copy, &path) {
                 fs::remove_file(&copy)
@@ -288,28 +296,63 @@ fn newest(home: &Path, agent: AgentKind, id: &str) -> Option<PathBuf> {
 }
 
 /// Every copy of Claude's session `id` under `home`, relative to it, and when
-/// each was written.
-fn copies(home: &Path, id: &str) -> Vec<(PathBuf, SystemTime)> {
-    if !named(id) {
-        return Vec::new();
-    }
-    let Ok(folders) = fs::read_dir(home.join(PROJECTS)) else {
-        return Vec::new();
-    };
-    folders
-        .flatten()
-        .filter_map(|folder| {
-            let relative = Path::new(PROJECTS)
-                .join(folder.file_name())
-                .join(format!("{id}{EXTENSION}"));
-            let metadata = fs::symlink_metadata(home.join(&relative)).ok()?;
-            (metadata.file_type().is_file()
-                && relative
-                    .parent()
-                    .is_none_or(|parent| unlinked(home, parent)))
-            .then_some((relative, metadata.modified().ok()?))
-        })
+/// each was written, leaving out whatever cannot be read.
+fn copies(home: &Path, id: &str) -> Vec<Found> {
+    readings(home, id)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|reading| reading.ok().flatten())
         .collect()
+}
+
+/// Every copy of Claude's session `id` under `home`, as [`copies`] lists
+/// them, failing when the folders holding them, or any one of them, cannot
+/// be read, so a copy left unread is never taken for no copy.
+fn every_copy(home: &Path, id: &str) -> io::Result<Vec<Found>> {
+    readings(home, id)?
+        .into_iter()
+        .filter_map(Result::transpose)
+        .collect()
+}
+
+/// What each folder in Claude's `projects` says of a copy of session `id`:
+/// the copy and when it was written, or nothing when it holds none.
+fn readings(home: &Path, id: &str) -> io::Result<Vec<io::Result<Option<Found>>>> {
+    if !named(id) {
+        return Ok(Vec::new());
+    }
+    let folders = match fs::read_dir(home.join(PROJECTS)) {
+        Ok(folders) => folders,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    Ok(folders
+        .map(|folder| {
+            let relative = Path::new(PROJECTS)
+                .join(folder?.file_name())
+                .join(format!("{id}{EXTENSION}"));
+            let metadata = match fs::symlink_metadata(home.join(&relative)) {
+                Ok(metadata) => metadata,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                    ) =>
+                {
+                    return Ok(None);
+                }
+                Err(error) => return Err(error),
+            };
+            if !metadata.file_type().is_file()
+                || !relative
+                    .parent()
+                    .is_none_or(|parent| unlinked(home, parent))
+            {
+                return Ok(None);
+            }
+            Ok(Some((relative, metadata.modified()?)))
+        })
+        .collect())
 }
 
 /// Whether every directory on `relative`'s way down from `home` is a
@@ -800,6 +843,32 @@ mod tests {
             TRANSCRIPT
         );
         assert!(!stale.exists(), "a stale copy could be resumed later");
+    }
+
+    /// A copy left unread is not a copy cleaned up, so a move that cannot
+    /// read every folder a stale copy may sit in fails rather than leave one
+    /// to be resumed later.
+    #[test]
+    fn a_move_that_cannot_read_a_folder_a_copy_may_sit_in_fails() {
+        let homes = Homes::new();
+        let current = homes.claude();
+        homes.write(&current);
+        let elsewhere = TempDir::new().unwrap();
+        let unreadable = homes.from.path().join(folder(elsewhere.path()));
+        let stale = unreadable.join(format!("{CLAUDE_ID}{EXTENSION}"));
+        fs::create_dir_all(&unreadable).unwrap();
+        fs::write(&stale, b"stale").unwrap();
+        age(&stale);
+        fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let moved = homes.relocate(AgentKind::Claude, homes.work.path(), CLAUDE_ID);
+
+        fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(
+            matches!(moved, Err(SessionError::Filesystem { .. })),
+            "{moved:?}"
+        );
+        assert!(stale.exists());
     }
 
     #[test]
