@@ -1,13 +1,16 @@
 use super::*;
 use crate::pull_request::Collected;
+use crate::pull_request::ReviewThreadCount;
 use crate::pull_request::ReviewThreadRecord;
 use crate::pull_request::ThreadComment;
+use crate::pull_request::graphql_identified::GraphQlIdentified;
 use crate::pull_request::graphql_page_info::GraphQlPageInfo;
 use crate::pull_request::graphql_pull_request::GraphQlPullRequest;
 use crate::pull_request::graphql_query::GraphQlQuery;
 use crate::pull_request::graphql_repository::GraphQlRepository;
 use crate::pull_request::graphql_review_thread::GraphQlReviewThread;
 use crate::pull_request::graphql_thread_comment::GraphQlThreadComment;
+use crate::pull_request::graphql_thread_state::GraphQlThreadState;
 use serde::de::IgnoredAny;
 use serde_json::json;
 use std::collections::HashSet;
@@ -23,6 +26,13 @@ repository(owner:$owner,name:$name){pullRequest(number:$number){\
 reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor}\
 nodes{id isResolved isOutdated path line comments(first:20){\
 nodes{databaseId body url createdAt author{login}}}}}}}}";
+
+/// Reads the page of a pull request's review threads that follows the cursor
+/// `after`, each thread with only whether it is resolved.
+const COUNTS: &str = "query($owner:String!,$name:String!,$number:Int!,$after:String){\
+repository(owner:$owner,name:$name){pullRequest(number:$number){\
+reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor}\
+nodes{id isResolved}}}}}";
 
 impl PullRequestService {
     /// Mark a review thread resolved.
@@ -75,17 +85,58 @@ impl PullRequestService {
         reference: &PullRequestReference,
         token: &SecretValue,
     ) -> PullRequestResult<Collected<ReviewThreadRecord>> {
+        let collected: Collected<GraphQlReviewThread> =
+            self.review_thread_nodes(reference, token, THREADS).await?;
+        Ok(Collected::new(
+            collected.items.into_iter().map(record).collect(),
+            collected.complete,
+        ))
+    }
+
+    /// How many of a pull request's review threads are open, and how many
+    /// are resolved, without reading a comment in any of them.
+    ///
+    /// Reads the threads [`Self::collect_review_threads`] would, page by page
+    /// and with the same limit, counting a thread met twice once, and fails
+    /// the same way it does. [`ReviewThreadCount::complete`] is `true` exactly
+    /// when [`Collected::complete`] would be: when the walk stops short, the
+    /// threads it never reached are in neither count. Each thread costs GitHub
+    /// a node id and a flag, so a pull request with long review conversations
+    /// costs no more to count than one without.
+    pub async fn fetch_review_thread_counts(
+        &self,
+        reference: &PullRequestReference,
+        token: &SecretValue,
+    ) -> PullRequestResult<ReviewThreadCount> {
+        let collected: Collected<GraphQlThreadState> =
+            self.review_thread_nodes(reference, token, COUNTS).await?;
+        let empty = ReviewThreadCount::new(0, 0, collected.complete);
+        Ok(collected
+            .items
+            .iter()
+            .fold(empty, |count, thread| count.with(thread.is_resolved)))
+    }
+
+    /// Every review thread `query` reads a page of, following GitHub's
+    /// cursor, with a thread met twice kept once, and whether that is every
+    /// thread on the pull request.
+    async fn review_thread_nodes<T: DeserializeOwned + GraphQlIdentified>(
+        &self,
+        reference: &PullRequestReference,
+        token: &SecretValue,
+        query: &'static str,
+    ) -> PullRequestResult<Collected<T>> {
         let repository = reference.repository();
-        let mut threads: Vec<ReviewThreadRecord> = Vec::new();
+        let mut threads: Vec<T> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
         let mut after: Option<String> = None;
         let mut complete = false;
 
         for _ in 0..MAXIMUM_PAGES {
-            let answer: GraphQlQuery<GraphQlRepository<GraphQlPullRequest>> = self
+            let answer: GraphQlQuery<GraphQlRepository<GraphQlPullRequest<T>>> = self
                 .graphql(
                     token,
-                    THREADS,
+                    query,
                     &json!({
                         "owner": repository.owner(),
                         "name": repository.name(),
@@ -103,8 +154,7 @@ impl PullRequestService {
             threads.extend(
                 page.nodes
                     .into_iter()
-                    .filter(|thread| seen.insert(thread.id.clone()))
-                    .map(record),
+                    .filter(|thread| seen.insert(thread.id().to_string())),
             );
             complete = last(page.page_info.as_ref());
             match next_cursor(page.page_info, after.as_deref()) {
@@ -197,8 +247,16 @@ mod tests {
     }
 
     fn asked(after: Option<&str>) -> Value {
+        sent(THREADS, after)
+    }
+
+    fn counted(after: Option<&str>) -> Value {
+        sent(COUNTS, after)
+    }
+
+    fn sent(query: &str, after: Option<&str>) -> Value {
         json!({
-            "query": THREADS,
+            "query": query,
             "variables": {
                 "owner": "acme",
                 "name": "project",
@@ -640,5 +698,247 @@ mod tests {
         assert!(!collected.complete);
         assert!(collected.items.iter().all(|thread| thread.resolved));
         assert_eq!(identifiers(&collected.items), ["PRRT_1"]);
+    }
+
+    fn state(id: &str, resolved: bool) -> Value {
+        json!({ "id": id, "isResolved": resolved })
+    }
+
+    #[test]
+    fn counting_threads_asks_for_no_comments() {
+        assert!(!COUNTS.contains("comments"), "{COUNTS}");
+        assert!(COUNTS.contains("nodes{id isResolved}"), "{COUNTS}");
+    }
+
+    #[tokio::test]
+    async fn review_threads_are_counted_open_and_resolved() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(header("authorization", "Bearer token"))
+            .and(body_json(counted(None)))
+            .respond_with(page(
+                json!([
+                    state("PRRT_1", false),
+                    state("PRRT_2", true),
+                    state("PRRT_3", false),
+                    state("PRRT_4", true),
+                    state("PRRT_5", true),
+                ]),
+                false,
+                None,
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+
+        let count = service
+            .fetch_review_thread_counts(&seven(&service), &token())
+            .await
+            .unwrap();
+
+        assert_eq!(count, ReviewThreadCount::new(2, 3, true));
+    }
+
+    #[tokio::test]
+    async fn a_pull_request_without_threads_counts_none() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(page(json!([]), false, None))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+
+        let count = service
+            .fetch_review_thread_counts(&seven(&service), &token())
+            .await
+            .unwrap();
+
+        assert_eq!(count, ReviewThreadCount::new(0, 0, true));
+    }
+
+    #[tokio::test]
+    async fn review_thread_counts_follow_the_cursor_to_the_last_page() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(body_json(counted(None)))
+            .respond_with(page(
+                json!([state("PRRT_1", false)]),
+                true,
+                Some("Y3Vyc29yOjE="),
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(body_json(counted(Some("Y3Vyc29yOjE="))))
+            .respond_with(page(
+                json!([state("PRRT_2", true)]),
+                false,
+                Some("Y3Vyc29yOjI="),
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+
+        let count = service
+            .fetch_review_thread_counts(&seven(&service), &token())
+            .await
+            .unwrap();
+
+        assert_eq!(count, ReviewThreadCount::new(1, 1, true));
+    }
+
+    #[tokio::test]
+    async fn a_thread_counted_on_a_repeated_page_counts_once() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(page(
+                json!([state("PRRT_1", false), state("PRRT_2", true)]),
+                true,
+                Some("stuck"),
+            ))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+
+        let count = service
+            .fetch_review_thread_counts(&seven(&service), &token())
+            .await
+            .unwrap();
+
+        assert_eq!(count, ReviewThreadCount::new(1, 1, false));
+        let received = server.received_requests().await.unwrap();
+        let sent: Value = serde_json::from_slice(&received[1].body).unwrap();
+        assert_eq!(sent, counted(Some("stuck")));
+    }
+
+    #[tokio::test]
+    async fn a_thread_on_two_overlapping_pages_counts_once() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(body_json(counted(None)))
+            .respond_with(page(
+                json!([state("PRRT_1", false), state("PRRT_2", true)]),
+                true,
+                Some("Y3Vyc29yOjE="),
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(body_json(counted(Some("Y3Vyc29yOjE="))))
+            .respond_with(page(
+                json!([state("PRRT_2", true), state("PRRT_3", false)]),
+                false,
+                None,
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+
+        let count = service
+            .fetch_review_thread_counts(&seven(&service), &token())
+            .await
+            .unwrap();
+
+        assert_eq!(count, ReviewThreadCount::new(2, 1, true));
+    }
+
+    #[tokio::test]
+    async fn a_cursor_that_never_runs_out_is_counted_only_so_far() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(|request: &Request| {
+                let sent: Value = serde_json::from_slice(&request.body).unwrap();
+                let read = sent["variables"]["after"]
+                    .as_str()
+                    .map_or(0, |cursor| cursor.parse::<usize>().unwrap());
+                let next = read + 1;
+                page(
+                    json!([state(&format!("PRRT_{next}"), false)]),
+                    true,
+                    Some(&next.to_string()),
+                )
+            })
+            .expect(u64::try_from(MAXIMUM_PAGES).unwrap())
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+
+        let count = service
+            .fetch_review_thread_counts(&seven(&service), &token())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            count,
+            ReviewThreadCount::new(u32::try_from(MAXIMUM_PAGES).unwrap(), 0, false)
+        );
+    }
+
+    #[tokio::test]
+    async fn counting_a_pull_request_graphql_cannot_find_is_not_found() {
+        for body in [
+            json!({ "data": { "repository": null } }),
+            json!({ "data": { "repository": { "pullRequest": null } } }),
+            json!({
+                "data": { "repository": { "pullRequest": null } },
+                "errors": [{
+                    "type": "NOT_FOUND",
+                    "path": ["repository", "pullRequest"],
+                    "message": "Could not resolve to a PullRequest with the number of 7.",
+                }],
+            }),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/graphql"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(&body))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let service = stand_in(&server).await;
+
+            let failure = service
+                .fetch_review_thread_counts(&seven(&service), &token())
+                .await
+                .unwrap_err();
+
+            assert!(
+                matches!(failure, PullRequestError::NotFound),
+                "{body}: {failure:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_counted_thread_that_does_not_say_whether_it_is_resolved_is_unreadable() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(page(json!([{ "id": "PRRT_1" }]), false, None))
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+
+        let failure = service
+            .fetch_review_thread_counts(&seven(&service), &token())
+            .await
+            .unwrap_err();
+
+        assert_eq!(format!("{failure:?}"), format!("GitHubApi({UNREADABLE:?})"));
     }
 }

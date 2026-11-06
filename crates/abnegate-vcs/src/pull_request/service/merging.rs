@@ -84,7 +84,9 @@ impl PullRequestService {
             merge_method: method,
         };
 
-        let response = sent(self.request(Method::PUT, url, token, ACCEPT).json(&request)).await?;
+        let response = self
+            .sent(self.request(Method::PUT, url, token, ACCEPT).json(&request))
+            .await?;
 
         let status = response.status();
         if status.is_success() {

@@ -90,6 +90,7 @@ mod pull_requests {
     use abnegate_vcs::PullRequestService;
     use abnegate_vcs::ReviewRecord;
     use abnegate_vcs::ReviewState;
+    use abnegate_vcs::ReviewThreadCount;
     use abnegate_vcs::ReviewThreadRecord;
     use abnegate_vcs::SubmittedReview;
     use abnegate_vcs::ThreadComment;
@@ -360,6 +361,40 @@ mod pull_requests {
                 .with_commit(CommitSha::parse(head).unwrap())
                 .with_submitted_at("2026-09-28T02:51:09Z")]
         );
+    }
+
+    /// A caller counts a pull request's review threads without their
+    /// comments, and compares the count with one it builds.
+    #[tokio::test]
+    async fn review_threads_count_as_the_value_a_caller_builds() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(header("authorization", "Bearer token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": { "repository": { "pullRequest": { "reviewThreads": {
+                    "pageInfo": { "hasNextPage": false, "endCursor": null },
+                    "nodes": [
+                        { "id": "PRRT_1", "isResolved": true },
+                        { "id": "PRRT_2", "isResolved": false },
+                        { "id": "PRRT_3", "isResolved": false },
+                    ],
+                } } } },
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = PullRequestService::standing_in_for("github.com", &server.uri()).unwrap();
+        let reference = service
+            .pull_request("https://github.com/acme/project/pull/7")
+            .unwrap();
+
+        let count = service
+            .fetch_review_thread_counts(&reference, &SecretValue::new("token"))
+            .await
+            .unwrap();
+
+        assert_eq!(count, ReviewThreadCount::new(2, 1, true));
     }
 
     /// A caller builds the comments and review threads it expects the way
