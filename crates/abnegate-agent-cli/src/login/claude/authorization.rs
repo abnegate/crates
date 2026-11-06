@@ -38,6 +38,11 @@ pub struct Authorization {
 impl Authorization {
     /// Draw a fresh verifier and state and build the link that asks
     /// `endpoints` for `scope`, sending the browser to `redirect`.
+    ///
+    /// # Errors
+    ///
+    /// [`LoginError::Entropy`] when the operating system cannot supply the
+    /// random bytes.
     pub fn new(
         endpoints: &Endpoints,
         scope: Scope,

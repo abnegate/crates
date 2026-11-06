@@ -31,6 +31,11 @@ pub struct Code {
 impl Code {
     /// A code and the state it answers, each non-empty and free of
     /// whitespace and `#`.
+    ///
+    /// # Errors
+    ///
+    /// [`LoginError::Malformed`] when either is empty or holds whitespace or
+    /// `#`.
     pub fn new(value: &str, state: &str) -> Result<Self, LoginError> {
         let clean = |part: &str| {
             !part.is_empty() && !part.contains(SEPARATOR) && !part.contains(char::is_whitespace)
@@ -50,6 +55,13 @@ impl Code {
     /// reach. Surrounding whitespace is ignored; a callback that names an
     /// `error` is refused as declined, so the same link can be approved
     /// again.
+    ///
+    /// # Errors
+    ///
+    /// [`LoginError::Malformed`] when the paste is neither `code#state` nor
+    /// a callback address, when it is the address of a page other than the
+    /// redirect or a loopback callback, when the callback was declined, and
+    /// when it lacks its code or its state. No message quotes the paste.
     pub fn parse(endpoints: &Endpoints, pasted: &str) -> Result<Self, LoginError> {
         let pasted = pasted.trim();
         match Url::parse(pasted) {

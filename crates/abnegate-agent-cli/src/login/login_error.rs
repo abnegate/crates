@@ -11,8 +11,8 @@ use crate::login::claude::Refusal;
 /// No variant carries a credential, a response body or anything the request
 /// sent: a refusal is its status and the [`Refusal`] its OAuth `error` code
 /// names, and a transport failure has every value the request carried
-/// scrubbed from it. A CLI's own words have its one-time code and anything
-/// shaped like a credential redacted from them.
+/// scrubbed from it. A CLI's own words have its one-time code, every secret
+/// it was given and anything shaped like a credential redacted from them.
 ///
 /// A variant may gain a field in a minor release, so a pattern outside this
 /// crate ends in `..`:
@@ -48,12 +48,19 @@ pub enum LoginError {
     },
     /// The token endpoint answered with an HTTP status other than success,
     /// redirects included, since none is followed.
+    ///
+    /// Its message names the status alone, and never repeats what the
+    /// service said: word what the person signing in is shown from `status`
+    /// and `refusal`.
     #[error("the sign-in service refused the request with HTTP {status}")]
     #[non_exhaustive]
     Rejected {
         /// The HTTP status it answered with.
         status: u16,
-        /// What its OAuth `error` code names, when it sent one.
+        /// What its OAuth `error` code names. `None` means the refusal is not
+        /// one this recognises: the answer carried no OAuth `error` code, or
+        /// could not be read, such as a redirect, an outage page or an error
+        /// shaped some other way.
         refusal: Option<Refusal>,
     },
     /// The sign-in service could not be reached, or its answer could not be

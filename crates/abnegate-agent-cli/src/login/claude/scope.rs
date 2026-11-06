@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -44,9 +46,10 @@ impl Scope {
         self.scopes().join(DELIMITER)
     }
 
-    pub(crate) fn lifetime(self) -> Option<u64> {
+    /// How long the access token is asked to last, when the sign-in asks.
+    pub(crate) fn lifetime(self) -> Option<Duration> {
         match self {
-            Self::Inference => Some(LIFETIME.as_secs()),
+            Self::Inference => Some(LIFETIME),
             Self::Full => None,
         }
     }
@@ -88,7 +91,10 @@ mod tests {
 
     #[test]
     fn only_an_inference_sign_in_asks_for_a_lifetime() {
-        assert_eq!(Scope::Inference.lifetime(), Some(31_536_000));
+        assert_eq!(
+            Scope::Inference.lifetime(),
+            Some(Duration::from_secs(31_536_000))
+        );
         assert_eq!(Scope::Full.lifetime(), None);
     }
 

@@ -4,6 +4,7 @@ use serde_json::json;
 use wiremock::Mock;
 use wiremock::MockServer;
 use wiremock::ResponseTemplate;
+use wiremock::matchers::any;
 use wiremock::matchers::header;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
@@ -13,6 +14,7 @@ use crate::login::claude::CLIENT_ID;
 use crate::login::claude::LIFETIME;
 use crate::login::claude::REDIRECT_URL;
 use crate::login::claude::Refusal;
+use crate::test_support::delegated;
 
 const TOKEN_PATH: &str = "/v1/oauth/token";
 const CODE: &str = "fake-authorization-code";
@@ -476,4 +478,129 @@ async fn the_client_names_itself_as_this_crate() {
         tokens.issued_at.map(|issued| tokens.expires_at - issued),
         Some(seconds(GRANTED))
     );
+}
+
+const UNRESOLVABLE: &str = "http://token.example.invalid/v1/oauth/token";
+
+fn unresolvable() -> Endpoints {
+    Endpoints::default()
+        .with_token(UNRESOLVABLE)
+        .expect("a token endpoint")
+}
+
+#[tokio::test]
+async fn an_explicit_proxy_carries_every_request() {
+    let proxy = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(TOKEN_PATH))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"access_token": ACCESS, "expires_in": GRANTED})),
+        )
+        .expect(1)
+        .mount(&proxy)
+        .await;
+    let client = Client::new(unresolvable())
+        .and_then(|client| client.with_proxy(&proxy.uri()))
+        .expect("a loopback proxy");
+
+    let tokens = client
+        .exchange(&code(), &verifier(), Scope::Inference, Redirect::Paste)
+        .await
+        .expect("the proxy answered for the token endpoint");
+
+    assert_eq!(tokens.access.expose(), ACCESS);
+    assert_eq!(
+        client.proxy().map(Url::as_str),
+        Some(format!("{}/", proxy.uri()).as_str())
+    );
+    let requests = proxy
+        .received_requests()
+        .await
+        .expect("the proxy records requests");
+    assert_eq!(
+        requests[0].url.as_str(),
+        UNRESOLVABLE,
+        "the proxy was not asked for the token endpoint"
+    );
+}
+
+#[tokio::test]
+async fn the_environments_proxy_is_never_consulted() {
+    const NAME: &str = "login::claude::client::tests::the_environments_proxy_is_never_consulted";
+    let proxy = MockServer::start().await;
+    Mock::given(any())
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"access_token": ACCESS, "expires_in": GRANTED})),
+        )
+        .mount(&proxy)
+        .await;
+    let uri = proxy.uri();
+    let variables = [
+        "HTTP_PROXY",
+        "http_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ]
+    .map(|variable| (variable, uri.as_str()));
+
+    if delegated(NAME, &variables).await {
+        assert_eq!(
+            proxy
+                .received_requests()
+                .await
+                .map(|requests| requests.len()),
+            Some(0),
+            "the environment's proxy was consulted"
+        );
+        return;
+    }
+
+    assert!(
+        std::env::var_os("HTTP_PROXY").is_some(),
+        "the child was given no proxy, so its run proves nothing"
+    );
+    let client = Client::new(unresolvable()).expect("the client builds");
+    let error = client
+        .exchange(&code(), &verifier(), Scope::Inference, Redirect::Paste)
+        .await
+        .expect_err("the token endpoint resolves nowhere");
+
+    assert!(matches!(error, LoginError::Transport(_)), "{error:?}");
+    assert!(client.proxy().is_none());
+}
+
+#[test]
+fn a_proxy_is_checked_as_an_endpoint_is() {
+    for proxy in [
+        "http://169.254.169.254:3128",
+        "http://user:secret@proxy.example:3128",
+        "socks5://proxy.example:1080",
+        "proxy.example:3128",
+    ] {
+        let refused = Client::new(Endpoints::default()).and_then(|client| client.with_proxy(proxy));
+
+        match refused {
+            Err(LoginError::Endpoint { name, reason }) => {
+                assert_eq!(name, PROXY, "{proxy}");
+                assert!(!reason.contains("secret"), "{proxy}: {reason}");
+            }
+            other => panic!("{proxy} must be refused, got {other:?}"),
+        }
+    }
+    for proxy in [
+        "http://127.0.0.1:3128",
+        "http://10.0.0.5:3128",
+        "https://proxy.example",
+    ] {
+        assert!(
+            Client::new(Endpoints::default())
+                .and_then(|client| client.with_proxy(proxy))
+                .is_ok(),
+            "{proxy}"
+        );
+    }
 }

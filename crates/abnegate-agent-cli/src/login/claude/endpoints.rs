@@ -10,6 +10,7 @@ use crate::login::claude::TOKEN_URL;
 const AUTHORIZE: &str = "authorize";
 const TOKEN: &str = "token";
 const REDIRECT: &str = "redirect";
+const QUALIFIED: &str = "a redirect URL carries no query or fragment";
 const UNNAMED: &str = "The Claude client id must be non-empty and free of whitespace";
 
 /// The OAuth client a Claude sign-in runs as and the URLs it reaches.
@@ -29,7 +30,6 @@ const UNNAMED: &str = "The Claude client id must be non-empty and free of whites
 /// # Ok::<(), abnegate_agent_cli::login::LoginError>(())
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct Endpoints {
     client_id: String,
     authorize: Url,
@@ -39,6 +39,11 @@ pub struct Endpoints {
 
 impl Endpoints {
     /// The same endpoints signed in as the OAuth client `client_id`.
+    ///
+    /// # Errors
+    ///
+    /// [`LoginError::Malformed`] when `client_id` is empty or holds
+    /// whitespace.
     pub fn with_client_id(mut self, client_id: impl Into<String>) -> Result<Self, LoginError> {
         let client_id = client_id.into();
         if client_id.is_empty() || client_id.contains(char::is_whitespace) {
@@ -50,21 +55,45 @@ impl Endpoints {
 
     /// The same endpoints with the browser sent to `url` to approve a
     /// sign-in.
+    ///
+    /// # Errors
+    ///
+    /// [`LoginError::Endpoint`] naming the `authorize` endpoint when `url`
+    /// is refused.
     pub fn with_authorize(mut self, url: &str) -> Result<Self, LoginError> {
         self.authorize = checked(AUTHORIZE, url)?;
         Ok(self)
     }
 
     /// The same endpoints with codes exchanged and tokens renewed at `url`.
+    ///
+    /// # Errors
+    ///
+    /// [`LoginError::Endpoint`] naming the `token` endpoint when `url` is
+    /// refused.
     pub fn with_token(mut self, url: &str) -> Result<Self, LoginError> {
         self.token = checked(TOKEN, url)?;
         Ok(self)
     }
 
     /// The same endpoints with `url` as the page that shows the code to
-    /// paste.
+    /// paste. It carries no query or fragment: Claude appends the code's, and
+    /// [`Code::parse`](crate::login::claude::Code::parse) matches a pasted
+    /// callback against `url` without them.
+    ///
+    /// # Errors
+    ///
+    /// [`LoginError::Endpoint`] naming the `redirect` endpoint when `url` is
+    /// refused, or carries a query or a fragment.
     pub fn with_redirect(mut self, url: &str) -> Result<Self, LoginError> {
-        self.redirect = checked(REDIRECT, url)?;
+        let redirect = checked(REDIRECT, url)?;
+        if redirect.query().is_some() || redirect.fragment().is_some() {
+            return Err(LoginError::Endpoint {
+                name: REDIRECT,
+                reason: QUALIFIED.to_string(),
+            });
+        }
+        self.redirect = redirect;
         Ok(self)
     }
 
@@ -101,7 +130,9 @@ impl Default for Endpoints {
     }
 }
 
-fn checked(name: &'static str, url: &str) -> Result<Url, LoginError> {
+/// `url`, once [`TargetPolicy::ExceptMetadata`] has allowed it, or why it
+/// did not, as the endpoint `name`'s refusal.
+pub(crate) fn checked(name: &'static str, url: &str) -> Result<Url, LoginError> {
     TargetPolicy::ExceptMetadata
         .validate(url.trim())
         .map_err(|error| LoginError::Endpoint {
@@ -183,6 +214,29 @@ mod tests {
 
         assert!(!shown.contains("hunter2"), "{shown}");
         assert!(!shown.contains("platform.claude.com"), "{shown}");
+    }
+
+    #[test]
+    fn a_redirect_with_a_query_or_a_fragment_is_refused() {
+        for url in [
+            "https://platform.claude.com/oauth/code/callback?code=fixed",
+            "https://platform.claude.com/oauth/code/callback?",
+            "https://platform.claude.com/oauth/code/callback#code",
+        ] {
+            match Endpoints::default().with_redirect(url) {
+                Err(LoginError::Endpoint { name, reason }) => {
+                    assert_eq!(name, REDIRECT, "{url}");
+                    assert_eq!(reason, QUALIFIED, "{url}");
+                }
+                other => panic!("the redirect must refuse {url}, got {other:?}"),
+            }
+        }
+        assert!(
+            Endpoints::default()
+                .with_token("http://127.0.0.1:4010/v1/oauth/token?tenant=one")
+                .is_ok(),
+            "only the redirect is matched without its query"
+        );
     }
 
     #[test]
