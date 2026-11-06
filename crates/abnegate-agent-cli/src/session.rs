@@ -39,6 +39,9 @@ const SESSIONS: &str = "sessions";
 const ROLLOUT: &str = "rollout-";
 const EXTENSION: &str = ".jsonl";
 const STAGING: &str = ".carrying-";
+/// The shape of the time a Codex rollout is named by, each `0` a digit.
+const STAMP: &str = "0000-00-00T00-00-00";
+const DIGIT: u8 = b'0';
 /// A copy of a Claude session, relative to its home, and when it was written.
 type Found = (PathBuf, SystemTime);
 
@@ -448,10 +451,24 @@ fn rollout(home: &Path, sessions: &Path, suffix: &str) -> Option<PathBuf> {
                     .and_then(|name| name.to_str())
                     .and_then(|name| name.strip_prefix(ROLLOUT))
                     .and_then(|rest| rest.strip_suffix(suffix))
-                    .is_some_and(|stamp| !stamp.is_empty()))
+                    .is_some_and(stamped))
             .then_some(relative)
         })
     })
+}
+
+/// Whether `stamp` is the time Codex names a rollout by, as
+/// `2026-09-23T04-00-00`, so the id after it is the whole of the thread's id
+/// and not the end of another's.
+fn stamped(stamp: &str) -> bool {
+    stamp.len() == STAMP.len()
+        && stamp
+            .bytes()
+            .zip(STAMP.bytes())
+            .all(|(byte, shape)| match shape {
+                DIGIT => byte.is_ascii_digit(),
+                _ => byte == shape,
+            })
 }
 
 /// What `home/directory` holds, each relative to `home` with its own type,
@@ -667,6 +684,33 @@ mod tests {
         }
 
         homes.write(&homes.codex());
+        assert_eq!(
+            homes.locate(
+                homes.from.path(),
+                AgentKind::Codex,
+                homes.work.path(),
+                CODEX_ID
+            ),
+            Some(homes.from.path().join(homes.codex()))
+        );
+    }
+
+    /// A rollout is named by its whole thread id, so an id that is only the
+    /// end of another thread's names no session.
+    #[test]
+    fn the_end_of_another_threads_id_names_no_codex_session() {
+        let homes = Homes::new();
+        homes.write(&homes.codex());
+        let tail = &CODEX_ID[CODEX_ID.len() - 12..];
+
+        assert_eq!(
+            homes.locate(homes.from.path(), AgentKind::Codex, homes.work.path(), tail),
+            None
+        );
+        assert!(matches!(
+            homes.carry(AgentKind::Codex, tail),
+            Err(SessionError::Missing { .. })
+        ));
         assert_eq!(
             homes.locate(
                 homes.from.path(),
