@@ -139,9 +139,9 @@ impl<'document> Entry<'document> {
         }
     }
 
-    /// A wait given as a non-negative number of seconds, whole or not, one
-    /// past the longest a [`Duration`] holds read as that longest, as the
-    /// longest is written.
+    /// A wait given as a non-negative number of seconds, whole or not. A
+    /// number too large for a [`Duration`] reads as the longest one, which
+    /// is itself written as such a number.
     fn seconds(&self, names: &[&'static str]) -> Result<Option<Duration>, Mismatch> {
         let Some(value) = self.value(names)?.filter(|value| !value.is_null()) else {
             return Ok(None);

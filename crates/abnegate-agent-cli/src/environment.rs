@@ -73,6 +73,9 @@ const ISOLATION_DEFAULTS: &[(&str, &str)] = &[
 /// call, and the time it may go without hearing from the server.
 const TOOL_TIMEOUTS: &[&str] = &["MCP_TOOL_TIMEOUT", "CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT"];
 const NANOSECONDS_PER_MILLISECOND: u128 = 1_000_000;
+/// The longest delay, in milliseconds, Node's timers keep: a longer one
+/// fires after a single millisecond.
+const LONGEST_TIMER: u128 = 2_147_483_647;
 
 /// The child's environment: an allowlist of host variables, the
 /// [locale](LOCALE) categories, the caller's allowed names and the agent's own
@@ -350,7 +353,9 @@ impl Environment {
 /// the longest [tool timeout](crate::McpServer::tool_timeout) of the servers
 /// attached to it as both of Claude Code's [waits](TOOL_TIMEOUTS) on a tool,
 /// rounded up to whole milliseconds, so a wait under one is never `0`, which
-/// Claude Code reads as no wait at all. Codex is given neither.
+/// Claude Code reads as no wait at all, and held to the longest a Node timer
+/// keeps, about 24.8 days, past which it would fire at once. Codex is given
+/// neither.
 fn defaults(agent: AgentKind, settings: &CliSettings, attached: bool) -> Vec<(String, String)> {
     if agent != AgentKind::Claude {
         return Vec::new();
@@ -373,6 +378,7 @@ fn defaults(agent: AgentKind, settings: &CliSettings, attached: bool) -> Vec<(St
         let milliseconds = timeout
             .as_nanos()
             .div_ceil(NANOSECONDS_PER_MILLISECOND)
+            .min(LONGEST_TIMER)
             .to_string();
         defaults.extend(
             TOOL_TIMEOUTS
@@ -1907,13 +1913,17 @@ mod tests {
     }
 
     /// A wait under a millisecond is still a wait: rounded down it would be
-    /// `0`, which Claude Code reads as none.
+    /// `0`, which Claude Code reads as none. One longer than a Node timer
+    /// keeps would fire after a millisecond, so it is held to the longest.
     #[test]
-    fn a_claude_run_rounds_its_mcp_tool_wait_up_to_a_millisecond() {
+    fn a_claude_run_holds_its_mcp_tool_wait_to_what_node_keeps() {
         for (timeout, expected) in [
             (Duration::from_micros(500), "1"),
             (Duration::from_micros(1500), "2"),
             (Duration::from_millis(3), "3"),
+            (Duration::from_millis(2_147_483_647), "2147483647"),
+            (Duration::from_secs(30 * 24 * 60 * 60), "2147483647"),
+            (Duration::MAX, "2147483647"),
         ] {
             let settings = CliSettings::default().with_mcp_server(
                 "host",

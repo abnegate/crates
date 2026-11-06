@@ -177,7 +177,8 @@ pub struct McpServer {
     /// whole seconds. Claude Code has one wait for every server, so a Claude
     /// run is given the longest of its attached servers' as
     /// `MCP_TOOL_TIMEOUT` and `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT`, in
-    /// milliseconds, which [`CliSettings::with_variable`](crate::CliSettings::with_variable)
+    /// milliseconds rounded up and held to the 2,147,483,647 a Node timer
+    /// keeps, which [`CliSettings::with_variable`](crate::CliSettings::with_variable)
     /// overrides.
     ///
     /// A configuration document holds it as `tool_timeout_sec`, a number of
