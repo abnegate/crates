@@ -41,8 +41,34 @@ pub enum PullRequestError {
     },
 
     /// What was asked for does not exist, or the token cannot see it.
+    ///
+    /// Where GitHub names which of a repository and its pull request it could
+    /// not find, the error is [`PullRequestError::RepositoryNotFound`] or
+    /// [`PullRequestError::PullRequestNotFound`] instead;
+    /// [`PullRequestError::is_not_found`] is `true` for all three.
     #[error("Not found, or not visible to this token")]
     NotFound,
+
+    /// The repository does not exist, or the token cannot see it, as GitHub
+    /// said in answering for it.
+    ///
+    /// GitHub tells the two apart only where it names the missing part, as
+    /// its GraphQL API does; elsewhere the error is
+    /// [`PullRequestError::NotFound`], and a missing pull request is
+    /// [`PullRequestError::PullRequestNotFound`].
+    /// [`PullRequestError::is_not_found`] is `true` for all three.
+    #[error("Repository not found, or not visible to this token")]
+    RepositoryNotFound,
+
+    /// The repository was found, but has no pull request with the number
+    /// asked for, as GitHub said in answering for it.
+    ///
+    /// A repository GitHub cannot find is
+    /// [`PullRequestError::RepositoryNotFound`], and anything missing where
+    /// GitHub does not name which part is [`PullRequestError::NotFound`].
+    /// [`PullRequestError::is_not_found`] is `true` for all three.
+    #[error("The repository has no pull request with that number")]
+    PullRequestNotFound,
 
     /// A pull request is already open from the branch.
     #[error("A pull request already exists for branch: {0}")]
@@ -127,7 +153,41 @@ impl PullRequestError {
             rate_limit: Box::new(rate_limit),
         }
     }
+
+    /// Whether what was asked for was not found, or not visible to the token:
+    /// [`PullRequestError::NotFound`],
+    /// [`PullRequestError::RepositoryNotFound`] or
+    /// [`PullRequestError::PullRequestNotFound`].
+    pub fn is_not_found(&self) -> bool {
+        matches!(
+            self,
+            Self::NotFound | Self::RepositoryNotFound | Self::PullRequestNotFound
+        )
+    }
 }
 
 /// A pull request operation, or what went wrong with it.
 pub type PullRequestResult<T> = Result<T, PullRequestError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_three_not_found_errors_are_not_found() {
+        for found in [
+            PullRequestError::NotFound,
+            PullRequestError::RepositoryNotFound,
+            PullRequestError::PullRequestNotFound,
+        ] {
+            assert!(found.is_not_found(), "{found:?}");
+        }
+        for other in [
+            PullRequestError::Forbidden,
+            PullRequestError::RateLimited,
+            PullRequestError::AuthenticationFailed,
+        ] {
+            assert!(!other.is_not_found(), "{other:?}");
+        }
+    }
+}
