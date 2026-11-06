@@ -167,8 +167,10 @@ impl PullRequestService {
     /// was left on the pull request `reference` names.
     ///
     /// A comment GitHub cannot find is [`PullRequestError::NotFound`], and so
-    /// is one GitHub places on another pull request or in another repository,
-    /// or on no pull request at all. A repository that has been renamed or
+    /// is one GitHub places on another pull request, in another repository,
+    /// on another host, or on no pull request at all: the pull request it is
+    /// placed on has to be addressed at this service's own origin, as
+    /// `reference`'s is. A repository that has been renamed or
     /// transferred since `reference` was named is answered for under its new
     /// name, so its comments are [`PullRequestError::NotFound`] too until
     /// `reference` names it as it is now. An answer about a comment other than
@@ -190,11 +192,26 @@ impl PullRequestService {
         if !answer
             .pull_request_url
             .as_deref()
-            .is_some_and(|url| belongs(url, reference))
+            .is_some_and(|url| self.addresses(url, reference))
         {
             return Err(PullRequestError::NotFound);
         }
         Ok(ReviewComment::from(answer))
+    }
+
+    /// Whether `url`, GitHub's REST address of a pull request, is where this
+    /// service addresses the pull request `reference` names: on its origin's
+    /// scheme, host and port, under its origin's path, and compared without
+    /// regard to case, as GitHub compares an owner and a name.
+    fn addresses(&self, url: &str, reference: &PullRequestReference) -> bool {
+        let Ok(url) = Url::parse(url) else {
+            return false;
+        };
+        let number = reference.number().to_string();
+        let Ok(own) = self.repository_endpoint(reference.repository(), &["pulls", &number]) else {
+            return false;
+        };
+        self.origin.holds(&url) && url.path().eq_ignore_ascii_case(own.path())
     }
 
     /// Answer the review comment GitHub identifies as `comment`, in its own
@@ -223,29 +240,6 @@ impl PullRequestService {
         )
         .await?;
         Ok(())
-    }
-}
-
-/// Whether `url`, GitHub's REST address of a pull request, ends in the
-/// owner, name and number `reference` names, on whatever host and under
-/// whatever prefix it is served.
-fn belongs(url: &str, reference: &PullRequestReference) -> bool {
-    let Ok(url) = Url::parse(url) else {
-        return false;
-    };
-    let Some(segments) = url.path_segments() else {
-        return false;
-    };
-    let segments: Vec<&str> = segments.collect();
-    let repository = reference.repository();
-    let number = reference.number().to_string();
-    match segments.as_slice() {
-        [.., "repos", owner, name, "pulls", last] => {
-            owner.eq_ignore_ascii_case(repository.owner())
-                && name.eq_ignore_ascii_case(repository.name())
-                && *last == number
-        }
-        _ => false,
     }
 }
 
@@ -292,7 +286,7 @@ mod tests {
 
     const REVIEW_COMMENT_PATH: &str = "/repos/acme/project/pulls/comments/99";
 
-    const PULL_REQUEST_URL: &str = "https://api.github.com/repos/acme/project/pulls/7";
+    const PULL_REQUEST_PATH: &str = "/repos/acme/project/pulls/7";
 
     fn written(id: u64, author: &str, body: &str) -> IssueComment {
         IssueComment {
@@ -862,7 +856,7 @@ mod tests {
         .with_path("src/cart.ts")
     }
 
-    fn placed(pull_request_url: &str) -> Value {
+    fn placed(origin: &str, pull_request_path: &str) -> Value {
         let comment = remarked();
         json!({
             "id": comment.id,
@@ -871,20 +865,34 @@ mod tests {
             "path": comment.path,
             "html_url": comment.url,
             "created_at": comment.created_at,
-            "pull_request_url": pull_request_url,
+            "pull_request_url": format!("{origin}{pull_request_path}"),
         })
     }
 
-    async fn read_answered_with(answer: ResponseTemplate) -> PullRequestResult<ReviewComment> {
+    fn found(answer: Value) -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_json(answer)
+    }
+
+    async fn read_answered_with(
+        answer: impl FnOnce(&str) -> ResponseTemplate,
+    ) -> PullRequestResult<ReviewComment> {
+        read_under("", answer).await
+    }
+
+    async fn read_under(
+        prefix: &str,
+        answer: impl FnOnce(&str) -> ResponseTemplate,
+    ) -> PullRequestResult<ReviewComment> {
         let server = MockServer::start().await;
+        let origin = format!("{}{prefix}", server.uri());
         Mock::given(method("GET"))
-            .and(path(REVIEW_COMMENT_PATH))
+            .and(path(format!("{prefix}{REVIEW_COMMENT_PATH}")))
             .and(header("authorization", "Bearer token"))
-            .respond_with(answer)
+            .respond_with(answer(&origin))
             .expect(1)
             .mount(&server)
             .await;
-        let service = stand_in(&server).await;
+        let service = PullRequestService::standing_in_for("github.com", &origin).unwrap();
 
         service
             .fetch_review_comment(&seven(&service), &token(), 99)
@@ -893,24 +901,24 @@ mod tests {
 
     #[tokio::test]
     async fn a_review_comment_is_read_whole_by_its_id() {
-        let comment =
-            read_answered_with(ResponseTemplate::new(200).set_body_json(placed(PULL_REQUEST_URL)))
-                .await
-                .unwrap();
+        let comment = read_answered_with(|origin| found(placed(origin, PULL_REQUEST_PATH)))
+            .await
+            .unwrap();
 
         assert_eq!(comment, remarked());
     }
 
     #[tokio::test]
     async fn a_review_comment_missing_its_author_body_or_file_is_read_as_empty() {
-        let mut answer = placed(PULL_REQUEST_URL);
-        answer["user"] = Value::Null;
-        answer["body"] = Value::Null;
-        answer.as_object_mut().unwrap().remove("path");
-
-        let comment = read_answered_with(ResponseTemplate::new(200).set_body_json(answer))
-            .await
-            .unwrap();
+        let comment = read_answered_with(|origin| {
+            let mut answer = placed(origin, PULL_REQUEST_PATH);
+            answer["user"] = Value::Null;
+            answer["body"] = Value::Null;
+            answer.as_object_mut().unwrap().remove("path");
+            found(answer)
+        })
+        .await
+        .unwrap();
 
         let expected = remarked();
         assert_eq!(
@@ -921,10 +929,12 @@ mod tests {
 
     #[tokio::test]
     async fn a_review_comment_github_cannot_find_is_not_found() {
-        let failure = read_answered_with(ResponseTemplate::new(404).set_body_json(json!({
-            "message": "Not Found",
-            "documentation_url": SENTINEL,
-        })))
+        let failure = read_answered_with(|_| {
+            ResponseTemplate::new(404).set_body_json(json!({
+                "message": "Not Found",
+                "documentation_url": SENTINEL,
+            }))
+        })
         .await
         .unwrap_err();
 
@@ -933,12 +943,13 @@ mod tests {
 
     #[tokio::test]
     async fn an_answer_about_another_review_comment_is_an_error() {
-        let mut answer = placed(PULL_REQUEST_URL);
-        answer["id"] = json!(100);
-
-        let failure = read_answered_with(ResponseTemplate::new(200).set_body_json(answer))
-            .await
-            .unwrap_err();
+        let failure = read_answered_with(|origin| {
+            let mut answer = placed(origin, PULL_REQUEST_PATH);
+            answer["id"] = json!(100);
+            found(answer)
+        })
+        .await
+        .unwrap_err();
 
         assert!(
             matches!(failure, PullRequestError::GitHubApi(ref text) if text == ANOTHER_COMMENT),
@@ -949,15 +960,14 @@ mod tests {
     #[tokio::test]
     async fn a_review_comment_on_another_pull_request_or_repository_is_not_found() {
         for elsewhere in [
-            "https://api.github.com/repos/acme/project/pulls/70",
-            "https://api.github.com/repos/acme/project/pulls/17",
-            "https://api.github.com/repos/acme/other/pulls/7",
-            "https://api.github.com/repos/other/project/pulls/7",
+            "/repos/acme/project/pulls/70",
+            "/repos/acme/project/pulls/17",
+            "/repos/acme/other/pulls/7",
+            "/repos/other/project/pulls/7",
         ] {
-            let failure =
-                read_answered_with(ResponseTemplate::new(200).set_body_json(placed(elsewhere)))
-                    .await
-                    .unwrap_err();
+            let failure = read_answered_with(|origin| found(placed(origin, elsewhere)))
+                .await
+                .unwrap_err();
 
             assert!(
                 matches!(failure, PullRequestError::NotFound),
@@ -967,58 +977,107 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_review_comment_naming_no_pull_request_is_not_found() {
-        let mut absent = placed(PULL_REQUEST_URL);
-        absent.as_object_mut().unwrap().remove("pull_request_url");
-        let mut null = placed(PULL_REQUEST_URL);
-        null["pull_request_url"] = Value::Null;
-
-        for answer in [absent, null] {
-            let failure =
-                read_answered_with(ResponseTemplate::new(200).set_body_json(answer.clone()))
-                    .await
-                    .unwrap_err();
+    async fn a_review_comment_on_another_host_is_not_found() {
+        let elsewhere: [fn(&str) -> String; 5] = [
+            |_| "https://api.github.com".to_string(),
+            |_| "https://ghe.example/api/v3".to_string(),
+            |origin| origin.replacen("http://", "https://", 1),
+            |origin| origin.replacen("127.0.0.1", "localhost", 1),
+            |origin| {
+                let mut url = Url::parse(origin).unwrap();
+                url.set_port(Some(1)).unwrap();
+                url.as_str().trim_end_matches('/').to_string()
+            },
+        ];
+        for host in elsewhere {
+            let mut placed_at = String::new();
+            let failure = read_answered_with(|origin| {
+                placed_at = host(origin);
+                found(placed(&placed_at, PULL_REQUEST_PATH))
+            })
+            .await
+            .unwrap_err();
 
             assert!(
                 matches!(failure, PullRequestError::NotFound),
-                "{answer}: {failure:?}"
+                "{placed_at}: {failure:?}"
             );
         }
     }
 
     #[tokio::test]
-    async fn a_review_comment_belongs_to_its_pull_request_in_any_case_and_on_any_host() {
-        for home in [
-            "https://api.github.com/repos/ACME/Project/pulls/7",
-            "https://ghe.example/api/v3/repos/acme/project/pulls/7",
-        ] {
-            let comment =
-                read_answered_with(ResponseTemplate::new(200).set_body_json(placed(home)))
-                    .await
-                    .unwrap();
+    async fn a_review_comment_naming_no_pull_request_is_not_found() {
+        let unplaced: [fn(&mut Value); 2] = [
+            |answer| {
+                answer.as_object_mut().unwrap().remove("pull_request_url");
+            },
+            |answer| answer["pull_request_url"] = Value::Null,
+        ];
+        for unplace in unplaced {
+            let mut sent = Value::Null;
+            let failure = read_answered_with(|origin| {
+                sent = placed(origin, PULL_REQUEST_PATH);
+                unplace(&mut sent);
+                found(sent.clone())
+            })
+            .await
+            .unwrap_err();
+
+            assert!(
+                matches!(failure, PullRequestError::NotFound),
+                "{sent}: {failure:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_review_comment_belongs_to_its_pull_request_in_any_case() {
+        let comment =
+            read_answered_with(|origin| found(placed(origin, "/repos/ACME/Project/pulls/7")))
+                .await
+                .unwrap();
+
+        assert_eq!(comment, remarked());
+    }
+
+    #[tokio::test]
+    async fn a_review_comment_belongs_to_its_pull_request_under_an_enterprise_prefix() {
+        for home in [PULL_REQUEST_PATH, "/repos/ACME/Project/pulls/7"] {
+            let comment = read_under("/api/v3", |origin| found(placed(origin, home)))
+                .await
+                .unwrap();
 
             assert_eq!(comment, remarked(), "{home}");
         }
     }
 
     #[tokio::test]
-    async fn only_an_address_ending_in_the_pull_request_s_own_segments_belongs() {
+    async fn only_the_pull_request_s_own_address_on_this_origin_belongs() {
         let server = MockServer::start().await;
-        let reference = seven(&stand_in(&server).await);
+        let service = stand_in(&server).await;
+        let reference = seven(&service);
+        let origin = server.uri();
 
         for stranger in [
             "",
             "not an address",
             "https://github.com/acme/project/pull/7",
-            "https://api.github.com/repos/acme/project/pulls/7/",
-            "https://api.github.com/repos/acme/project/pulls/7/files",
-            "https://api.github.com/repos/acme/project/pulls/07",
-            "https://api.github.com/repos/acme/project/issues/7",
-            "https://api.github.com/acme/project/pulls/7",
-            "https://api.github.com/repos/acme/project-two/pulls/7",
+            "https://api.github.com/repos/acme/project/pulls/7",
         ] {
-            assert!(!belongs(stranger, &reference), "{stranger}");
+            assert!(!service.addresses(stranger, &reference), "{stranger}");
         }
-        assert!(belongs(PULL_REQUEST_URL, &reference));
+        for stranger in [
+            "/repos/acme/project/pulls/7/",
+            "/repos/acme/project/pulls/7/files",
+            "/repos/acme/project/pulls/07",
+            "/repos/acme/project/issues/7",
+            "/acme/project/pulls/7",
+            "/repos/acme/project-two/pulls/7",
+            "/api/v3/repos/acme/project/pulls/7",
+        ] {
+            let stranger = format!("{origin}{stranger}");
+            assert!(!service.addresses(&stranger, &reference), "{stranger}");
+        }
+        assert!(service.addresses(&format!("{origin}{PULL_REQUEST_PATH}"), &reference));
     }
 }

@@ -550,7 +550,7 @@ mod pull_requests {
                 "path": "src/cart.ts",
                 "html_url": "https://github.com/acme/project/pull/7#discussion_r99",
                 "created_at": "2026-09-20T10:00:00Z",
-                "pull_request_url": "https://api.github.com/repos/acme/project/pulls/7",
+                "pull_request_url": format!("{}/repos/acme/project/pulls/7", server.uri()),
             })))
             .expect(1)
             .mount(&server)
