@@ -14,9 +14,20 @@ pub enum PullRequestError {
     #[error("GitHub API error: {0}")]
     GitHubApi(String),
 
-    /// GitHub did not accept the token.
+    /// GitHub did not accept the token, or a request was given an empty
+    /// token without
+    /// [`PullRequestService::with_anonymous_reads`](crate::pull_request::PullRequestService::with_anonymous_reads)
+    /// and was refused unsent.
     #[error("Authentication failed")]
     AuthenticationFailed,
+
+    /// A request that is not a read, meaning a write or a GraphQL call, was
+    /// given an empty token under
+    /// [`PullRequestService::with_anonymous_reads`](crate::pull_request::PullRequestService::with_anonymous_reads)
+    /// and was refused unsent, because GitHub answers none of them without
+    /// one.
+    #[error("This request needs a token, and none was given")]
+    AuthenticationRequired,
 
     /// GitHub accepted the token, but it may not do this.
     #[error("The token may not do this")]

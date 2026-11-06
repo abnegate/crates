@@ -85,7 +85,10 @@ impl PullRequestService {
         };
 
         let response = self
-            .sent(self.request(Method::PUT, url, token, ACCEPT).json(&request))
+            .sent(
+                self.request(Method::PUT, url, token, ACCEPT)?
+                    .json(&request),
+            )
             .await?;
 
         let status = response.status();

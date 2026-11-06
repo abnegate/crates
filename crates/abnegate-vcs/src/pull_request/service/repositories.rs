@@ -64,7 +64,7 @@ impl PullRequestService {
 
         let response = self
             .sent(
-                self.request(Method::POST, url, token, ACCEPT)
+                self.request(Method::POST, url, token, ACCEPT)?
                     .json(&request),
             )
             .await?;

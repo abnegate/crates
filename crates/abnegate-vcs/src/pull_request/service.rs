@@ -43,6 +43,8 @@ use tokio::time::Instant;
 use url::Url;
 
 mod actions;
+#[cfg(test)]
+mod anonymous_tests;
 mod automation;
 mod branches;
 mod checks;
@@ -223,7 +225,15 @@ const GIT_SUFFIX: &str = ".git";
 /// No request is sent again after a rate limit, until
 /// [`Self::with_retry_after`] waits once for one that says how long to wait.
 ///
-/// A status that says what it means on its own is reported as that: 401 as
+/// Every request carries the token it is given as a bearer token. An empty
+/// token is never sent: a request given one is
+/// [`PullRequestError::AuthenticationFailed`], unsent, until
+/// [`Self::with_anonymous_reads`] sends a read without one. Even then, a
+/// request that is not a read, meaning every write and every GraphQL call,
+/// is [`PullRequestError::AuthenticationRequired`], unsent.
+///
+/// A status that says what it means on its own is reported as that: 401, a
+/// token GitHub did not accept or a read it would not answer without one, as
 /// [`PullRequestError::AuthenticationFailed`], 429 or a 403 that spent the
 /// rate limit as [`PullRequestError::RateLimited`], any other 403 as
 /// [`PullRequestError::Forbidden`], and 404 as [`PullRequestError::NotFound`],
@@ -266,6 +276,7 @@ pub struct PullRequestService {
     timeout: Duration,
     api_version: Option<String>,
     retry_ceiling: Option<Duration>,
+    anonymous: bool,
 }
 
 impl PullRequestService {
@@ -316,6 +327,7 @@ impl PullRequestService {
             timeout,
             api_version: None,
             retry_ceiling: None,
+            anonymous: false,
         })
     }
 
@@ -360,6 +372,46 @@ impl PullRequestService {
     #[must_use]
     pub fn with_retry_after(mut self, ceiling: Duration) -> Self {
         self.retry_ceiling = Some(ceiling);
+        self
+    }
+
+    /// Send a read given an empty token without one, so that a public
+    /// repository can be read with no token at all.
+    ///
+    /// A read is a GET: every REST read, and the request for a job's log. It
+    /// is sent with no `Authorization` header, still asking in the media type
+    /// and naming the API version it would with a token, and GitHub answers
+    /// it as it answers anyone, under the lower rate limit it gives those it
+    /// cannot name. A read of a private repository, or of one that does not
+    /// exist, is then [`PullRequestError::NotFound`].
+    ///
+    /// Anything else given an empty token, meaning every write and every
+    /// GraphQL call, review threads included, is
+    /// [`PullRequestError::AuthenticationRequired`], unsent, because GitHub
+    /// answers none of them without one. A token that is not empty is sent
+    /// as it is without this.
+    ///
+    /// Without it, an empty token is taken for a token that is missing by
+    /// mistake, and every request given one is
+    /// [`PullRequestError::AuthenticationFailed`], unsent.
+    ///
+    /// ```no_run
+    /// use abnegate_secret::SecretValue;
+    /// use abnegate_vcs::PullRequestService;
+    ///
+    /// # async fn read() -> Result<(), Box<dyn std::error::Error>> {
+    /// let service = PullRequestService::new()?.with_anonymous_reads();
+    /// let repository = service.parse_github_url("https://github.com/rust-lang/rust")?;
+    /// let branch = service
+    ///     .get_default_branch(&repository, &SecretValue::new(""))
+    ///     .await?;
+    /// println!("{branch}");
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn with_anonymous_reads(mut self) -> Self {
+        self.anonymous = true;
         self
     }
 
@@ -533,7 +585,7 @@ impl PullRequestService {
 
         let response = self
             .sent(
-                self.request(Method::POST, url, token, ACCEPT)
+                self.request(Method::POST, url, token, ACCEPT)?
                     .json(&request),
             )
             .await?;
@@ -601,14 +653,15 @@ impl PullRequestService {
     /// `accept`, sent by the client for reads when it is one and by the
     /// client for writes otherwise, and given up on after this service's
     /// timeout, which a write sent on after a redirect spends rather than
-    /// starts again.
+    /// starts again; or, for an empty token, why it cannot be sent, as
+    /// [`Self::request_on`] decides.
     fn request(
         &self,
         method: Method,
         url: Url,
         token: &SecretValue,
         accept: &'static str,
-    ) -> RequestBuilder {
+    ) -> PullRequestResult<RequestBuilder> {
         let client = match reads(&method) {
             true => &self.reader,
             false => &self.writer,
@@ -616,9 +669,11 @@ impl PullRequestService {
         self.request_on(client, method, url, token, accept)
     }
 
-    /// A request to `url` sent by `client`, carrying `token`, asking for an
-    /// answer in `accept`, naming the API version this service was given if
-    /// any, and given up on after this service's timeout.
+    /// A request to `url` sent by `client`, carrying `token` unless it is
+    /// empty, asking for an answer in `accept`, naming the API version this
+    /// service was given if any, and given up on after this service's
+    /// timeout; or, for an empty token, why it cannot be sent, as
+    /// [`Self::credential`] decides.
     fn request_on(
         &self,
         client: &Client,
@@ -626,15 +681,39 @@ impl PullRequestService {
         url: Url,
         token: &SecretValue,
         accept: &'static str,
-    ) -> RequestBuilder {
+    ) -> PullRequestResult<RequestBuilder> {
+        let credential = self.credential(&method, token)?;
         let request = client
             .request(method, url)
-            .bearer_auth(token.expose())
             .header(header::ACCEPT, accept)
             .timeout(self.timeout);
-        match &self.api_version {
+        let request = match credential {
+            Some(token) => request.bearer_auth(token),
+            None => request,
+        };
+        Ok(match &self.api_version {
             Some(version) => request.header(API_VERSION, version.as_str()),
             None => request,
+        })
+    }
+
+    /// The bearer token a `method` request given `token` carries: `token`
+    /// itself unless it is empty, and none for an empty token's read under
+    /// [`Self::with_anonymous_reads`]. Any other request given an empty token
+    /// is [`PullRequestError::AuthenticationRequired`] under it, and
+    /// [`PullRequestError::AuthenticationFailed`] without it.
+    fn credential<'token>(
+        &self,
+        method: &Method,
+        token: &'token SecretValue,
+    ) -> PullRequestResult<Option<&'token str>> {
+        if !token.is_empty() {
+            return Ok(Some(token.expose()));
+        }
+        match (self.anonymous, reads(method)) {
+            (true, true) => Ok(None),
+            (true, false) => Err(PullRequestError::AuthenticationRequired),
+            (false, _) => Err(PullRequestError::AuthenticationFailed),
         }
     }
 
@@ -704,7 +783,7 @@ impl PullRequestService {
         url: Url,
         token: &SecretValue,
     ) -> PullRequestResult<T> {
-        self.exchange(self.request(Method::GET, url, token, ACCEPT))
+        self.exchange(self.request(Method::GET, url, token, ACCEPT)?)
             .await
     }
 

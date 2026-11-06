@@ -70,7 +70,7 @@ impl PullRequestService {
         variables: &V,
     ) -> PullRequestResult<GraphQlResponse> {
         self.exchange(
-            self.request(Method::POST, self.origin.graphql(), token, ACCEPT)
+            self.request(Method::POST, self.origin.graphql(), token, ACCEPT)?
                 .json(&GraphQlRequest { query, variables }),
         )
         .await

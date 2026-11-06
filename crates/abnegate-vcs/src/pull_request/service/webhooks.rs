@@ -32,7 +32,7 @@ impl PullRequestService {
         };
         let created: GitHubIdentified = self
             .exchange(
-                self.request(Method::POST, self.hooks(repository, &[])?, token, ACCEPT)
+                self.request(Method::POST, self.hooks(repository, &[])?, token, ACCEPT)?
                     .json(&request),
             )
             .await?;
@@ -56,7 +56,7 @@ impl PullRequestService {
                 self.hooks(repository, &[&id, "config"])?,
                 token,
                 ACCEPT,
-            )
+            )?
             .json(&WebhookConfiguration::new(url, secret)),
         )
         .await?;
@@ -78,7 +78,7 @@ impl PullRequestService {
                 self.hooks(repository, &[&id])?,
                 token,
                 ACCEPT,
-            ))
+            )?)
             .await?;
 
         let status = response.status();

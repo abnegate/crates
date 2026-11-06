@@ -87,7 +87,7 @@ impl PullRequestService {
 
         let posted: GitHubIdentified = self
             .exchange(
-                self.request(Method::POST, url, token, ACCEPT)
+                self.request(Method::POST, url, token, ACCEPT)?
                     .json(&CommentRequest { body }),
             )
             .await?;
@@ -113,7 +113,7 @@ impl PullRequestService {
 
         let posted: GitHubIssueComment = self
             .exchange(
-                self.request(Method::POST, url, token, ACCEPT)
+                self.request(Method::POST, url, token, ACCEPT)?
                     .json(&CommentRequest { body }),
             )
             .await?;
@@ -149,7 +149,10 @@ impl PullRequestService {
         };
 
         let submitted: GitHubIdentified = self
-            .exchange(self.request(Method::POST, url, token, ACCEPT).json(&review))
+            .exchange(
+                self.request(Method::POST, url, token, ACCEPT)?
+                    .json(&review),
+            )
             .await?;
         Ok(submitted.id)
     }
@@ -175,7 +178,7 @@ impl PullRequestService {
         )?;
 
         self.answered(
-            self.request(Method::POST, url, token, ACCEPT)
+            self.request(Method::POST, url, token, ACCEPT)?
                 .json(&CommentRequest { body }),
         )
         .await?;

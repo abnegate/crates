@@ -135,7 +135,7 @@ impl PullRequestService {
         let job = job.to_string();
         let url = self.repository_endpoint(repository, &["actions", "jobs", &job, "logs"])?;
         let (response, sent_at) = self
-            .attempted(self.request_on(&self.writer, Method::GET, url, token, ACCEPT))
+            .attempted(self.request_on(&self.writer, Method::GET, url, token, ACCEPT)?)
             .await?;
         let deadline = sent_at.checked_add(self.timeout);
 
