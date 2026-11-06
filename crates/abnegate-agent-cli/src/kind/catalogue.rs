@@ -112,17 +112,15 @@ pub(super) fn claude_effortful(model: &str) -> bool {
             .contains(CLAUDE_EFFORTLESS_FAMILY)
 }
 
-/// A full Claude model name: `^claude-[a-z0-9-]+(\[1m\])?$`.
+/// A full Claude model name: `^claude(-[a-z0-9]+)+(\[1m\])?$`.
 pub(super) fn claude_model(model: &str) -> bool {
     model
         .strip_suffix(LONG_CONTEXT)
         .unwrap_or(model)
         .strip_prefix(CLAUDE_FAMILY)
         .is_some_and(|rest| {
-            !rest.is_empty()
-                && rest
-                    .bytes()
-                    .all(|byte| lowercase_or_digit(byte) || byte == b'-')
+            rest.split('-')
+                .all(|word| !word.is_empty() && word.bytes().all(lowercase_or_digit))
         })
 }
 
@@ -269,6 +267,10 @@ mod tests {
             "Default",
             "Claude-Opus-5",
             "claude-",
+            "claude--",
+            "claude-opus-",
+            "claude--opus",
+            "claude-opus--5",
             "claude-[1m]",
             "claude-opus-5[2m]",
             "claude_opus",

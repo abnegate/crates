@@ -167,7 +167,8 @@ impl AgentKind {
     /// the run fails there. A run is still given whatever model its caller
     /// names, since a Codex run can be pointed at a local model such as
     /// `qwen2.5:7b-instruct`: a host that offers only what the agent knows
-    /// checks a model with this first.
+    /// checks a model with this first. A full name is checked by its shape
+    /// alone, so one that no model has yet passes.
     pub fn knows(self, model: &str) -> bool {
         let model = model.trim();
         if !catalogue::plausible(model) {

@@ -72,6 +72,7 @@ const ISOLATION_DEFAULTS: &[(&str, &str)] = &[
 /// Claude Code's waits on a call to an MCP tool, in milliseconds: the whole
 /// call, and the time it may go without hearing from the server.
 const TOOL_TIMEOUTS: &[&str] = &["MCP_TOOL_TIMEOUT", "CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT"];
+const NANOSECONDS_PER_MILLISECOND: u128 = 1_000_000;
 
 /// The child's environment: an allowlist of host variables, the
 /// [locale](LOCALE) categories, the caller's allowed names and the agent's own
@@ -347,8 +348,9 @@ impl Environment {
 /// override it, none of it secret: the [isolation defaults](ISOLATION_DEFAULTS)
 /// when the run is [isolated](CliSettings::isolated), and, when `attached`,
 /// the longest [tool timeout](crate::McpServer::tool_timeout) of the servers
-/// attached to it as both of Claude Code's [waits](TOOL_TIMEOUTS) on a tool.
-/// Codex is given neither.
+/// attached to it as both of Claude Code's [waits](TOOL_TIMEOUTS) on a tool,
+/// rounded up to whole milliseconds, so a wait under one is never `0`, which
+/// Claude Code reads as no wait at all. Codex is given neither.
 fn defaults(agent: AgentKind, settings: &CliSettings, attached: bool) -> Vec<(String, String)> {
     if agent != AgentKind::Claude {
         return Vec::new();
@@ -368,7 +370,10 @@ fn defaults(agent: AgentKind, settings: &CliSettings, attached: bool) -> Vec<(St
         .filter_map(|(_, server)| server.tool_timeout)
         .max();
     if let Some(timeout) = timeout {
-        let milliseconds = timeout.as_millis().to_string();
+        let milliseconds = timeout
+            .as_nanos()
+            .div_ceil(NANOSECONDS_PER_MILLISECOND)
+            .to_string();
         defaults.extend(
             TOOL_TIMEOUTS
                 .iter()
@@ -1897,6 +1902,36 @@ mod tests {
             let variables = set(&Environment::new(agent, &settings, None, &host()));
             for (name, _) in ISOLATION {
                 assert!(!variables.contains_key(name), "{agent}: {name}");
+            }
+        }
+    }
+
+    /// A wait under a millisecond is still a wait: rounded down it would be
+    /// `0`, which Claude Code reads as none.
+    #[test]
+    fn a_claude_run_rounds_its_mcp_tool_wait_up_to_a_millisecond() {
+        for (timeout, expected) in [
+            (Duration::from_micros(500), "1"),
+            (Duration::from_micros(1500), "2"),
+            (Duration::from_millis(3), "3"),
+        ] {
+            let settings = CliSettings::default().with_mcp_server(
+                "host",
+                McpServer::remote("http://127.0.0.1:9/mcp").with_tool_timeout(timeout),
+            );
+            let attachment = attached(&settings);
+            let variables = set(&Environment::new(
+                AgentKind::Claude,
+                &settings,
+                Some(&attachment),
+                &host(),
+            ));
+            for name in TIMEOUTS {
+                assert_eq!(
+                    variables[name].as_deref(),
+                    Some(expected),
+                    "{timeout:?} {name}"
+                );
             }
         }
     }

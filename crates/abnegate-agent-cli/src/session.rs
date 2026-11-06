@@ -14,6 +14,7 @@ mod session_error;
 
 use std::fs;
 use std::fs::DirBuilder;
+use std::fs::FileType;
 use std::fs::OpenOptions;
 use std::fs::Permissions;
 use std::io;
@@ -38,6 +39,9 @@ const SESSIONS: &str = "sessions";
 const ROLLOUT: &str = "rollout-";
 const EXTENSION: &str = ".jsonl";
 const STAGING: &str = ".carrying-";
+/// How many folders, a year's, a month's and a day's, a rollout sits in
+/// within Codex's sessions folder.
+const DATE_DEPTH: usize = 3;
 
 /// Claude cuts a longer project folder name to this many UTF-16 units and
 /// appends a hash of the whole path.
@@ -363,34 +367,43 @@ fn regular(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_file())
 }
 
-/// The rollout under `home/directory` whose name ends in `suffix`, searched
-/// depth first without following links.
-fn rollout(home: &Path, directory: &Path, suffix: &str) -> Option<PathBuf> {
-    let entries = fs::read_dir(home.join(directory)).ok()?;
-    let mut directories = Vec::new();
-
-    for entry in entries.flatten() {
-        let Ok(kind) = entry.file_type() else {
-            continue;
-        };
-        let relative = directory.join(entry.file_name());
-        if kind.is_dir() {
-            directories.push(relative);
-        } else if kind.is_file()
-            && entry
-                .file_name()
-                .to_str()
-                .and_then(|name| name.strip_prefix(ROLLOUT))
-                .and_then(|rest| rest.strip_suffix(suffix))
-                .is_some_and(|stamp| !stamp.is_empty())
-        {
-            return Some(relative);
-        }
+/// The rollout under `home/sessions` whose name ends in `suffix`, looked for
+/// only where Codex keeps one, in a day's folder within a month's within a
+/// year's, without following links.
+fn rollout(home: &Path, sessions: &Path, suffix: &str) -> Option<PathBuf> {
+    let mut folders = vec![sessions.to_path_buf()];
+    for _ in 0..DATE_DEPTH {
+        folders = folders
+            .iter()
+            .flat_map(|folder| entries(home, folder))
+            .filter(|(_, kind)| kind.is_dir())
+            .map(|(relative, _)| relative)
+            .collect();
     }
+    folders.iter().find_map(|day| {
+        entries(home, day).into_iter().find_map(|(relative, kind)| {
+            (kind.is_file()
+                && relative
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .and_then(|name| name.strip_prefix(ROLLOUT))
+                    .and_then(|rest| rest.strip_suffix(suffix))
+                    .is_some_and(|stamp| !stamp.is_empty()))
+            .then_some(relative)
+        })
+    })
+}
 
-    directories
-        .iter()
-        .find_map(|directory| rollout(home, directory, suffix))
+/// What `home/directory` holds, each relative to `home` with its own type,
+/// a link read as a link.
+fn entries(home: &Path, directory: &Path) -> Vec<(PathBuf, FileType)> {
+    let Ok(entries) = fs::read_dir(home.join(directory)) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| Some((directory.join(entry.file_name()), entry.file_type().ok()?)))
+        .collect()
 }
 
 /// Copies `source`, never through a link, into a private file staged beside
@@ -565,6 +578,44 @@ mod tests {
                 "{agent} finds the carried session where it looks for its own"
             );
         }
+    }
+
+    /// Codex keeps a rollout in a day's folder, so one anywhere else under
+    /// its sessions folder is none of its sessions.
+    #[test]
+    fn a_rollout_outside_a_days_folder_is_not_a_codex_session() {
+        let homes = Homes::new();
+        let name = homes.codex().file_name().unwrap().to_owned();
+        for misplaced in [
+            Path::new("sessions").join(&name),
+            Path::new("sessions/2026/09").join(&name),
+            Path::new(CODEX_DAY).join("deeper").join(&name),
+        ] {
+            homes.write(&misplaced);
+
+            assert_eq!(
+                homes.locate(
+                    homes.from.path(),
+                    AgentKind::Codex,
+                    homes.work.path(),
+                    CODEX_ID
+                ),
+                None,
+                "{}",
+                misplaced.display()
+            );
+        }
+
+        homes.write(&homes.codex());
+        assert_eq!(
+            homes.locate(
+                homes.from.path(),
+                AgentKind::Codex,
+                homes.work.path(),
+                CODEX_ID
+            ),
+            Some(homes.from.path().join(homes.codex()))
+        );
     }
 
     #[test]

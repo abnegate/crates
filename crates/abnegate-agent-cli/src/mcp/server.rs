@@ -216,7 +216,9 @@ pub struct McpServer {
     /// server's `enabled_tools`, so it offers the model no other tool of the
     /// server's, and a Claude run allows no tool of the server's without
     /// asking that the list does not name, though the model can still see
-    /// them.
+    /// them. Claude Code still allows what a settings file it loads allows,
+    /// so a Claude run holds the server to the list only when it is
+    /// [isolated](crate::CliSettings::isolated), which loads none.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub exclusive: bool,
     /// Leave each call to this server's tools to Codex's own approval rules
@@ -1520,6 +1522,21 @@ mod tests {
         let read: McpServer = serde_json::from_value(written).expect("a server");
         assert_eq!(read, optioned);
         assert_eq!(optioned.redacted(), plain.redacted());
+    }
+
+    /// The longest wait a [`Duration`] holds is written as a number of
+    /// seconds past what one reads back exactly, and still reads back as the
+    /// longest rather than failing the document.
+    #[test]
+    fn the_longest_wait_survives_a_round_trip_through_a_document() {
+        let longest = McpServer::remote("http://127.0.0.1:9/mcp")
+            .with_tool_timeout(Duration::MAX)
+            .with_startup_timeout(Duration::MAX);
+
+        let written = serde_json::to_string(&longest).expect("serialisable");
+        let read: McpServer = serde_json::from_str(&written).expect("a server");
+
+        assert_eq!(read, longest);
     }
 
     /// An exclusive server naming no tool allows none, and reads back as

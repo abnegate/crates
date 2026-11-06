@@ -139,7 +139,9 @@ impl<'document> Entry<'document> {
         }
     }
 
-    /// A wait given as a non-negative number of seconds, whole or not.
+    /// A wait given as a non-negative number of seconds, whole or not, one
+    /// past the longest a [`Duration`] holds read as that longest, as the
+    /// longest is written.
     fn seconds(&self, names: &[&'static str]) -> Result<Option<Duration>, Mismatch> {
         let Some(value) = self.value(names)?.filter(|value| !value.is_null()) else {
             return Ok(None);
@@ -150,7 +152,8 @@ impl<'document> Entry<'document> {
             .or_else(|| {
                 value
                     .as_f64()
-                    .and_then(|seconds| Duration::try_from_secs_f64(seconds).ok())
+                    .filter(|seconds| *seconds >= 0.0)
+                    .map(|seconds| Duration::try_from_secs_f64(seconds).unwrap_or(Duration::MAX))
             })
             .map(Some)
             .ok_or(Mismatch::new(Some(names[0]), SECONDS))
