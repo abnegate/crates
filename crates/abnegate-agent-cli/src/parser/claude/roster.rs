@@ -116,8 +116,9 @@ impl Roster {
     /// subagent the call was a step of or started. `report` is the tool's
     /// account of the call, a subagent's report when it started one: the
     /// account of the only result, or, among several, of the one call the
-    /// report's task is known to have been started by, and of none when it
-    /// is not known. A result no call is known for is ignored.
+    /// report's task is known to have been started by, or else of the only
+    /// one that started a subagent, and of none when that is not known
+    /// either. A result no call is known for is ignored.
     pub(crate) fn returned(
         &mut self,
         results: impl IntoIterator<Item = (String, Value, bool)>,
@@ -130,7 +131,8 @@ impl Roster {
             _ => report
                 .and_then(|report| report.task.as_ref())
                 .and_then(|task| self.tasks.get(task))
-                .cloned(),
+                .cloned()
+                .or_else(|| self.only_starter(&results)),
         };
         for (id, content, failed) in results {
             let report = report.filter(|_| owner.as_deref() == Some(id.as_str()));
@@ -152,6 +154,19 @@ impl Roster {
                     .map(AgentEvent::Subagent),
             );
             events.push(AgentEvent::Output(Output::new(call, text, !failed)));
+        }
+    }
+
+    /// The id of the only one of `results` that answers a call starting a
+    /// subagent, when exactly one does.
+    fn only_starter(&self, results: &[(String, Value, bool)]) -> Option<String> {
+        let mut starters = results
+            .iter()
+            .map(|(id, _, _)| id)
+            .filter(|id| self.subagents.contains_key(*id));
+        match (starters.next(), starters.next()) {
+            (Some(id), None) => Some(id.clone()),
+            _ => None,
         }
     }
 

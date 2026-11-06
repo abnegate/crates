@@ -275,6 +275,38 @@ fn a_report_beside_several_results_is_only_its_own_calls() {
     assert_eq!(owned.tool_uses, Some(4), "{owned:?}");
 }
 
+/// Without a task to tie it to a call, a report beside several results is
+/// still the account of the only call among them that started a subagent.
+#[test]
+fn a_report_beside_one_subagents_result_and_others_is_that_subagents() {
+    let answers = json!({
+        "type": "user",
+        "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": AGENT_CALL, "content": "Launched.", "is_error": false},
+            {"type": "tool_result", "tool_use_id": "toolu_09Bash", "content": "ok", "is_error": false},
+        ]},
+        "parent_tool_use_id": null,
+        "session_id": "6f1",
+        "tool_use_result": {"status": "remote_launched", "agentId": "t9"},
+    });
+    let lines = [
+        delegated("sonnet").to_string(),
+        called("toolu_09Bash", "Bash", &json!({"command": "ls"})).to_string(),
+        answers.to_string(),
+    ];
+
+    let events = interpret_all(&stream(&lines));
+
+    let launched = last_update(&events, AGENT_CALL).expect("the subagent's launch");
+    assert_eq!(launched.background, Some(true), "{launched:?}");
+    assert_ne!(
+        launched.status,
+        Some(SubagentStatus::Completed),
+        "{launched:?}"
+    );
+    assert_eq!(launched.summary, None, "{launched:?}");
+}
+
 #[test]
 fn a_foreground_subagent_is_followed_from_its_call_through_its_steps_to_its_report() {
     let events = interpret_all(SUBAGENTS_STREAM);
