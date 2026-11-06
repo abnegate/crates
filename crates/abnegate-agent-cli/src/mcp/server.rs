@@ -216,9 +216,13 @@ pub struct McpServer {
     /// server's `enabled_tools`, so it offers the model no other tool of the
     /// server's, and a Claude run allows no tool of the server's without
     /// asking that the list does not name, though the model can still see
-    /// them. Claude Code still allows what a settings file it loads allows,
-    /// so a Claude run holds the server to the list only when it is
-    /// [isolated](crate::CliSettings::isolated), which loads none.
+    /// them. The list is not a boundary Claude Code enforces, though: it
+    /// still runs an unlisted tool that a settings file it loads allows, an
+    /// [isolated](crate::CliSettings::isolated) run loading none but the
+    /// managed settings an administrator installs, that the run's own
+    /// [permissions](crate::CliSettings::permissions) allow, or that its
+    /// [permission prompt](crate::CliSettings::permission_prompt) approves.
+    /// A server that must refuse a tool refuses it itself.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub exclusive: bool,
     /// Leave each call to this server's tools to Codex's own approval rules

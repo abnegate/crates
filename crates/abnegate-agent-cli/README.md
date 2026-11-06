@@ -179,7 +179,11 @@ never reach Claude's file or a log: `with_tool_timeout` (Codex's
 `MCP_TOOL_TIMEOUT` and `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT`),
 `with_startup_timeout`, `require`, `eager` and `supervise` (Codex only), and
 `exclusive`, which holds a server to exactly the tools it names, none when it
-names none. A configuration document carries each only when it is set:
+names none. Codex is held to the list as the server's `enabled_tools`. Claude
+is only not pre-approved for the rest: a settings file it loads (on an isolated
+run, only managed settings), the run's own permissions or its permission prompt
+can still allow an unlisted tool, so a server that must refuse a tool refuses
+it itself. A configuration document carries each only when it is set:
 `tool_timeout_sec` and `startup_timeout_sec` as a number of seconds (also read
 as `tool_timeout_seconds` and `startup_timeout_seconds`), and `required`,
 `eager`, `exclusive` and `supervised` as `true`, so a server written out and
