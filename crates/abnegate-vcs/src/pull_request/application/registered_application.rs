@@ -39,10 +39,6 @@ impl RegisteredApplication {
     /// `owner` and shown at `html_url`, with the OAuth client `client_id` and
     /// `client_secret`, signing its JWTs with `private_key`, and with no
     /// webhook secret.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "every argument is a field GitHub always sends"
-    )]
     pub fn new(
         id: ApplicationId,
         slug: impl Into<String>,
