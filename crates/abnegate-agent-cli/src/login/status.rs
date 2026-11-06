@@ -403,7 +403,7 @@ mod tests {
         let executable = fake(
             &directory,
             "login status",
-            &format!("echo $$ > '{}'\nexec sleep 60", record.display()),
+            &format!("echo $$ > '{}'\nexec sleep 120", record.display()),
         );
         let cli = Cli::new(&executable).with_environment(environment());
 

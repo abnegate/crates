@@ -118,7 +118,7 @@ async fn a_device_login_returns_the_link_and_code_codex_printed() {
     let codex = fake(
         &directory,
         &arguments(),
-        &format!("cat '{prompt}'\nexec sleep 60"),
+        &format!("cat '{prompt}'\nexec sleep 120"),
     );
     let before = Utc::now();
 
@@ -270,7 +270,7 @@ async fn a_cancelled_relogin_stops_codex_and_leaves_the_existing_login_in_place(
         &directory,
         &arguments(),
         &format!(
-            "{REVOKE}\n{}\necho $$ > '{}'\nsleep 60 >/dev/null 2>&1 &\necho $! > '{}'\ncat '{prompt}'\nexec sleep 60",
+            "{REVOKE}\n{}\necho $$ > '{}'\nsleep 120 >/dev/null 2>&1 &\necho $! > '{}'\ncat '{prompt}'\nexec sleep 120",
             recording(&record),
             leader.display(),
             forked.display()
@@ -316,7 +316,7 @@ fn lingering(directory: &TempDir, prompt: Option<&str>) -> (PathBuf, PathBuf, Pa
         directory,
         &arguments(),
         &format!(
-            "echo $$ > '{}.tmp' && mv '{0}.tmp' '{0}'\nsleep 60 >/dev/null 2>&1 &\necho $! > '{}.tmp' && mv '{1}.tmp' '{1}'\n{printed}exec sleep 60",
+            "echo $$ > '{}.tmp' && mv '{0}.tmp' '{0}'\nsleep 120 >/dev/null 2>&1 &\necho $! > '{}.tmp' && mv '{1}.tmp' '{1}'\n{printed}exec sleep 120",
             leader.display(),
             forked.display()
         ),
@@ -474,7 +474,7 @@ async fn limits_past_what_the_clock_can_count_are_waited_out() {
     let codex = fake(
         &directory,
         &arguments(),
-        &format!("cat '{prompt}'\nexec sleep 60"),
+        &format!("cat '{prompt}'\nexec sleep 120"),
     );
     let limits = Limits::default()
         .with_prompt(Duration::MAX)
@@ -508,7 +508,7 @@ fn saving_as_it_expires(directory: &TempDir, auth: &str) -> (PathBuf, PathBuf) {
         directory,
         &arguments(),
         &format!(
-            "trap 'exit 0' TERM\necho $$ > '{}'\ncp '{written}' \"$CODEX_HOME/auth.json\"\ncat '{prompt}'\nsleep 60 &\nwait",
+            "trap 'exit 0' TERM\necho $$ > '{}'\ncp '{written}' \"$CODEX_HOME/auth.json\"\ncat '{prompt}'\nsleep 120 &\nwait",
             leader.display()
         ),
     );
@@ -604,7 +604,7 @@ async fn a_code_nobody_enters_expires_and_codex_is_stopped() {
         &directory,
         &arguments(),
         &format!(
-            "{REVOKE}\necho $$ > '{}'\nsleep 60 >/dev/null 2>&1 &\necho $! > '{}'\ncat '{prompt}'\nexec sleep 60",
+            "{REVOKE}\necho $$ > '{}'\nsleep 120 >/dev/null 2>&1 &\necho $! > '{}'\ncat '{prompt}'\nexec sleep 120",
             leader.display(),
             forked.display()
         ),
@@ -733,7 +733,7 @@ async fn a_codex_that_prints_no_prompt_is_stopped() {
         &directory,
         &arguments(),
         &format!(
-            "echo $$ > '{}'\necho 'Welcome to Codex'\nexec sleep 60",
+            "echo $$ > '{}'\necho 'Welcome to Codex'\nexec sleep 120",
             leader.display()
         ),
     );
@@ -760,7 +760,7 @@ async fn a_codex_that_prints_a_line_too_long_to_be_a_prompt_is_refused() {
     let codex = fake(
         &directory,
         &arguments(),
-        "head -c 5000 /dev/zero | tr '\\0' 'x'\necho\nexec sleep 60",
+        "head -c 5000 /dev/zero | tr '\\0' 'x'\necho\nexec sleep 120",
     );
 
     let error = login(&codex, environment())
@@ -890,7 +890,7 @@ async fn a_logout_that_outlasts_its_limit_is_stopped() {
     let codex = fake(
         &directory,
         "logout",
-        &format!("echo $$ > '{}'\nexec sleep 60", leader.display()),
+        &format!("echo $$ > '{}'\nexec sleep 120", leader.display()),
     );
     let limits = Limits::default().with_command(Duration::from_secs(1));
 

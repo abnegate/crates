@@ -152,7 +152,7 @@ mod tests {
         let cli = fake(
             &directory,
             "status",
-            &format!("echo $$ > '{}'\nexec sleep 60", record.display()),
+            &format!("echo $$ > '{}'\nexec sleep 120", record.display()),
         );
 
         let error = Output::capture(
