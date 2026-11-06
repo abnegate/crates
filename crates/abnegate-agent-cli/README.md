@@ -14,10 +14,12 @@ would have returned when the run failed. `CliProvider::execute_prompt` and
 role label, trimming or escaping, so Claude reads a leading slash command such
 as `/issue ENG-42` as one; text the caller does not control belongs in a
 conversation, whose role labels are escaped. A run can start the agent's own
-`Session` under an id of the caller's choosing, or resume one. A Claude or Codex
-run can attach MCP servers, and a Claude run can restrict its tools, or be
-confined to reading its working directory, and a run
-that fails in any way takes every process the agent forked with it. The agent is
+`Session` under an id of the caller's choosing, or resume one, and
+`Session::carry` moves a session's file into another home. A Claude or Codex
+run can attach MCP servers and withhold the agent's own tools, and a Claude run
+can restrict its tools, be confined to reading its working directory, or be
+isolated from what the host configured for it. A run that fails in any way
+takes every process the agent forked with it. The agent is
 given an allowlisted part of this process's environment and its locale
 categories (`LC_CTYPE`, `LC_TIME` and the rest), the names
 `CliSettings::allow` adds (a proxy among them with
@@ -47,10 +49,10 @@ every other remote server, not from them.
 No agent is passed a permission-bypass flag, and nothing is approved in advance
 but what the settings allow and the tools of the MCP servers a Codex run is
 given, which `codex exec` has nobody to ask about. Claude's own tools keep
-Claude's own permission checks. Codex's do not: `codex exec` never asks for approval, so only its
-sandbox confines them, whichever one `CliSettings::with_sandbox`, the user's
-configuration or a `--sandbox` argument names, and `danger-full-access` confines
-nothing.
+Claude's own permission checks. Codex's do not: `codex exec` never asks for
+approval, so only its sandbox confines them, whichever one
+`CliSettings::with_sandbox`, the user's configuration or a `--sandbox` argument
+names, and `danger-full-access` confines nothing.
 
 ## Models and effort
 
