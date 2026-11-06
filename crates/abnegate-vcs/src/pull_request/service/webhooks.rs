@@ -50,7 +50,7 @@ impl PullRequestService {
         secret: &SecretValue,
     ) -> PullRequestResult<()> {
         let id = id.to_string();
-        answered(
+        self.answered(
             self.request(
                 Method::PATCH,
                 self.hooks(repository, &[&id, "config"])?,
@@ -72,13 +72,14 @@ impl PullRequestService {
         id: u64,
     ) -> PullRequestResult<()> {
         let id = id.to_string();
-        let response = sent(self.request(
-            Method::DELETE,
-            self.hooks(repository, &[&id])?,
-            token,
-            ACCEPT,
-        ))
-        .await?;
+        let response = self
+            .sent(self.request(
+                Method::DELETE,
+                self.hooks(repository, &[&id])?,
+                token,
+                ACCEPT,
+            ))
+            .await?;
 
         let status = response.status();
         if status.is_success() || status == StatusCode::NOT_FOUND {

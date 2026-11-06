@@ -35,7 +35,9 @@ impl PullRequestService {
         let reference = branch.reference();
         let segments: Vec<&str> = ["git"].into_iter().chain(reference.split('/')).collect();
         let url = self.repository_endpoint(repository, &segments)?;
-        let response = sent(self.request(Method::DELETE, url, token, ACCEPT)).await?;
+        let response = self
+            .sent(self.request(Method::DELETE, url, token, ACCEPT))
+            .await?;
 
         let status = response.status();
         if status.is_success() || status == StatusCode::NOT_FOUND {
@@ -73,7 +75,9 @@ impl PullRequestService {
             return Err(ParseError::BranchName(reference.to_string()).into());
         }
         let url = self.repository_endpoint(repository, &["commits", reference])?;
-        let response = sent(self.request(Method::GET, url, token, ACCEPT)).await?;
+        let response = self
+            .sent(self.request(Method::GET, url, token, ACCEPT))
+            .await?;
 
         let status = response.status();
         if status.is_success() {

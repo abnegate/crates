@@ -6,6 +6,7 @@ use crate::pull_request::PullRequestError;
 use crate::pull_request::PullRequestReception;
 use crate::pull_request::PullRequestReference;
 use crate::pull_request::PullRequestResult;
+use crate::pull_request::RateLimit;
 use crate::pull_request::Repository;
 use crate::pull_request::ReviewState;
 use crate::pull_request::SubmittedReview;
@@ -17,8 +18,10 @@ use crate::pull_request::github_review::GitHubReview;
 use crate::pull_request::minutes_between;
 use crate::pull_request::origin::Origin;
 use crate::pull_request::origin::host_of;
+use crate::pull_request::rate_limit;
 use crate::pull_request::repository_detail::RepositoryDetail;
 use crate::pull_request::tally;
+use abnegate_http::RetryAfter;
 use abnegate_secret::SecretValue;
 use abnegate_secret::sanitize;
 use reqwest::Client;
@@ -35,6 +38,7 @@ use std::num::NonZeroU8;
 use std::num::NonZeroU32;
 use std::num::NonZeroU64;
 use std::time::Duration;
+use std::time::SystemTime;
 use tokio::time::Instant;
 use url::Url;
 
@@ -51,6 +55,8 @@ mod graphql;
 mod issues;
 mod merging;
 mod pulls;
+#[cfg(test)]
+mod rate_limit_tests;
 #[cfg(test)]
 mod redirect_tests;
 mod releases;
@@ -91,12 +97,6 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Redirects within the origin a request follows before it stops.
 const MAXIMUM_REDIRECTS: usize = 10;
-
-/// The header GitHub reports the requests left in the current window in.
-const RATE_LIMIT_REMAINING: &str = "x-ratelimit-remaining";
-
-/// The header GitHub's secondary rate limit says how long to wait in.
-const RETRY_AFTER: &str = "retry-after";
 
 /// What GitHub says of a spent rate limit on a 403 that carries no header
 /// saying so.
@@ -210,17 +210,23 @@ const GIT_SUFFIX: &str = ".git";
 /// A request is given 30 seconds from when it is first sent to the last byte
 /// of its answer, and every hop of a redirect spends them rather than starting
 /// again. One that outlasts them is [`PullRequestError::Http`], whose error
-/// says it timed out.
+/// says it timed out. A request sent again after a rate limit's wait is given
+/// its 30 seconds afresh.
 ///
 /// No request names a version of GitHub's REST API, so GitHub answers in its
 /// default one, until [`Self::with_api_version`] names one for every request.
+///
+/// No request is sent again after a rate limit, until
+/// [`Self::with_retry_after`] waits once for one that says how long to wait.
 ///
 /// A status that says what it means on its own is reported as that: 401 as
 /// [`PullRequestError::AuthenticationFailed`], 429 or a 403 that spent the
 /// rate limit as [`PullRequestError::RateLimited`], any other 403 as
 /// [`PullRequestError::Forbidden`], and 404 as [`PullRequestError::NotFound`],
 /// except that [`Self::delete_branch`] and [`Self::delete_webhook`] read a 404
-/// as already gone.
+/// as already gone. Under [`Self::with_retry_after`], a 403 or 429 that says
+/// no requests are left in the window is
+/// [`PullRequestError::QuotaExhausted`] instead.
 /// Outside a merge, the errors GitHub's GraphQL API reports map onto the same
 /// variants where GitHub names their kind. Of a refusal's answer, an error
 /// keeps only GitHub's own message, bounded: never the raw answer, and never
@@ -255,6 +261,7 @@ pub struct PullRequestService {
     origin: Origin,
     timeout: Duration,
     api_version: Option<String>,
+    retry_ceiling: Option<Duration>,
 }
 
 impl PullRequestService {
@@ -304,6 +311,7 @@ impl PullRequestService {
             origin,
             timeout,
             api_version: None,
+            retry_ceiling: None,
         })
     }
 
@@ -319,6 +327,35 @@ impl PullRequestService {
     #[must_use]
     pub fn with_api_version(mut self, version: impl Into<String>) -> Self {
         self.api_version = Some(version.into());
+        self
+    }
+
+    /// Wait out a rate limit that says how long to, when that is no longer
+    /// than `ceiling`, and send the request again once.
+    ///
+    /// A 403 or 429 whose `Retry-After`, in seconds or as an HTTP-date, asks
+    /// for a wait at or under `ceiling` is waited on, and the request is sent
+    /// again once, never in a loop: whatever answers it then is the answer.
+    /// A wait longer than `ceiling`, a `Retry-After` that is missing or cannot
+    /// be read, or one on any other status, is not waited on, and
+    /// `x-ratelimit-reset` alone never causes a wait. A ceiling of
+    /// [`Duration::MAX`] waits as long as GitHub asks.
+    ///
+    /// A 403 or 429 whose `x-ratelimit-remaining` is 0 has spent the window,
+    /// so it is never waited on, before or after the one retry: it is
+    /// [`PullRequestError::QuotaExhausted`], with what GitHub said of the
+    /// limit. A success that spends the last request of the window is a
+    /// success.
+    ///
+    /// A request whose body can be sent only once is not sent again. The
+    /// request sent again is given its time afresh, and the wait is not
+    /// counted against it.
+    ///
+    /// Without it, a rate limit is never waited on, and is
+    /// [`PullRequestError::RateLimited`] whatever GitHub says of the window.
+    #[must_use]
+    pub fn with_retry_after(mut self, ceiling: Duration) -> Self {
+        self.retry_ceiling = Some(ceiling);
         self
     }
 
@@ -490,11 +527,12 @@ impl PullRequestService {
             draft,
         };
 
-        let response = sent(
-            self.request(Method::POST, url, token, ACCEPT)
-                .json(&request),
-        )
-        .await?;
+        let response = self
+            .sent(
+                self.request(Method::POST, url, token, ACCEPT)
+                    .json(&request),
+            )
+            .await?;
 
         let status = response.status();
         if status.is_success() {
@@ -596,9 +634,65 @@ impl PullRequestService {
         }
     }
 
+    /// The answer to `request`, whatever its status, from where it was last
+    /// sent, and when the attempt that answered was sent.
+    ///
+    /// Under [`Self::with_retry_after`], a rate limit that asks for a wait no
+    /// longer than the ceiling is waited out and `request` sent again once,
+    /// and a rate limit that spent the window, before or after, is
+    /// [`PullRequestError::QuotaExhausted`].
+    async fn attempted(&self, request: RequestBuilder) -> PullRequestResult<(Response, Instant)> {
+        let Some(ceiling) = self.retry_ceiling else {
+            let at = Instant::now();
+            return Ok((transported(request).await?, at));
+        };
+        let again = request.try_clone();
+        let mut at = Instant::now();
+        let mut response = transported(request).await?;
+        if let (Some(delay), Some(again)) = (
+            pause(
+                response.status(),
+                response.headers(),
+                ceiling,
+                SystemTime::now(),
+            ),
+            again,
+        ) {
+            tracing::debug!(
+                status = %response.status(),
+                ?delay,
+                "Waiting out a rate limit before sending the request again"
+            );
+            drop(response);
+            tokio::time::sleep(delay).await;
+            at = Instant::now();
+            response = transported(again).await?;
+        }
+        match exhausted(response.status(), response.headers()) {
+            Some(rate_limit) => Err(PullRequestError::quota_exhausted(rate_limit)),
+            None => Ok((response, at)),
+        }
+    }
+
+    /// The answer to `request`, whatever its status, from where it was last
+    /// sent, once any rate limit this service waits on has been waited out.
+    async fn sent(&self, request: RequestBuilder) -> PullRequestResult<Response> {
+        self.attempted(request).await.map(|(response, _)| response)
+    }
+
+    /// The successful answer to `request`, from where it was sent, or the
+    /// refusal it is.
+    async fn answered(&self, request: RequestBuilder) -> PullRequestResult<Response> {
+        let response = self.sent(request).await?;
+        match response.status().is_success() {
+            true => Ok(response),
+            false => Err(refusal(response).await),
+        }
+    }
+
     /// Send `request` and read its answer as `T`, or as the refusal it is.
     async fn exchange<T: DeserializeOwned>(&self, request: RequestBuilder) -> PullRequestResult<T> {
-        decode(answered(request).await?).await
+        decode(self.answered(request).await?).await
     }
 
     async fn get<T: DeserializeOwned>(
@@ -770,7 +864,7 @@ fn reads(method: &Method) -> bool {
 /// A read goes out on a client that follows redirects within the origin
 /// itself. A write goes out on one that follows none, and is sent on only as
 /// [`written`] allows.
-async fn sent(request: RequestBuilder) -> PullRequestResult<Response> {
+async fn transported(request: RequestBuilder) -> PullRequestResult<Response> {
     let (client, request) = request.build_split();
     let request = request?;
     match reads(request.method()) {
@@ -848,16 +942,6 @@ fn redirected() -> PullRequestError {
     PullRequestError::GitHubApi(REDIRECTED.to_string())
 }
 
-/// The successful answer to `request`, from where it was sent, or the refusal
-/// it is.
-async fn answered(request: RequestBuilder) -> PullRequestResult<Response> {
-    let response = sent(request).await?;
-    match response.status().is_success() {
-        true => Ok(response),
-        false => Err(refusal(response).await),
-    }
-}
-
 /// A successful answer read as `T`, from no more than
 /// [`MAXIMUM_ANSWER_BYTES`] of it. An answer that is longer, or is not the JSON
 /// expected, is reported in fixed words, because the parser's own message
@@ -892,9 +976,9 @@ async fn decode_within<T: DeserializeOwned>(
 /// request the token cannot see.
 fn classified(status: StatusCode, headers: &HeaderMap) -> Option<PullRequestError> {
     let exhausted = headers
-        .get(RATE_LIMIT_REMAINING)
+        .get(rate_limit::REMAINING)
         .is_some_and(|remaining| remaining.as_bytes() == b"0")
-        || headers.contains_key(RETRY_AFTER);
+        || headers.contains_key(header::RETRY_AFTER);
     match status {
         StatusCode::UNAUTHORIZED => Some(PullRequestError::AuthenticationFailed),
         StatusCode::TOO_MANY_REQUESTS => Some(PullRequestError::RateLimited),
@@ -903,6 +987,38 @@ fn classified(status: StatusCode, headers: &HeaderMap) -> Option<PullRequestErro
         StatusCode::NOT_FOUND => Some(PullRequestError::NotFound),
         _ => None,
     }
+}
+
+/// How long to wait before sending a request again that was answered with
+/// `status` and `headers` at `now`: what its `Retry-After` asks, when it is a
+/// 403 or 429 that has not spent the window and asks for no longer than
+/// `ceiling`.
+fn pause(
+    status: StatusCode,
+    headers: &HeaderMap,
+    ceiling: Duration,
+    now: SystemTime,
+) -> Option<Duration> {
+    if !limits_the_rate(status) || rate_limit::remaining(headers) == Some(0) {
+        return None;
+    }
+    let delay = RetryAfter::from_header(headers.get(header::RETRY_AFTER)?.to_str().ok()?, now)?;
+    (delay <= ceiling).then_some(delay)
+}
+
+/// What GitHub said of the rate limit, when `status` and `headers` say it
+/// spent the window: a 403 or 429 with no requests left.
+fn exhausted(status: StatusCode, headers: &HeaderMap) -> Option<RateLimit> {
+    (limits_the_rate(status) && rate_limit::remaining(headers) == Some(0))
+        .then(|| RateLimit::from_headers(headers))
+}
+
+/// Whether `status` is one GitHub answers a rate limit with.
+fn limits_the_rate(status: StatusCode) -> bool {
+    matches!(
+        status,
+        StatusCode::FORBIDDEN | StatusCode::TOO_MANY_REQUESTS
+    )
 }
 
 /// A refusal no status explains, named by its status and GitHub's own words.
@@ -1061,6 +1177,7 @@ mod tests {
     use crate::pull_request::service::fixtures::seven;
     use crate::pull_request::service::fixtures::stand_in;
     use crate::pull_request::service::fixtures::token;
+    use std::time::UNIX_EPOCH;
     use tokio::io::AsyncReadExt;
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
@@ -1155,7 +1272,7 @@ mod tests {
                 .expect("the answer to be writable");
         });
 
-        sent(
+        transported(
             client(false, REQUEST_TIMEOUT, within_origin())
                 .expect("a client")
                 .get(format!("http://{address}")),
@@ -1764,7 +1881,7 @@ mod tests {
                 .respond_with(ResponseTemplate::new(200).set_body_string("b".repeat(length)))
                 .mount(&server)
                 .await;
-            let response = sent(
+            let response = transported(
                 client(false, REQUEST_TIMEOUT, within_origin())
                     .unwrap()
                     .get(server.uri()),
@@ -2254,6 +2371,68 @@ mod tests {
             .expect_err("an unauthorised read must not look like an empty pull request");
 
         assert!(matches!(failure, PullRequestError::AuthenticationFailed));
+    }
+
+    /// 08:49:00 GMT on Sunday 6 November 1994, as seconds since the Unix
+    /// epoch.
+    const SIXTH_OF_NOVEMBER_1994: u64 = 784_111_740;
+
+    #[test]
+    fn a_delay_at_the_ceiling_is_waited_and_one_past_it_is_not() {
+        let ceiling = Duration::from_secs(1);
+        let now = UNIX_EPOCH + Duration::from_secs(SIXTH_OF_NOVEMBER_1994);
+        let answer = |retry_after: &'static str, remaining: Option<&'static str>| {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                header::RETRY_AFTER,
+                header::HeaderValue::from_static(retry_after),
+            );
+            if let Some(remaining) = remaining {
+                headers.insert(
+                    rate_limit::REMAINING,
+                    header::HeaderValue::from_static(remaining),
+                );
+            }
+            headers
+        };
+
+        for (status, headers, expected) in [
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                answer("1", None),
+                Some(ceiling),
+            ),
+            (
+                StatusCode::FORBIDDEN,
+                answer("Sun, 06 Nov 1994 08:49:01 GMT", None),
+                Some(ceiling),
+            ),
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                answer("0", None),
+                Some(Duration::ZERO),
+            ),
+            (StatusCode::TOO_MANY_REQUESTS, answer("2", None), None),
+            (StatusCode::SERVICE_UNAVAILABLE, answer("0", None), None),
+            (StatusCode::TOO_MANY_REQUESTS, answer("0", Some("0")), None),
+        ] {
+            assert_eq!(
+                pause(status, &headers, ceiling, now),
+                expected,
+                "{status} {headers:?}"
+            );
+        }
+
+        assert_eq!(
+            pause(
+                StatusCode::TOO_MANY_REQUESTS,
+                &answer("18446744073709551616", None),
+                Duration::MAX,
+                now,
+            ),
+            Some(Duration::MAX),
+            "a wait past what a duration holds is as long as one can be"
+        );
     }
 
     const VERSION: &str = "2026-03-10";

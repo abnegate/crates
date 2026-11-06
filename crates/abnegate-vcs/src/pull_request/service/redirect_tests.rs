@@ -61,12 +61,13 @@ async fn writing(
     write: Method,
     url: Url,
 ) -> PullRequestResult<Response> {
-    answered(
-        service
-            .request(write, url, &token(), ACCEPT)
-            .json(&payload()),
-    )
-    .await
+    service
+        .answered(
+            service
+                .request(write, url, &token(), ACCEPT)
+                .json(&payload()),
+        )
+        .await
 }
 
 /// Every request that reached `route` on `server`.
@@ -319,13 +320,14 @@ async fn a_write_redirected_by_a_status_that_may_change_it_is_refused_and_never_
     }
 
     for redirect in REDIRECTS {
-        let read = answered(service.request(
-            Method::GET,
-            address(&server, &format!("/{redirect}/found")),
-            &token(),
-            ACCEPT,
-        ))
-        .await;
+        let read = service
+            .answered(service.request(
+                Method::GET,
+                address(&server, &format!("/{redirect}/found")),
+                &token(),
+                ACCEPT,
+            ))
+            .await;
         assert!(read.is_ok(), "GET {redirect}: {read:?}");
     }
 
@@ -401,6 +403,70 @@ async fn a_write_a_307_or_308_sends_elsewhere_on_the_origin_arrives_there_once_a
                 "{write} {status} keeps the body's type"
             );
             assert_eq!(arrivals(&server, &from).await.len(), 1, "{write} {status}");
+        }
+    }
+}
+
+/// A write a 307 or 308 sends on, that is then answered with a rate limit
+/// worth waiting on, is sent again from where it was first sent, so the
+/// redirect is followed again and the write arrives whole both times.
+#[tokio::test]
+async fn a_redirected_write_answered_with_a_rate_limit_is_sent_again_from_the_start() {
+    let server = MockServer::start().await;
+    for status in KEEPING {
+        for write in WRITES {
+            let from = format!("/limited/{status}/{write}");
+            let to = format!("{TARGETS}{from}");
+            Mock::given(path(&from))
+                .respond_with(redirecting(status, format!("{}{to}", server.uri())))
+                .mount(&server)
+                .await;
+            Mock::given(path(&to))
+                .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "0"))
+                .up_to_n_times(1)
+                .with_priority(1)
+                .mount(&server)
+                .await;
+            Mock::given(path(&to))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "at": to })))
+                .mount(&server)
+                .await;
+        }
+    }
+    let service = stand_in(&server)
+        .await
+        .with_retry_after(Duration::from_secs(60));
+
+    for status in KEEPING {
+        for write in WRITES {
+            let from = format!("/limited/{status}/{write}");
+            let to = format!("{TARGETS}{from}");
+
+            let answer = writing(&service, write.clone(), address(&server, &from))
+                .await
+                .unwrap_or_else(|failure| panic!("{write} {status}: {failure:?}"));
+
+            let answer: Value = decode(answer).await.unwrap();
+            assert_eq!(answer, json!({ "at": to }), "{write} {status}");
+            assert_eq!(
+                arrivals(&server, &from).await.len(),
+                2,
+                "{write} {status} is sent again from where it was first sent"
+            );
+            let landed = arrivals(&server, &to).await;
+            assert_eq!(
+                landed.len(),
+                2,
+                "{write} {status} follows the redirect on both attempts"
+            );
+            for arrival in &landed {
+                assert_eq!(arrival.method, write, "{status} keeps the method");
+                assert_eq!(
+                    arrival.body_json::<Value>().unwrap(),
+                    payload(),
+                    "{write} {status} keeps the body"
+                );
+            }
         }
     }
 }
@@ -597,12 +663,13 @@ async fn a_write_whose_body_cannot_be_sent_twice_is_refused_rather_than_sent_on(
         .await;
     let service = stand_in(&server).await;
 
-    let answer = answered(
-        service
-            .request(Method::PUT, address(&server, "/stream"), &token(), ACCEPT)
-            .body(Body::wrap(String::from("sent once"))),
-    )
-    .await;
+    let answer = service
+        .answered(
+            service
+                .request(Method::PUT, address(&server, "/stream"), &token(), ACCEPT)
+                .body(Body::wrap(String::from("sent once"))),
+        )
+        .await;
 
     assert!(refused(&answer), "{answer:?}");
     assert_eq!(arrivals(&server, "/stream").await[0].body, b"sent once");
