@@ -1,5 +1,8 @@
 //! Turning an agent's stdout into events while it streams.
 
+use std::borrow::Cow;
+use std::path::PathBuf;
+
 use abnegate_exec::executor::OutputLimiter;
 use serde_json::json;
 use tokio::io::AsyncReadExt;
@@ -7,6 +10,7 @@ use tokio::process::ChildStdout;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 
+use crate::activity::ELLIPSIS;
 use crate::drain::Drain;
 use crate::event::AgentEvent;
 use crate::kind::AgentKind;
@@ -15,10 +19,13 @@ use crate::log::Journal;
 use crate::log::Record;
 use crate::log::Sink;
 use crate::overlong_error::OverlongError;
+use crate::paragraphs::Paragraphs;
 use crate::parser;
 use crate::parser::Turn;
 use crate::scrubber::Scrubber;
+use crate::settings::DEFAULT_TOOL_OUTPUT_LIMIT;
 use crate::stdout_parse_result::StdoutParseResult;
+use crate::subagent::Subagent;
 use crate::verdict::Verdict;
 
 const BUFFER: usize = 8 * 1024;
@@ -31,16 +38,26 @@ const BUFFER: usize = 8 * 1024;
 /// run cannot do without, which fails it: a tool call or result the size of
 /// a file costs nothing, but a result or prose that cannot be read does.
 ///
-/// Only the prose counts against the output limit. The rest of the stream,
-/// tool results included, is parsed and dropped, so however long a run goes
-/// on it costs no more memory than its answer.
+/// Only the prose counts against the output limit. The reader keeps only
+/// the run's answer, the main agent's tool calls and what the result
+/// reports; the rest of the stream is parsed and dropped. What a tool printed
+/// and news of a subagent are handed on and never kept, their text scrubbed
+/// of the run's secrets first, and a tool's output then cut to the tool
+/// output limit. What is handed on waits in the stream until it is read, so a
+/// caller that falls behind holds every event it has not read yet, each tool
+/// output no longer than that limit.
 ///
 /// A [partial message](AgentKind::partial) is counted but never journaled: a
 /// secret streamed across several pieces matches none of them, while the
 /// whole event that repeats them is scrubbed as one.
 ///
 /// Its lines are read through one [`Turn`], and a turn the account's usage
-/// credits carry past the plan's window is logged once, at info.
+/// credits carry past the plan's window is logged once, at info, with the
+/// run's working directory.
+///
+/// Every block of prose after the first starts with a paragraph break, which
+/// counts against the output limit like the rest of it. The final answer is
+/// left as the agent gave it.
 ///
 /// [Forwarding](Reader::forwarding) hands each event on as it is read, up to
 /// the first failure or usage limit the agent reports, which ends what is
@@ -51,9 +68,12 @@ const BUFFER: usize = 8 * 1024;
 pub(crate) struct Reader {
     agent: AgentKind,
     turn: Turn,
+    paragraphs: Paragraphs,
+    directory: Option<PathBuf>,
     lines: Lines,
     limiter: OutputLimiter,
     limit: usize,
+    printed: usize,
     journal: Journal,
     prose: Sink,
     scrubber: Scrubber,
@@ -80,9 +100,12 @@ impl Reader {
         Self {
             agent,
             turn: agent.turn(),
+            paragraphs: Paragraphs::default(),
+            directory: None,
             lines: Lines::new(line_limit),
             limiter: OutputLimiter::new(output_limit),
             limit: output_limit,
+            printed: DEFAULT_TOOL_OUTPUT_LIMIT,
             journal,
             prose,
             scrubber,
@@ -99,6 +122,19 @@ impl Reader {
     /// Hand each event on to `forward` as it is read, when given.
     pub(crate) fn forwarding(mut self, forward: Option<mpsc::UnboundedSender<AgentEvent>>) -> Self {
         self.forward = forward;
+        self
+    }
+
+    /// Hand on at most `limit` bytes of what one tool printed.
+    pub(crate) fn printing(mut self, limit: usize) -> Self {
+        self.printed = limit;
+        self
+    }
+
+    /// Name `directory` as the run's working directory in what it logs, or
+    /// this process's own when there is none.
+    pub(crate) fn in_directory(mut self, directory: Option<PathBuf>) -> Self {
+        self.directory = directory;
         self
     }
 
@@ -199,7 +235,7 @@ impl Reader {
         self.turn.interpret(&line, &mut self.events);
         let events = std::mem::take(&mut self.events);
         for event in events {
-            let event = match event {
+            let event = match self.paragraphs.separated(event) {
                 AgentEvent::Text(text) => {
                     if self.limiter.admit(text.len()).accepted < text.len() {
                         return Err(format!("{} {} bytes", crate::PROSE_EXCEEDED, self.limit));
@@ -212,6 +248,13 @@ impl Reader {
                 AgentEvent::Tool(call) => {
                     tracing::debug!(agent = %self.agent, tool = %call.function.name, "agent tool call");
                     AgentEvent::Tool(call)
+                }
+                AgentEvent::Output(mut output) => {
+                    scrub(&self.scrubber, &mut output.text);
+                    AgentEvent::Output(output.truncated(self.printed))
+                }
+                AgentEvent::Subagent(subagent) => {
+                    AgentEvent::Subagent(scrubbed(&self.scrubber, subagent))
                 }
                 AgentEvent::Failed(message) => {
                     let message = self.scrubber.scrub(&message).into_owned();
@@ -233,7 +276,21 @@ impl Reader {
                     AgentEvent::finished(finish_reason)
                 }
                 AgentEvent::Credits(window) => {
-                    tracing::info!(agent = %self.agent, %window, "the turn runs on usage credits past the plan's window");
+                    let directory = self
+                        .directory
+                        .clone()
+                        .or_else(|| std::env::current_dir().ok())
+                        .map(|directory| {
+                            self.scrubber
+                                .scrub(&directory.display().to_string())
+                                .into_owned()
+                        });
+                    tracing::info!(
+                        agent = %self.agent,
+                        %window,
+                        directory = directory.as_deref().map(tracing::field::display),
+                        "the turn runs on usage credits past the plan's window"
+                    );
                     AgentEvent::Credits(window)
                 }
                 event => event,
@@ -262,6 +319,45 @@ impl Reader {
     }
 }
 
+/// `text`, with whatever `scrubber` removes from it removed.
+fn scrub(scrubber: &Scrubber, text: &mut String) {
+    if let Cow::Owned(scrubbed) = scrubber.scrub(text) {
+        *text = scrubbed;
+    }
+}
+
+/// `text`, cut short as a subject is, with whatever `scrubber` removes from
+/// it removed, a piece of a secret left at the cut included.
+fn scrub_cut(scrubber: &Scrubber, text: &mut String) {
+    if let Cow::Owned(scrubbed) = scrubber.scrub_cut(text, ELLIPSIS) {
+        *text = scrubbed;
+    }
+}
+
+/// `subagent`, with every word it carries scrubbed.
+fn scrubbed(scrubber: &Scrubber, mut subagent: Subagent) -> Subagent {
+    if let Some(description) = &mut subagent.description {
+        scrub_cut(scrubber, description);
+    }
+    let words = [
+        &mut subagent.kind,
+        &mut subagent.model,
+        &mut subagent.last_tool,
+        &mut subagent.summary,
+        &mut subagent.error,
+    ];
+    for text in words.into_iter().flatten() {
+        scrub(scrubber, text);
+    }
+    if let Some(step) = &mut subagent.step {
+        scrub(scrubber, &mut step.name);
+        if let Some(subject) = &mut step.subject {
+            scrub_cut(scrubber, subject);
+        }
+    }
+    subagent
+}
+
 #[cfg(test)]
 mod tests {
     use std::process::Stdio;
@@ -270,13 +366,20 @@ mod tests {
     use tokio::sync::mpsc;
     use tokio::sync::watch;
 
+    use abnegate_secret::SecretValue;
+
     use super::Reader;
+    use super::scrubbed;
+    use crate::activity::subject;
     use crate::kind::AgentKind;
     use crate::log::Journal;
     use crate::log::Sink;
     use crate::scrubber::Scrubber;
     use crate::settings::DEFAULT_LINE_LIMIT;
     use crate::settings::DEFAULT_OUTPUT_LIMIT;
+    use crate::subagent::StepStatus;
+    use crate::subagent::Subagent;
+    use crate::subagent::SubagentStep;
     use crate::test_support::ESCAPED_PROCESS;
     use crate::test_support::PATIENCE;
     use crate::test_support::kill_escaped;
@@ -289,6 +392,34 @@ mod tests {
 
     /// A reader still behind when the run gave up on the output closing
     /// stopped at once, losing everything the agent wrote before it exited.
+    /// A subject is cut before the run's secrets are known to it, so the
+    /// cut can leave the start of one, which the reader then removes.
+    #[test]
+    fn a_piece_of_a_secret_a_subjects_cut_left_is_never_handed_on() {
+        const TOKEN: &str = "relay-token-0123456789abcdef0123456789abcdef";
+        let scrubber = Scrubber::new([SecretValue::new(TOKEN)]);
+        let command = format!(
+            "deploy --target staging --region eu-west-1 --verbose --dry-run --name {TOKEN} --wait"
+        );
+        let cut =
+            subject(&serde_json::json!({ "command": command }).to_string()).expect("a subject");
+        assert!(cut.ends_with("--name relay-toke\u{2026}"), "{cut}");
+        let step = SubagentStep::new("toolu_02", "Bash", StepStatus::Running).with_subject(cut);
+        let update = Subagent::new("toolu_01")
+            .with_description(format!("{}\u{2026}", &TOKEN[..20]))
+            .with_step(step);
+
+        let handed = scrubbed(&scrubber, update);
+
+        let subject = handed
+            .step
+            .and_then(|step| step.subject)
+            .expect("a subject");
+        assert!(subject.ends_with("--name \u{2026}"), "{subject}");
+        let description = handed.description.expect("a description");
+        assert_eq!(description, "\u{2026}");
+    }
+
     #[tokio::test]
     async fn what_the_agent_wrote_before_the_drain_started_is_read_to_its_end() {
         let directory = TempDir::new().expect("a temporary directory");
@@ -324,7 +455,7 @@ mod tests {
             .expect("the output to be read");
         assert_eq!(
             result.text,
-            "a".repeat(WRITTEN),
+            ["a"; WRITTEN].join("\n\n"),
             "output buffered before the drain started was dropped"
         );
         assert!(result.finished, "the buffered result was dropped");

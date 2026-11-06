@@ -6,12 +6,50 @@ mod turn;
 
 pub use crate::parser::turn::Turn;
 
+use std::collections::BTreeMap;
 use std::ops::ControlFlow;
+
+use serde::Deserialize;
+use serde::Deserializer;
+use serde::de::DeserializeOwned;
+use serde_json::Value;
 
 const QUOTE: u8 = b'"';
 const ESCAPE: u8 = b'\\';
 const SEPARATOR: u8 = b':';
 const TYPE: &str = "type";
+
+/// A field an agent may one day send in another shape, read as absent
+/// rather than losing the whole line, and with it a refusal or news of a
+/// subagent, to a parse error.
+pub(crate) fn lenient<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: DeserializeOwned,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| serde_json::from_value(value).ok()))
+}
+
+/// A map an agent may one day send an entry of in another shape: each entry
+/// read on its own, one of another shape left out rather than losing the
+/// rest, and the whole absent when it is no object or none of it reads.
+pub(crate) fn lenient_entries<'de, D, T>(
+    deserializer: D,
+) -> Result<Option<BTreeMap<String, T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: DeserializeOwned,
+{
+    let Some(Value::Object(entries)) = Option::<Value>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    let read: BTreeMap<String, T> = entries
+        .into_iter()
+        .filter_map(|(key, value)| Some((key, serde_json::from_value(value).ok()?)))
+        .collect();
+    Ok((!read.is_empty()).then_some(read))
+}
 
 /// Every `"type"` in `prefix`, the start of a JSON object too long to parse,
 /// with the depth of the object or array it sits in, in order.

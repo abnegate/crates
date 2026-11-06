@@ -7,6 +7,8 @@ pub(crate) struct Settlement {
     pub(crate) stopped: Option<String>,
     /// The failure that settled the run while the agent ran, when one did.
     pub(crate) failure: Option<String>,
+    /// Whether that failure was a diagnostic tripping the caller's tripwire.
+    pub(crate) tripped: bool,
     /// The status the agent exited with, read before it was reaped, when the
     /// run saw it exit by itself.
     pub(crate) exit: Option<std::process::ExitStatus>,

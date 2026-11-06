@@ -1,11 +1,17 @@
 //! Reading `codex exec --json`.
 
+mod collab;
+mod collab_agent;
+mod collab_agent_status;
+mod collab_status;
+mod collab_tool;
 mod event;
 mod item;
 mod reason;
 mod token_counts;
 
 use abnegate_llm::Limit;
+use abnegate_llm::ToolCall;
 use abnegate_llm::Usage;
 use abnegate_secret::redact;
 use serde_json::Map;
@@ -13,6 +19,7 @@ use serde_json::Value;
 
 use crate::event::AgentEvent;
 use crate::mcp::qualified;
+use crate::output::Output;
 use crate::parser;
 use crate::parser::codex::event::Event;
 use crate::parser::codex::item::Item;
@@ -45,12 +52,26 @@ pub fn interpret(line: &str, events: &mut Vec<AgentEvent>) {
             item: Item::Message { text },
         } => events.push(AgentEvent::Text(text)),
         Event::Completed {
-            item: Item::Command { id, command },
-        } => events.push(AgentEvent::tool(
-            id,
-            COMMAND.to_string(),
-            serde_json::json!({ "command": command }).to_string(),
-        )),
+            item:
+                Item::Command {
+                    id,
+                    command,
+                    aggregated_output,
+                    exit_code,
+                },
+        } => {
+            let call = ToolCall::function(
+                id,
+                COMMAND,
+                serde_json::json!({ "command": command }).to_string(),
+            );
+            events.push(AgentEvent::Tool(call.clone()));
+            events.push(AgentEvent::Output(Output::new(
+                call,
+                aggregated_output.unwrap_or_default(),
+                exit_code == Some(0),
+            )));
+        }
         Event::Completed {
             item:
                 Item::Call {
@@ -91,9 +112,20 @@ pub fn interpret(line: &str, events: &mut Vec<AgentEvent>) {
         Event::Error { message } => events.push(AgentEvent::Diagnostic(
             message.unwrap_or_else(|| ERROR.to_string()),
         )),
+        Event::Begun {
+            item: Item::Collab(collab),
+        }
+        | Event::Updated {
+            item: Item::Collab(collab),
+        }
+        | Event::Completed {
+            item: Item::Collab(collab),
+        } => events.extend(collab.subagents().into_iter().map(AgentEvent::Subagent)),
         Event::Completed {
             item: Item::Ignored,
         }
+        | Event::Begun { .. }
+        | Event::Updated { .. }
         | Event::Ignored => {}
     }
 }
@@ -135,10 +167,16 @@ pub fn essential(prefix: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::Value;
+    use serde_json::json;
+
     use super::essential;
     use super::interpret;
     use crate::event::AgentEvent;
+    use crate::output::Output;
     use crate::stdout_parse_result::StdoutParseResult;
+    use crate::subagent::Subagent;
+    use crate::subagent::SubagentStatus;
     use crate::test_support::captured_logs;
 
     /// Recorded from `codex exec --json --skip-git-repo-check -`.
@@ -190,6 +228,46 @@ mod tests {
 
     /// The call is made from inside code mode's `exec`.
     const CODE_MODE: &str = include_str!("../../tests/fixtures/codex/code-mode-tool-call.jsonl");
+
+    /// Two agents spawned, waited on and one of them closed. Composed from
+    /// codex 0.163's `exec_events.rs` and its JSONL event processor rather
+    /// than recorded: a spawn starts with no receiver yet and completes with
+    /// one, and only `item.started` and `item.completed` carry a collab call.
+    const COLLAB: &str = include_str!("../../tests/fixtures/codex/collab-spawn-wait.jsonl");
+
+    const REVIEWER: &str = "019b2c41-0000-7000-8000-0000000000a1";
+    const TESTER: &str = "019b2c41-0000-7000-8000-0000000000a2";
+
+    fn subagents(events: &[AgentEvent]) -> Vec<&Subagent> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::Subagent(subagent) => Some(subagent),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn outputs(events: &[AgentEvent]) -> Vec<&Output> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::Output(output) => Some(output),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The events of a completed collab call `item`.
+    fn collab(mut item: Value) -> Vec<AgentEvent> {
+        item["type"] = Value::from("collab_tool_call");
+        let mut events = Vec::new();
+        interpret(
+            &json!({ "type": "item.completed", "item": item }).to_string(),
+            &mut events,
+        );
+        events
+    }
 
     fn interpret_all(sample: &str) -> Vec<AgentEvent> {
         let mut events = Vec::new();
@@ -648,6 +726,323 @@ mod tests {
         ] {
             assert!(!essential(prefix), "{prefix}");
         }
+    }
+
+    #[test]
+    fn a_finished_command_carries_what_it_printed_and_whether_it_worked() {
+        let events = interpret_all(SESSION);
+
+        let outputs = outputs(&events);
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].call.id, "item_1");
+        assert_eq!(outputs[0].call.function.name, "command_execution");
+        assert_eq!(
+            outputs[0].call.function.arguments,
+            r#"{"command":"cargo test"}"#
+        );
+        assert_eq!(outputs[0].text, "test result: ok. 12 passed\n");
+        assert!(outputs[0].succeeded);
+
+        let mut failed = Vec::new();
+        interpret(
+            r#"{"type":"item.completed","item":{"id":"item_9","type":"command_execution","command":"gh pr create","aggregated_output":"already exists","exit_code":1,"status":"failed"}}"#,
+            &mut failed,
+        );
+        assert!(
+            matches!(&failed[..], [AgentEvent::Tool(_), AgentEvent::Output(output)] if !output.succeeded && output.text == "already exists"),
+            "{failed:?}"
+        );
+    }
+
+    #[test]
+    fn a_command_whose_output_or_exit_is_of_another_shape_is_still_reported() {
+        let mut events = Vec::new();
+        interpret(
+            r#"{"type":"item.completed","item":{"id":"item_3","type":"command_execution","command":"ls","aggregated_output":null,"exit_code":"zero","status":"declined"}}"#,
+            &mut events,
+        );
+
+        assert!(
+            matches!(&events[..], [AgentEvent::Tool(call), AgentEvent::Output(output)] if call.id == "item_3" && output.text.is_empty() && !output.succeeded),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    fn spawned_agents_are_followed_until_they_report_back() {
+        let events = interpret_all(COLLAB);
+
+        assert_eq!(
+            subagents(&events),
+            [
+                &Subagent {
+                    description: Some("Review the parser changes\u{2026}".to_string()),
+                    status: Some(SubagentStatus::Running),
+                    ..Subagent::new(REVIEWER)
+                },
+                &Subagent {
+                    description: Some("Run the test suite and report failures".to_string()),
+                    status: Some(SubagentStatus::Running),
+                    ..Subagent::new(TESTER)
+                },
+                &Subagent {
+                    status: Some(SubagentStatus::Completed),
+                    summary: Some("The parser changes read every field leniently.".to_string()),
+                    ..Subagent::new(REVIEWER)
+                },
+                &Subagent {
+                    status: Some(SubagentStatus::Failed),
+                    error: Some("cargo test failed: 3 tests failed".to_string()),
+                    ..Subagent::new(TESTER)
+                },
+                &Subagent {
+                    status: Some(SubagentStatus::Completed),
+                    summary: Some("The parser changes read every field leniently.".to_string()),
+                    ..Subagent::new(REVIEWER)
+                },
+            ]
+        );
+        assert!(calls(&events).is_empty(), "{:?}", calls(&events));
+        assert_eq!(
+            answer(&events),
+            "The review passed and the test run failed."
+        );
+        assert!(finished(&events), "{events:?}");
+    }
+
+    #[test]
+    fn a_spawn_that_failed_fails_its_agent_with_its_words() {
+        let events = collab(json!({
+            "id": "item_0",
+            "tool": "spawn_agent",
+            "receiver_thread_ids": [REVIEWER],
+            "prompt": "Review it",
+            "agents_states": { REVIEWER: { "status": "errored", "message": "no model available" } },
+            "status": "failed",
+        }));
+
+        assert_eq!(
+            subagents(&events),
+            [&Subagent {
+                description: Some("Review it".to_string()),
+                status: Some(SubagentStatus::Failed),
+                error: Some("no model available".to_string()),
+                ..Subagent::new(REVIEWER)
+            }]
+        );
+
+        let events = collab(json!({
+            "tool": "spawn_agent",
+            "receiver_thread_ids": [REVIEWER],
+            "agents_states": { REVIEWER: { "status": "pending_init" } },
+            "status": "failed",
+        }));
+        assert_eq!(
+            subagents(&events),
+            [&Subagent {
+                status: Some(SubagentStatus::Failed),
+                ..Subagent::new(REVIEWER)
+            }]
+        );
+    }
+
+    #[test]
+    fn an_interrupted_or_shut_down_agent_is_stopped() {
+        let events = collab(json!({
+            "tool": "wait",
+            "receiver_thread_ids": [REVIEWER, TESTER],
+            "agents_states": {
+                REVIEWER: { "status": "interrupted", "message": null },
+                TESTER: { "status": "shutdown" },
+            },
+            "status": "completed",
+        }));
+
+        let stopped: Vec<_> = subagents(&events)
+            .into_iter()
+            .map(|subagent| (subagent.id.as_str(), subagent.status))
+            .collect();
+        assert_eq!(
+            stopped,
+            [
+                (REVIEWER, Some(SubagentStatus::Stopped)),
+                (TESTER, Some(SubagentStatus::Stopped)),
+            ]
+        );
+    }
+
+    #[test]
+    fn closing_an_agent_that_was_still_running_stops_it() {
+        let closed = collab(json!({
+            "tool": "close_agent",
+            "receiver_thread_ids": [TESTER],
+            "agents_states": { TESTER: { "status": "running" } },
+            "status": "completed",
+        }));
+        assert_eq!(
+            subagents(&closed),
+            [&Subagent {
+                status: Some(SubagentStatus::Stopped),
+                ..Subagent::new(TESTER)
+            }]
+        );
+
+        let waited = collab(json!({
+            "tool": "wait",
+            "receiver_thread_ids": [TESTER],
+            "agents_states": { TESTER: { "status": "running" } },
+            "status": "completed",
+        }));
+        assert_eq!(
+            subagents(&waited),
+            [&Subagent {
+                status: Some(SubagentStatus::Running),
+                ..Subagent::new(TESTER)
+            }],
+            "only a close stops an agent it found running"
+        );
+    }
+
+    #[test]
+    fn an_update_to_a_collab_call_is_read_like_its_start() {
+        let mut events = Vec::new();
+        interpret(
+            &json!({
+                "type": "item.updated",
+                "item": {
+                    "id": "item_2",
+                    "type": "collab_tool_call",
+                    "tool": "wait",
+                    "agents_states": { TESTER: { "status": "completed", "message": "done" } },
+                    "status": "in_progress",
+                },
+            })
+            .to_string(),
+            &mut events,
+        );
+
+        assert_eq!(
+            subagents(&events),
+            [&Subagent {
+                status: Some(SubagentStatus::Completed),
+                summary: Some("done".to_string()),
+                ..Subagent::new(TESTER)
+            }]
+        );
+    }
+
+    #[test]
+    fn a_started_or_updated_command_is_still_not_counted() {
+        let mut events = Vec::new();
+        for kind in ["item.started", "item.updated"] {
+            interpret(
+                &json!({
+                    "type": kind,
+                    "item": {
+                        "id": "item_1",
+                        "type": "command_execution",
+                        "command": "cargo test",
+                        "aggregated_output": "",
+                        "exit_code": null,
+                        "status": "in_progress",
+                    },
+                })
+                .to_string(),
+                &mut events,
+            );
+            interpret(
+                &json!({
+                    "type": kind,
+                    "item": { "id": "item_2", "type": "agent_message", "text": "half a thought" },
+                })
+                .to_string(),
+                &mut events,
+            );
+        }
+
+        assert!(
+            events.is_empty(),
+            "a start or an update produced {events:?}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_tool_status_or_missing_agent_is_ignored() {
+        for item in [
+            json!({
+                "tool": "invented_next_release",
+                "receiver_thread_ids": [REVIEWER],
+                "agents_states": { REVIEWER: { "status": "running" } },
+            }),
+            json!({
+                "receiver_thread_ids": [REVIEWER],
+                "agents_states": { REVIEWER: { "status": "running" } },
+            }),
+            json!({
+                "tool": "wait",
+                "agents_states": {
+                    REVIEWER: { "status": "not_found" },
+                    TESTER: { "status": "invented_next_release", "message": "?" },
+                    "": { "status": "running" },
+                },
+            }),
+            json!({ "tool": "send_input", "receiver_thread_ids": [REVIEWER] }),
+            json!({ "tool": "spawn_agent", "receiver_thread_ids": [], "prompt": "Go" }),
+        ] {
+            let events = collab(item.clone());
+            assert!(events.is_empty(), "{item} produced {events:?}");
+        }
+    }
+
+    #[test]
+    fn a_collab_field_in_an_unknown_shape_costs_only_that_field() {
+        let events = collab(json!({
+            "tool": "wait",
+            "receiver_thread_ids": "not a list",
+            "prompt": 7,
+            "status": "invented_next_release",
+            "agents_states": {
+                REVIEWER: "not an object",
+                TESTER: { "status": "completed", "message": ["not", "text"] },
+            },
+        }));
+
+        assert_eq!(
+            subagents(&events),
+            [&Subagent {
+                status: Some(SubagentStatus::Completed),
+                ..Subagent::new(TESTER)
+            }]
+        );
+    }
+
+    #[test]
+    fn an_agents_words_are_cleaned_before_a_reader_sees_them() {
+        let events = collab(json!({
+            "tool": "spawn_agent",
+            "receiver_thread_ids": [REVIEWER],
+            "prompt": "\u{1b}[31mReview\u{1b}[0m the diff",
+            "agents_states": { REVIEWER: { "status": "errored", "message": "  \u{1b}[1mboom\u{1b}[0m  " } },
+            "status": "completed",
+        }));
+
+        let [subagent] = subagents(&events)[..] else {
+            panic!("expected one subagent, got {events:?}");
+        };
+        assert_eq!(subagent.description.as_deref(), Some("Review the diff"));
+        assert_eq!(subagent.error.as_deref(), Some("boom"));
+
+        let blank = collab(json!({
+            "tool": "wait",
+            "agents_states": { REVIEWER: { "status": "completed", "message": "   " } },
+        }));
+        assert_eq!(
+            subagents(&blank),
+            [&Subagent {
+                status: Some(SubagentStatus::Completed),
+                ..Subagent::new(REVIEWER)
+            }]
+        );
     }
 
     #[test]

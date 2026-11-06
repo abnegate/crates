@@ -197,3 +197,71 @@ pub(crate) fn captured_logs<T>(work: impl FnOnce() -> T) -> (T, String) {
         .clone();
     (value, String::from_utf8(logged).expect("logs are UTF-8"))
 }
+
+/// `text` with the token of every generated MCP variable it names, drawn at
+/// random for every rendering, replaced by `TOKEN`, so two renderings can be
+/// compared byte for byte.
+pub(crate) fn untokened(text: &str) -> String {
+    let namespace = crate::mcp::NAMESPACE;
+    let mut result = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find(namespace) {
+        let (before, after) = rest.split_at(start + namespace.len());
+        result.push_str(before);
+        let token = after
+            .find(|character: char| !character.is_ascii_hexdigit())
+            .unwrap_or(after.len());
+        result.push_str("TOKEN");
+        rest = &after[token..];
+    }
+    result.push_str(rest);
+    result
+}
+
+/// The prompt text a stand-in agent read from `stdin`: a Claude stream-json
+/// message's text blocks, joined as a rendering joins its messages, or the
+/// stdin as it is when it is no such message.
+pub(crate) fn prompt(stdin: &str) -> String {
+    let Ok(message) = serde_json::from_str::<serde_json::Value>(stdin.trim_end()) else {
+        return stdin.to_string();
+    };
+    message["message"]["content"]
+        .as_array()
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter_map(|block| block["text"].as_str())
+                .collect::<Vec<_>>()
+                .join(crate::transcript::SEPARATOR)
+        })
+        .unwrap_or_else(|| stdin.to_string())
+}
+
+mod tests {
+    use super::prompt;
+
+    #[test]
+    fn a_claude_message_reads_back_as_its_text() {
+        let stdin = "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"User:\\nping\"}]}}\n";
+
+        assert_eq!(prompt(stdin), "User:\nping");
+    }
+
+    #[test]
+    fn a_claude_messages_text_blocks_read_back_joined_without_its_images() {
+        let stdin = concat!(
+            r#"{"type":"user","message":{"role":"user","content":["#,
+            r#"{"type":"text","text":"User:\nLook."},"#,
+            r#"{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgo="}},"#,
+            r#"{"type":"text","text":"User:\nAgain."}]}}"#,
+            "\n",
+        );
+
+        assert_eq!(prompt(stdin), "User:\nLook.\n\nUser:\nAgain.");
+    }
+
+    #[test]
+    fn codex_stdin_reads_back_as_it_was_written() {
+        assert_eq!(prompt("User:\nping"), "User:\nping");
+    }
+}

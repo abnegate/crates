@@ -102,6 +102,30 @@ impl Scrubber {
         self.anywhere.iter().chain(self.words.iter())
     }
 
+    /// `text`, cut short where it ends in `marker`, scrubbed as
+    /// [`Scrubber::scrub`] scrubs it and without the start of any configured
+    /// secret the cut left just before the marker: a whole secret is
+    /// replaced, but a piece of one would not be recognised.
+    pub(crate) fn scrub_cut<'a>(&self, text: &'a str, marker: char) -> Cow<'a, str> {
+        let scrubbed = self.scrub(text);
+        let Some(kept) = scrubbed.strip_suffix(marker) else {
+            return scrubbed;
+        };
+        let piece = self
+            .forms()
+            .map(|form| form.expose().as_bytes())
+            .filter_map(|form| {
+                (1..form.len().min(kept.len() + 1))
+                    .rev()
+                    .find(|length| kept.as_bytes().ends_with(&form[..*length]))
+            })
+            .max();
+        match piece {
+            Some(length) => Cow::Owned(format!("{}{marker}", &kept[..kept.len() - length])),
+            None => scrubbed,
+        }
+    }
+
     /// `text` with every configured secret replaced, longest first, and
     /// then anything else credential-shaped. The configured secrets go
     /// first so that pattern redaction cannot take part of one and leave the
@@ -236,6 +260,28 @@ mod tests {
 
     fn scrubber(secrets: &[&str]) -> Scrubber {
         Scrubber::new(secrets.iter().map(|secret| SecretValue::new(*secret)))
+    }
+
+    #[test]
+    fn the_start_of_a_secret_a_cut_left_is_removed_with_it() {
+        let scrubber = scrubber(&["correct horse battery staple"]);
+
+        assert_eq!(
+            scrubber.scrub_cut("login -p correct horse\u{2026}", '\u{2026}'),
+            "login -p \u{2026}"
+        );
+        assert_eq!(
+            scrubber.scrub_cut("login -p correct horse battery staple\u{2026}", '\u{2026}'),
+            "login -p [REDACTED]\u{2026}"
+        );
+        assert_eq!(
+            scrubber.scrub_cut("login -p correct horse", '\u{2026}'),
+            "login -p correct horse"
+        );
+        assert_eq!(
+            scrubber.scrub_cut("git status\u{2026}", '\u{2026}'),
+            "git status\u{2026}"
+        );
     }
 
     #[test]

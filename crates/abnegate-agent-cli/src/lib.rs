@@ -34,12 +34,22 @@
 //! [`CliProvider::execute_prompt`] and [`CliProvider::stream_prompt`] send a
 //! prompt's bytes unchanged instead of a flattened conversation, so Claude
 //! reads a leading slash command as one; nothing in such a prompt is
-//! escaped. A
-//! run can start the agent's own [`Session`] under an id of the caller's
-//! choosing or resume one, and confine Codex to a [`CodexSandbox`]. A
-//! Claude or Codex run can attach [`mcp`] servers, and a Claude run can
-//! restrict its tools, or be confined to reading its working directory with
-//! [`CliSettings::read_only`], and
+//! escaped. A conversation whose messages carry
+//! [images](abnegate_llm::Message::images) hands them over too: Claude reads
+//! it as one stream-json message whose content blocks carry the images, and
+//! Codex opens each from a temporary file its command line names, as
+//! [`CliProvider::execute`] describes; a conversation without any is still
+//! the flattened prompt alone, byte for byte. A run can start the agent's
+//! own [`Session`] under an id of the caller's choosing or resume one, and
+//! confine Codex to a [`CodexSandbox`]; a session's file can be
+//! [found](Session::locate) in one home and [carried](Session::carry) into
+//! another, so a run signed in there resumes it. A Claude or Codex run can
+//! attach [`mcp`] servers and [withhold](CliSettings::withhold_tools) the
+//! agent's own tools, leaving it only theirs. A Claude run can restrict its
+//! tools, be confined to reading its working directory with
+//! [`CliSettings::read_only`], [isolated](CliSettings::isolated) from every
+//! setting the host configured for it, or ask an MCP tool for each
+//! [permission](CliSettings::permission_prompt) it lacks; and
 //! [`BlockingQuestion`] recovers a question the agent stopped to ask.
 //! [`stream`] reads the raw Messages API stream the CLI is built on.
 //!
@@ -47,11 +57,30 @@
 //! them, in an [`AgentStream`] that ends in the error
 //! [`complete`](abnegate_llm::CompletionProvider::complete) would have
 //! returned when the run failed; `complete` is that stream read to its end.
+//! Each block of prose after the first starts with a paragraph break, so the
+//! blocks read apart when joined, and [`activity`] is the markdown line a
+//! reader can be shown for a tool the agent ran for itself. What a tool
+//! printed is an [`AgentEvent::Output`], and news of a subagent the agent
+//! started, its own calls among it, an [`AgentEvent::Subagent`]: both are
+//! streamed only, scrubbed of the run's secrets, and never kept in a
+//! [`StdoutParseResult`], whose [`tools`](StdoutParseResult::tools) are the
+//! main agent's alone.
 //! [`AgentKind::ALL`] lists the agents, and [`AgentKind::named`] finds one by
 //! its name.
 //!
+//! A run reports the context window of the model its turn ran on, and how
+//! much of it the turn filled, as an [`AgentEvent::Occupancy`] kept in
+//! [`StdoutParseResult::occupancy`]. Claude names the window in its result's
+//! `modelUsage`. Codex writes it only to the rollout it keeps of the session
+//! under its `CODEX_HOME`, or `~/.codex`, as the agent's environment names
+//! them, which is read once the agent has exited by itself, never through a
+//! link and only from its end; when that reports none, the window Codex
+//! publishes for the model in its `models_cache.json` is taken, with nothing
+//! said of the fill.
+//!
 //! The agent is given the
-//! [`DEFAULT_ENVIRONMENT`](abnegate_exec::DEFAULT_ENVIRONMENT) names, the
+//! [`DEFAULT_ENVIRONMENT`](abnegate_exec::DEFAULT_ENVIRONMENT) names,
+//! `SHELL`, `XDG_RUNTIME_DIR`, `SSL_CERT_DIR` and `NODE_EXTRA_CA_CERTS`, the
 //! locale categories (`LC_CTYPE`, `LC_TIME` and the rest), the names
 //! [`CliSettings::allow`] adds, a proxy among them with
 //! [`CliSettings::with_proxy_variables`], and its own configuration
@@ -66,7 +95,10 @@
 //! [`CliSettings::withhold_host_credentials`] keeps this process's own
 //! sign-in from it whichever way it is given: no agent's sign-in variable,
 //! no [cloud sign-in](CLOUD_CREDENTIALS), and no agent's configuration
-//! variable it was not allowed by name. Every value it is handed is scrubbed
+//! variable it was not allowed by name. [`CliSettings::refuse_credentials`]
+//! keeps every agent's sign-in variable from it, however it is allowed or
+//! inherited, except its own when it signs in with the host's. Every value
+//! it is handed is scrubbed
 //! from what the run writes down, as written, JSON-escaped or
 //! percent-encoded, except the allowlisted names, its configuration
 //! variables, the public variables, the proxy bypass list and whatever it
@@ -122,16 +154,15 @@
 //! agent's words alone, with the end of the agent's stderr in
 //! [`Execution::stderr`]. A Claude stream that ends on a refused window with
 //! no line after it fails as an agent failure in the same words, not as a
-//! limit. A Claude turn that
-//! reports how much of a plan's window is spent yields an
-//! [`AgentEvent::Window`], kept by name in [`StdoutParseResult::windows`],
-//! under the name Claude streams it with and its
-//! [`WindowKind`](abnegate_llm::WindowKind). A failure the agent reported is followed by
-//! [`STDERR_HEADING`] and the last whole lines of its stderr that fit in
-//! 1 KiB, since some agents give the reason only there, so a caller splits on
-//! the heading to read the agent's words alone. An agent that exits with no
-//! report of its own fails with the end of its stderr, and a run stopped for
-//! prose past its output limit fails with a message starting with
+//! limit. A Claude turn that reports how much of a plan's window is spent
+//! yields an [`AgentEvent::Window`], kept by name in
+//! [`StdoutParseResult::windows`], under the name Claude streams it with and
+//! its [`WindowKind`](abnegate_llm::WindowKind). A failure the agent reported
+//! is followed by [`STDERR_HEADING`] and the last whole lines of its stderr
+//! that fit in 1 KiB, since some agents give the reason only there, so a caller
+//! splits on the heading to read the agent's words alone. An agent that exits
+//! with no report of its own fails with the end of its stderr, and a run
+//! stopped for prose past its output limit fails with a message starting with
 //! [`PROSE_EXCEEDED`].
 //!
 //! A Claude turn's failure begins with a marker ahead of those words when
@@ -146,7 +177,8 @@
 //! subagent's refusal is never the turn's: Claude hands it to the main agent,
 //! which answers without it.
 //! A turn the account's usage credits carry past the plan's window is logged
-//! once, at info, and named in [`StdoutParseResult::credits`]. A failed
+//! once, at info, with the run's working directory, and named in
+//! [`StdoutParseResult::credits`]. A failed
 //! Claude result, such as one out of turns (`error_max_turns`), fails in its
 //! words and then the `errors` it lists, a line apiece, and in its subtype
 //! only when it gave neither.
@@ -163,6 +195,7 @@
 //! Unix only, like the process-group handling it borrows from
 //! `abnegate-exec`.
 
+mod activity;
 mod agent_stream;
 mod attachments;
 mod cleanup;
@@ -174,6 +207,8 @@ mod environment;
 mod event;
 mod execution;
 mod execution_error;
+mod image;
+mod input;
 mod kind;
 mod lines;
 pub mod log;
@@ -181,13 +216,17 @@ pub mod log;
 #[cfg_attr(docsrs, doc(cfg(feature = "login")))]
 pub mod login;
 pub mod mcp;
+mod occupancy;
 mod outcome;
+mod output;
 mod overlong_error;
+mod paragraphs;
 pub mod parser;
 mod provider;
 mod question;
 mod reader;
 mod reaper;
+mod rollout;
 mod run;
 mod scrubber;
 mod session;
@@ -197,12 +236,14 @@ mod spawned;
 mod stdout_parse_result;
 pub mod stream;
 mod structured_result;
+mod subagent;
 #[cfg(test)]
 mod test_support;
 pub mod transcript;
 mod tripwire;
 mod verdict;
 
+pub use crate::activity::activity;
 pub use crate::agent_stream::AgentStream;
 pub use crate::attachments::Attachments;
 pub use crate::cleanup::Cleanup;
@@ -211,6 +252,8 @@ pub use crate::delivery::Delivery;
 pub use crate::event::AgentEvent;
 pub use crate::execution::Execution;
 pub use crate::execution_error::ExecutionError;
+pub use crate::image::Image;
+pub use crate::image::ImageError;
 pub use crate::kind::AgentKind;
 pub use crate::lines::Lines;
 pub use crate::log::EXECUTION_LOG_PREVIEW_LIMIT;
@@ -225,6 +268,8 @@ pub use crate::mcp::McpConfig;
 pub use crate::mcp::McpConfigError;
 pub use crate::mcp::McpServer;
 pub use crate::mcp::McpTransport;
+pub use crate::occupancy::Occupancy;
+pub use crate::output::Output;
 pub use crate::overlong_error::OverlongError;
 pub use crate::parser::Turn;
 pub use crate::parser::claude::CREDITS_REQUIRED;
@@ -233,17 +278,21 @@ pub use crate::parser::claude::CliContentBlock;
 pub use crate::parser::claude::CliMessage;
 pub use crate::parser::claude::CliUsage;
 pub use crate::parser::claude::LONG_CONTEXT_CREDITS_REQUIRED;
+pub use crate::parser::claude::ModelUsage;
 pub use crate::parser::claude::RateLimitReport;
 pub use crate::parser::claude::StreamEvent;
 pub use crate::provider::CliProvider;
 pub use crate::question::BlockingQuestion;
+pub use crate::session::Carried;
 pub use crate::session::Session;
+pub use crate::session::SessionError;
 pub use crate::settings::CLOUD_CREDENTIALS;
 pub use crate::settings::CliSettings;
 pub use crate::settings::DEFAULT_JOURNAL_LIMIT;
 pub use crate::settings::DEFAULT_LINE_LIMIT;
 pub use crate::settings::DEFAULT_OUTPUT_LIMIT;
 pub use crate::settings::DEFAULT_TIMEOUT;
+pub use crate::settings::DEFAULT_TOOL_OUTPUT_LIMIT;
 pub use crate::settings::READ_ONLY_OPTIONS;
 pub use crate::settings::READ_ONLY_SWITCHES;
 pub use crate::settings::READ_ONLY_TOOLS;
@@ -256,6 +305,11 @@ pub use crate::stream::ApiMessage;
 pub use crate::stream::ApiMessageDelta;
 pub use crate::stream::ApiStreamEvent;
 pub use crate::structured_result::StructuredResult;
+pub use crate::subagent::StepStatus;
+pub use crate::subagent::Subagent;
+pub use crate::subagent::SubagentStatus;
+pub use crate::subagent::SubagentStep;
+pub use crate::transcript::Part;
 pub use crate::tripwire::Tripwire;
 
 /// Stands between an agent's own report of a failure and the end of its

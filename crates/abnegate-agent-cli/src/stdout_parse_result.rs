@@ -9,6 +9,7 @@ use abnegate_llm::Window;
 use serde::de::DeserializeOwned;
 
 use crate::event::AgentEvent;
+use crate::occupancy::Occupancy;
 use crate::parser::claude::CliUsage;
 
 /// The events of one run, folded into what they add up to.
@@ -21,7 +22,8 @@ pub struct StdoutParseResult {
     /// The agent's final answer, apart from the narration in
     /// [`text`](StdoutParseResult::text), when it reported one.
     pub answer: Option<String>,
-    /// Tools the agent ran for itself. Reported, never replayed.
+    /// Tools the main agent ran for itself. Reported, never replayed. A
+    /// subagent's calls are not among them.
     pub tools: Vec<ToolCall>,
     /// The last token counts reported, cache reads and writes counted as
     /// prompt.
@@ -61,13 +63,18 @@ pub struct StdoutParseResult {
     /// The latest report on each of the plan's usage windows, in the order
     /// each was first reported.
     pub windows: Vec<Window>,
+    /// The context window of the model the turn ran on, and how much of it
+    /// the turn filled, the last time the agent reported them.
+    pub occupancy: Option<Occupancy>,
 }
 
 impl StdoutParseResult {
     /// Fold one event in. Prose and tool calls accumulate, the first failure,
     /// a limit's included, and the first credit window are kept, a window
-    /// report replaces the last one on the same window, and every other
-    /// field takes the latest value reported.
+    /// report replaces the last one on the same window, a tool's
+    /// [output](AgentEvent::Output) and news of a
+    /// [subagent](AgentEvent::Subagent) are left to the stream, and every
+    /// other field takes the latest value reported.
     pub fn record(&mut self, event: AgentEvent) {
         match event {
             AgentEvent::Text(chunk) => self.text.push_str(&chunk),
@@ -109,6 +116,8 @@ impl StdoutParseResult {
             AgentEvent::Credits(window) => {
                 self.credits.get_or_insert(window);
             }
+            AgentEvent::Occupancy(occupancy) => self.occupancy = Some(occupancy),
+            AgentEvent::Output(_) | AgentEvent::Subagent(_) => {}
         }
     }
 
@@ -167,6 +176,7 @@ mod tests {
 
     use super::StdoutParseResult;
     use crate::event::AgentEvent;
+    use crate::occupancy::Occupancy;
     use crate::parser::claude::CliUsage;
     use crate::structured_result::StructuredResult;
 
@@ -192,6 +202,7 @@ mod tests {
         assert!(result.credits.is_none());
         assert!(result.limit.is_none());
         assert!(result.windows.is_empty());
+        assert!(result.occupancy.is_none());
         assert!(format!("{result:?}").contains("StdoutParseResult"));
     }
 
@@ -448,6 +459,21 @@ mod tests {
         );
         assert!(!result.finished);
         assert!(result.failure.is_none());
+    }
+
+    #[test]
+    fn the_last_occupancy_reported_wins_and_ends_nothing() {
+        let result: StdoutParseResult = [
+            AgentEvent::Occupancy(Occupancy::reported(258_400, Some(1_200)).expect("a window")),
+            AgentEvent::finished(Some("completed".to_string())),
+            AgentEvent::Occupancy(Occupancy::reported(475_000, Some(24_638)).expect("a window")),
+        ]
+        .into_iter()
+        .collect();
+
+        assert_eq!(result.occupancy, Occupancy::reported(475_000, Some(24_638)));
+        assert!(result.finished);
+        assert_eq!(result.finish_reason.as_deref(), Some("completed"));
     }
 
     #[test]

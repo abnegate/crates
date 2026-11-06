@@ -379,7 +379,7 @@ mod tests {
     *'"method":"tools/list"'*)
       printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[]}}\n' "$id"
       (while :; do sleep 1; done) < /dev/null > /dev/null 2>&1 &
-      printf '%s %s\n' "$$" "$!" > "$1"
+      printf '%s %s\n' "$$" "$!" > "$1.partial" && mv "$1.partial" "$1"
       exit 0 ;;
   esac
 done"#;

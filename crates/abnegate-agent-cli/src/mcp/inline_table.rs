@@ -1,6 +1,8 @@
 use std::fmt;
 use std::fmt::Write;
 
+const LARGEST_INTEGER: u64 = i64::MAX.unsigned_abs();
+
 /// A TOML inline table, as Codex parses the value of a `-c key=value`
 /// override.
 ///
@@ -28,6 +30,18 @@ impl InlineTable {
             .map(|value| quoted(value.as_ref()))
             .collect();
         self.with(key, format!("[{}]", items.join(", ")))
+    }
+
+    /// The same table, with `key` set to the integer `value`, or to the
+    /// largest integer TOML holds when `value` is larger still, since Codex
+    /// refuses a whole override with an integer it cannot hold.
+    pub(crate) fn with_integer(self, key: &str, value: u64) -> Self {
+        self.with(key, value.min(LARGEST_INTEGER).to_string())
+    }
+
+    /// The same table, with `key` set to the boolean `value`.
+    pub(crate) fn with_boolean(self, key: &str, value: bool) -> Self {
+        self.with(key, value.to_string())
     }
 
     /// The same table, with `key` set to `table`.
@@ -79,6 +93,7 @@ fn quoted(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::InlineTable;
+    use super::LARGEST_INTEGER;
 
     #[test]
     fn an_empty_table_is_written_as_one() {
@@ -99,6 +114,31 @@ mod tests {
         assert_eq!(
             table.to_string(),
             r#"{ "command" = "uvx", "args" = ["mcp-server", "--flag"], "env_http_headers" = { "Authorization" = "ABNEGATE_MCP_T_0" } }"#
+        );
+    }
+
+    #[test]
+    fn integers_and_booleans_are_bare() {
+        let table = InlineTable::default()
+            .with_integer("tool_timeout_sec", 1800)
+            .with_boolean("required", true)
+            .with_texts("enabled_tools", Vec::<String>::new());
+
+        assert_eq!(
+            table.to_string(),
+            r#"{ "tool_timeout_sec" = 1800, "required" = true, "enabled_tools" = [] }"#
+        );
+    }
+
+    #[test]
+    fn an_integer_toml_cannot_hold_is_written_as_the_largest_it_can() {
+        let table = InlineTable::default()
+            .with_integer("tool_timeout_sec", u64::MAX)
+            .with_integer("startup_timeout_sec", LARGEST_INTEGER + 1);
+
+        assert_eq!(
+            table.to_string(),
+            r#"{ "tool_timeout_sec" = 9223372036854775807, "startup_timeout_sec" = 9223372036854775807 }"#
         );
     }
 

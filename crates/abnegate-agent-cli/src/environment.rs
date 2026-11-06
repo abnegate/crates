@@ -48,29 +48,59 @@ pub(crate) const LOCALE: &[&str] = &[
     "LC_TELEPHONE",
 ];
 
+/// Host variables an agent needs to run that hold nothing secret, given to
+/// it beside [`DEFAULT_ENVIRONMENT`]: the user's shell, which the agent runs
+/// its commands in, the per-user runtime directory, and where the
+/// certificate authorities it verifies its API against are kept, for
+/// OpenSSL and for Node.
+pub(crate) const INHERITED: &[&str] = &[
+    "SHELL",
+    "XDG_RUNTIME_DIR",
+    "SSL_CERT_DIR",
+    "NODE_EXTRA_CA_CERTS",
+];
+
+/// What an [isolated](CliSettings::isolated) Claude run is given unless the
+/// caller sets otherwise: no update of itself, no traffic it can do
+/// without, and no memory carried from one run to the next.
+const ISOLATION_DEFAULTS: &[(&str, &str)] = &[
+    ("DISABLE_AUTOUPDATER", "1"),
+    ("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1"),
+    ("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1"),
+];
+
+/// Claude Code's waits on a call to an MCP tool, in milliseconds: the whole
+/// call, and the time it may go without hearing from the server.
+const TOOL_TIMEOUTS: &[&str] = &["MCP_TOOL_TIMEOUT", "CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT"];
+const NANOSECONDS_PER_MILLISECOND: u128 = 1_000_000;
+/// The longest delay, in milliseconds, Node's timers keep: a longer one
+/// fires after a single millisecond.
+const LONGEST_TIMER: u128 = 2_147_483_647;
+
 /// The child's environment: an allowlist of host variables, the
-/// [locale](LOCALE) categories, the caller's allowed names and the agent's
-/// own configuration variables, or the whole host
-/// environment when the caller opts in, with every explicit value set on
-/// top. An allowed name the agent signs in with passes only when its
-/// credential is inherited: beside a credential of the caller's own, the
-/// host's would be one more the agent could sign in with. With the host's
-/// credentials withheld, no name any agent signs in with, and no
-/// [cloud sign-in](CLOUD_CREDENTIALS), passes from the host however it is
-/// allowed or inherited, and no agent's configuration
-/// variable passes unless it is allowed. Each allowed value but the proxy
-/// bypass list is a secret, since a proxy URL, say, can carry a password.
+/// [locale](LOCALE) categories, the caller's allowed names and the agent's own
+/// configuration variables, or the whole host environment when the caller opts
+/// in, with every explicit value set on top. An allowed name the agent signs in
+/// with passes only when its credential is inherited: beside a credential of
+/// the caller's own, the host's would be one more the agent could sign in with.
+/// With credentials refused, no other agent's sign-in name passes however it is
+/// allowed or inherited, nor the agent's own but when it is signed in on the
+/// host. With the host's credentials withheld, no name any agent signs in with,
+/// and no [cloud sign-in](CLOUD_CREDENTIALS), passes from the host however it
+/// is allowed or inherited, and no agent's configuration variable passes unless
+/// it is allowed. Each allowed value but the proxy bypass list is a secret,
+/// since a proxy URL, say, can carry a password.
 ///
-/// Explicit values go on in rising precedence: the agent's sign-in
-/// variables from the host when its credential is inherited, the caller's
-/// public variables and then its secret ones, the credential, and last the
-/// values an MCP configuration moved out of its file, under generated names
-/// no caller can know. A stdio server's references are resolved against the
-/// secrets bound to it first, and then what the child is given before those,
-/// falling back to the host, with the agent's sign-in variables and the
-/// credential's own read as set but empty, and only the resolved values are
-/// handed over: resolving one hands the child nothing under the name of the
-/// variable it refers to.
+/// Explicit values go on in rising precedence: the agent's sign-in variables
+/// from the host when its credential is inherited, the [defaults] a Claude run
+/// is given for its isolation and its MCP tools' timeout, the caller's public
+/// variables and then its secret ones, the credential, and last the values an
+/// MCP configuration moved out of its file, under generated names no caller can
+/// know. A stdio server's references are resolved against the secrets bound to
+/// it first, and then what the child is given before those, falling back to the
+/// host, with the agent's sign-in variables and the credential's own read as
+/// set but empty, and only the resolved values are handed over: resolving one
+/// hands the child nothing under the name of the variable it refers to.
 ///
 /// `Debug` names the variables and never prints a value: an inherited one,
 /// a proxy URL say, can carry a password.
@@ -107,6 +137,7 @@ impl Environment {
             };
             for variable in DEFAULT_ENVIRONMENT
                 .iter()
+                .chain(INHERITED)
                 .chain(LOCALE)
                 .chain(configuration)
             {
@@ -128,10 +159,13 @@ impl Environment {
                 environment.pass(variable, host);
             }
         }
-        for (variable, value) in &settings.variables {
+        for (variable, value) in defaults(agent, settings, mcp.is_some())
+            .into_iter()
+            .chain(settings.variables.clone())
+        {
             environment
                 .variables
-                .insert(variable.clone(), SecretValue::new(value.as_str()));
+                .insert(variable, SecretValue::new(value));
         }
         for (variable, value) in &settings.environment {
             environment.set(variable, value.clone());
@@ -163,10 +197,14 @@ impl Environment {
         settings: &CliSettings,
         host: &dyn Fn(&str) -> Option<OsString>,
     ) {
+        let defaulted: Vec<String> = defaults(agent, settings, true)
+            .into_iter()
+            .map(|(variable, _)| variable)
+            .collect();
         let public = |name: &str| {
-            DEFAULT_ENVIRONMENT.contains(&name)
-                || LOCALE.contains(&name)
+            harmless(name)
                 || settings.variables.contains_key(name)
+                || defaulted.iter().any(|variable| variable == name)
         };
         let lookup = |name: &str| {
             if withheld(agent, settings, name) {
@@ -237,6 +275,27 @@ impl Environment {
         }
     }
 
+    /// What the child is given for `variable`, with `host` reading this
+    /// process's variables as it did when the environment was built: the
+    /// host's value counts only when the child inherits the host's whole
+    /// environment and the name is not removed from it.
+    pub(crate) fn variable(
+        &self,
+        variable: &str,
+        host: &dyn Fn(&str) -> Option<OsString>,
+    ) -> Option<OsString> {
+        if let Some(value) = self.variables.get(variable) {
+            return Some(OsString::from(value.expose()));
+        }
+        if let Some(value) = self.inherited.get(variable) {
+            return Some(value.clone());
+        }
+        if self.inherit && !self.removed.contains(&variable) {
+            return host(variable);
+        }
+        None
+    }
+
     /// What the child will see for `variable` so far, falling back to the
     /// host.
     fn lookup(&self, variable: &str, host: &dyn Fn(&str) -> Option<OsString>) -> Option<String> {
@@ -251,12 +310,12 @@ impl Environment {
     }
 
     /// Give the child `variable` from the host, when the host has it set, as
-    /// a secret unless it is on the allowlist or is the proxy bypass list.
+    /// a secret unless it is [harmless](harmless) or is the proxy bypass list.
     fn allow(&mut self, variable: &str, host: &dyn Fn(&str) -> Option<OsString>) {
         let Some(value) = host(variable) else {
             return;
         };
-        if !DEFAULT_ENVIRONMENT.contains(&variable) && !BYPASS.contains(&variable) {
+        if !harmless(variable) && !BYPASS.contains(&variable) {
             self.secret(SecretValue::new(value.to_string_lossy().into_owned()));
         }
         self.inherited.insert(variable.to_string(), value);
@@ -288,13 +347,68 @@ impl Environment {
     }
 }
 
+/// What a Claude run is given before the caller's own variables, which
+/// override it, none of it secret: the [isolation defaults](ISOLATION_DEFAULTS)
+/// when the run is [isolated](CliSettings::isolated), and, when `attached`,
+/// the longest [tool timeout](crate::McpServer::tool_timeout) of the servers
+/// attached to it as both of Claude Code's [waits](TOOL_TIMEOUTS) on a tool,
+/// rounded up to whole milliseconds, so a wait under one is never `0`, which
+/// Claude Code reads as no wait at all, and held to the longest a Node timer
+/// keeps, about 24.8 days, past which it would fire at once. Codex is given
+/// neither.
+fn defaults(agent: AgentKind, settings: &CliSettings, attached: bool) -> Vec<(String, String)> {
+    if agent != AgentKind::Claude {
+        return Vec::new();
+    }
+    let mut defaults: Vec<(String, String)> = Vec::new();
+    if settings.isolated {
+        defaults.extend(
+            ISOLATION_DEFAULTS
+                .iter()
+                .map(|(variable, value)| ((*variable).to_string(), (*value).to_string())),
+        );
+    }
+    let timeout = settings
+        .mcp
+        .attachable(agent)
+        .filter(|_| attached)
+        .filter_map(|(_, server)| server.tool_timeout)
+        .max();
+    if let Some(timeout) = timeout {
+        let milliseconds = timeout
+            .as_nanos()
+            .div_ceil(NANOSECONDS_PER_MILLISECOND)
+            .min(LONGEST_TIMER)
+            .to_string();
+        defaults.extend(
+            TOOL_TIMEOUTS
+                .iter()
+                .map(|variable| ((*variable).to_string(), milliseconds.clone())),
+        );
+    }
+    defaults
+}
+
+/// Whether `variable` is one the child is given from the host by default,
+/// none of which holds anything secret.
+fn harmless(variable: &str) -> bool {
+    DEFAULT_ENVIRONMENT.contains(&variable)
+        || INHERITED.contains(&variable)
+        || LOCALE.contains(&variable)
+}
+
 /// The host variables the child never inherits, and never passes when
-/// allowed: the agent's nested-session marker, and with the host's
-/// credentials withheld, every [sign-in](host_sign_in) the host could lend
-/// it, and every agent's configuration variable the caller has not allowed
-/// when the child inherits the host's whole environment.
+/// allowed: the agent's nested-session marker; with credentials
+/// [refused](CliSettings::refuse_credentials), every variable any agent
+/// signs in with; with the host's credentials withheld, every
+/// [sign-in](host_sign_in) the host could lend it, and every agent's
+/// configuration variable the caller has not allowed when the child
+/// inherits the host's whole environment.
 fn removed(agent: AgentKind, settings: &CliSettings) -> Vec<&'static str> {
     let mut removed = agent.scrubbed().to_vec();
+    if settings.refuse_credentials {
+        removed.extend(credentials());
+    }
     if settings.withhold_host_credentials {
         removed.extend(host_sign_in());
         if settings.inherit_environment {
@@ -309,21 +423,28 @@ fn removed(agent: AgentKind, settings: &CliSettings) -> Vec<&'static str> {
     removed
 }
 
+/// Every variable any agent [signs in with](AgentKind::credentials).
+fn credentials() -> impl Iterator<Item = &'static str> {
+    AgentKind::ALL
+        .iter()
+        .flat_map(|agent| agent.credentials())
+        .copied()
+}
+
 /// Every variable through which the host could lend an agent its own
 /// sign-in: those any agent signs in with, Claude Code's OAuth refresh token
 /// and the [cloud sign-ins](CLOUD_CREDENTIALS).
 fn host_sign_in() -> impl Iterator<Item = &'static str> {
-    AgentKind::ALL
-        .iter()
-        .flat_map(|agent| agent.credentials())
-        .chain([REFRESH_TOKEN].iter())
-        .chain(CLOUD_CREDENTIALS)
-        .copied()
+    credentials()
+        .chain([REFRESH_TOKEN])
+        .chain(CLOUD_CREDENTIALS.iter().copied())
 }
 
 /// Whether a stdio server's reference to `variable` reads it as set but
-/// empty: a variable `agent` signs in with, or with the host's credentials
-/// withheld, every [sign-in](host_sign_in) the host could lend it, the one
+/// empty: a variable `agent` signs in with, or with credentials
+/// [refused](CliSettings::refuse_credentials), one any agent signs in with,
+/// or with the host's credentials withheld, every [sign-in](host_sign_in)
+/// the host could lend it, the one
 /// the credential occupies, or Claude Code's OAuth refresh token, in any
 /// case. Claude Code reads its own OAuth tokens that way in a stdio server's
 /// values, and a value resolved here reaches the child under a generated
@@ -331,6 +452,9 @@ fn host_sign_in() -> impl Iterator<Item = &'static str> {
 fn withheld(agent: AgentKind, settings: &CliSettings, variable: &str) -> bool {
     let matches = |name: &str| name.eq_ignore_ascii_case(variable);
     if settings.withhold_host_credentials && host_sign_in().any(matches) {
+        return true;
+    }
+    if settings.refuse_credentials && credentials().any(matches) {
         return true;
     }
     agent
@@ -371,6 +495,7 @@ impl fmt::Debug for Environment {
 mod tests {
     use std::collections::BTreeMap;
     use std::ffi::OsString;
+    use std::time::Duration;
 
     use abnegate_llm::Credential;
     use abnegate_secret::SecretValue;
@@ -1164,6 +1289,194 @@ mod tests {
         }
     }
 
+    /// Without the host's credentials withheld, an agent signed in on the
+    /// host is still handed its own sign-in, but no other agent's, however
+    /// it is allowed or inherited, and a stdio server's reference to another
+    /// agent's reads as empty.
+    #[test]
+    fn refused_credentials_never_pass_from_the_host_but_the_agents_own_sign_in() {
+        const OPENAI: &str = "notreal-openai-host-key";
+        let shared = host();
+        let host = |name: &str| match name {
+            "OPENAI_API_KEY" => Some(OsString::from(OPENAI)),
+            _ => shared(name),
+        };
+        let allowed = CliSettings::default().allow(["OPENAI_API_KEY", "LINEAR_API_URL"]);
+
+        let variables = set(&Environment::new(AgentKind::Claude, &allowed, None, &host));
+        assert_eq!(
+            variables["OPENAI_API_KEY"].as_deref(),
+            Some(OPENAI),
+            "another agent's key passes when allowed and not refused"
+        );
+
+        for inherit in [false, true] {
+            let mut refused = allowed.clone().refuse_credentials();
+            if inherit {
+                refused = refused.inherit_environment();
+            }
+            let variables = set(&Environment::new(AgentKind::Claude, &refused, None, &host));
+            let passed = variables.get("OPENAI_API_KEY");
+            assert!(
+                if inherit {
+                    passed == Some(&None)
+                } else {
+                    passed.is_none()
+                },
+                "inheriting {inherit}, codex's key reached claude: {passed:?}"
+            );
+            assert_eq!(
+                variables["ANTHROPIC_API_KEY"].as_deref(),
+                Some(concat!("sk-ant-", "host-key")),
+                "inheriting {inherit}, claude lost the sign-in it runs on"
+            );
+            assert_eq!(
+                variables["CLAUDE_CODE_OAUTH_TOKEN"].as_deref(),
+                Some(concat!("sk-ant-", "oat-host-token")),
+                "inheriting {inherit}"
+            );
+            if !inherit {
+                assert_eq!(
+                    variables["LINEAR_API_URL"].as_deref(),
+                    Some("https://linear.internal")
+                );
+            }
+        }
+
+        let server = McpServer::command("notes-server", Vec::<String>::new())
+            .with_environment("OPENAI", "${OPENAI_API_KEY}");
+        let settings = allowed
+            .refuse_credentials()
+            .with_mcp_server("notes", server);
+        let attachment = attached(&settings);
+        let environment = Environment::new(AgentKind::Claude, &settings, Some(&attachment), &host);
+        let variables = set(&environment);
+        let notes = &document(&attachment)["mcpServers"]["notes"];
+        assert_eq!(expanded(&notes["env"]["OPENAI"], &variables), "");
+    }
+
+    /// What a host lends every agent beside the defaults: the shell it runs
+    /// commands in, the runtime directory, and the certificate authorities
+    /// its API is verified against. None of it is a secret, allowed by name
+    /// or not.
+    #[test]
+    fn what_an_agent_needs_to_run_is_inherited_without_being_allowed() {
+        let host = |name: &str| {
+            let value = match name {
+                "SHELL" => "/bin/zsh",
+                "XDG_RUNTIME_DIR" => "/run/user/1000",
+                "SSL_CERT_DIR" => "/etc/ssl/certs",
+                "NODE_EXTRA_CA_CERTS" => "/etc/ssl/certs/extra.pem",
+                "LC_CTYPE" => "UTF-8",
+                _ => return None,
+            };
+            Some(OsString::from(value))
+        };
+
+        for settings in [
+            CliSettings::default(),
+            CliSettings::default().allow(["SHELL", "SSL_CERT_DIR", "LC_CTYPE"]),
+        ] {
+            for agent in AgentKind::ALL {
+                let environment = Environment::new(*agent, &settings, None, &host);
+                let variables = set(&environment);
+                for (name, value) in [
+                    ("SHELL", "/bin/zsh"),
+                    ("XDG_RUNTIME_DIR", "/run/user/1000"),
+                    ("SSL_CERT_DIR", "/etc/ssl/certs"),
+                    ("NODE_EXTRA_CA_CERTS", "/etc/ssl/certs/extra.pem"),
+                ] {
+                    assert_eq!(
+                        variables.get(name).cloned().flatten().as_deref(),
+                        Some(value),
+                        "{agent} was not handed {name}"
+                    );
+                }
+                assert!(
+                    exposed(&environment).is_empty(),
+                    "{agent}: {:?}",
+                    exposed(&environment)
+                );
+            }
+        }
+    }
+
+    /// The recipe a host running agents for several organisations uses,
+    /// against what such a host's own environment holds: its database, its
+    /// signing keys, its gateway's keys, the agents' own sign-ins and stored
+    /// state, the nested-session markers and the token it hands each run.
+    fn hosted() -> CliSettings {
+        CliSettings::default()
+            .withhold_host_credentials()
+            .refuse_credentials()
+            .with_proxy_variables()
+            .allow(["ANTHROPIC_API_KEY", "OPENAI_API_KEY"])
+    }
+
+    #[test]
+    fn a_hosts_secrets_and_the_agents_own_state_are_never_inherited() {
+        let refused: BTreeMap<&str, &str> = [
+            ("DATABASE_URL", "postgres://app:notrealpassword@db/app"),
+            ("JWT_SECRET", "jwt-notarealsecret"),
+            ("ENCRYPTION_KEY", "encryption-notarealkey"),
+            ("LITELLM_KEY", "sk-litellm-notarealkey"),
+            ("SECURITY_LITELLM_MASTER_KEY", "sk-litellm-notarealkey"),
+            ("ANTHROPIC_API_KEY", "sk-ant-notarealkey"),
+            ("OPENAI_API_KEY", "sk-notarealkey"),
+            ("CLAUDE_CONFIG_DIR", "/home/host/.claude-server"),
+            ("CODEX_HOME", "/home/host/.codex-server"),
+            ("CLAUDECODE", "1"),
+            ("CLAUDE_CODE_ENTRYPOINT", "cli"),
+            ("HOST_MCP_TOKEN", "host-turn-leftover"),
+        ]
+        .into();
+        let host = |name: &str| match name {
+            "PATH" => Some(OsString::from("/usr/bin")),
+            _ => refused.get(name).map(OsString::from),
+        };
+
+        for agent in AgentKind::ALL {
+            let environment = Environment::new(*agent, &hosted(), None, &host);
+            let variables = set(&environment);
+            for name in refused.keys() {
+                assert!(
+                    !variables.contains_key(*name),
+                    "{name} reached {agent}: {variables:?}"
+                );
+            }
+            assert_eq!(variables["PATH"].as_deref(), Some("/usr/bin"), "{agent}");
+            assert!(exposed(&environment).is_empty(), "{agent}");
+        }
+    }
+
+    #[test]
+    fn what_an_agent_needs_to_run_reaches_it_unchanged_under_a_hosts_recipe() {
+        let kept: BTreeMap<&str, &str> = [
+            ("HOME", "/home/host"),
+            ("PATH", "/usr/local/bin:/usr/bin:/bin"),
+            ("LANG", "C.UTF-8"),
+            ("LC_ALL", "C.UTF-8"),
+            ("LC_CTYPE", "UTF-8"),
+            ("HTTPS_PROXY", "http://proxy:3128"),
+            ("SSL_CERT_FILE", "/etc/ssl/certs/ca-certificates.crt"),
+            ("NODE_EXTRA_CA_CERTS", "/etc/ssl/certs/extra.pem"),
+            ("XDG_RUNTIME_DIR", "/run/user/1000"),
+        ]
+        .into();
+        let host = |name: &str| kept.get(name).map(OsString::from);
+
+        for agent in AgentKind::ALL {
+            let variables = set(&Environment::new(*agent, &hosted(), None, &host));
+            for (name, value) in &kept {
+                assert_eq!(
+                    variables.get(*name).cloned().flatten().as_deref(),
+                    Some(*value),
+                    "{name} did not reach {agent} as it was"
+                );
+            }
+        }
+    }
+
     #[test]
     fn a_stdio_reference_to_an_agents_configuration_reads_as_empty_when_withheld_unless_allowed() {
         const CONFIGURATION: &str = "/home/host/.claude";
@@ -1537,5 +1850,198 @@ mod tests {
         let debug = format!("{environment:?}");
         assert!(!debug.contains("hunter2"), "{debug}");
         assert!(!debug.contains(concat!("sk-ant-", "host-key")), "{debug}");
+    }
+
+    const ISOLATION: [(&str, &str); 3] = [
+        ("DISABLE_AUTOUPDATER", "1"),
+        ("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1"),
+        ("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1"),
+    ];
+
+    const TIMEOUTS: [&str; 2] = ["MCP_TOOL_TIMEOUT", "CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT"];
+
+    /// An isolated Claude run neither updates itself, nor phones home, nor
+    /// remembers across runs, unless the caller says otherwise, and none of
+    /// it is a secret, so a log keeps every `1` it holds.
+    #[test]
+    fn an_isolated_claude_run_is_given_its_defaults_and_the_caller_overrides_them() {
+        let environment = Environment::new(
+            AgentKind::Claude,
+            &CliSettings::default().isolate(),
+            None,
+            &host(),
+        );
+        let variables = set(&environment);
+        for (name, value) in ISOLATION {
+            assert_eq!(variables[name].as_deref(), Some(value), "{name}");
+        }
+        assert!(
+            !exposed(&environment).iter().any(|secret| secret == "1"),
+            "{:?}",
+            exposed(&environment)
+        );
+
+        let settings = CliSettings::default()
+            .isolate()
+            .with_variable("DISABLE_AUTOUPDATER", "0")
+            .with_environment("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "0");
+        let variables = set(&Environment::new(
+            AgentKind::Claude,
+            &settings,
+            None,
+            &host(),
+        ));
+        assert_eq!(variables["DISABLE_AUTOUPDATER"].as_deref(), Some("0"));
+        assert_eq!(
+            variables["CLAUDE_CODE_DISABLE_AUTO_MEMORY"].as_deref(),
+            Some("0")
+        );
+        assert_eq!(
+            variables["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"].as_deref(),
+            Some("1")
+        );
+
+        for (agent, settings) in [
+            (AgentKind::Claude, CliSettings::default()),
+            (AgentKind::Codex, CliSettings::default().isolate()),
+        ] {
+            let variables = set(&Environment::new(agent, &settings, None, &host()));
+            for (name, _) in ISOLATION {
+                assert!(!variables.contains_key(name), "{agent}: {name}");
+            }
+        }
+    }
+
+    /// A wait under a millisecond is still a wait: rounded down it would be
+    /// `0`, which Claude Code reads as none. One longer than a Node timer
+    /// keeps would fire after a millisecond, so it is held to the longest.
+    #[test]
+    fn a_claude_run_holds_its_mcp_tool_wait_to_what_node_keeps() {
+        for (timeout, expected) in [
+            (Duration::from_micros(500), "1"),
+            (Duration::from_micros(1500), "2"),
+            (Duration::from_millis(3), "3"),
+            (Duration::from_millis(2_147_483_647), "2147483647"),
+            (Duration::from_secs(30 * 24 * 60 * 60), "2147483647"),
+            (Duration::MAX, "2147483647"),
+        ] {
+            let settings = CliSettings::default().with_mcp_server(
+                "host",
+                McpServer::remote("http://127.0.0.1:9/mcp").with_tool_timeout(timeout),
+            );
+            let attachment = attached(&settings);
+            let variables = set(&Environment::new(
+                AgentKind::Claude,
+                &settings,
+                Some(&attachment),
+                &host(),
+            ));
+            for name in TIMEOUTS {
+                assert_eq!(
+                    variables[name].as_deref(),
+                    Some(expected),
+                    "{timeout:?} {name}"
+                );
+            }
+        }
+    }
+
+    /// Claude Code has one wait on an MCP tool for every server, so a run is
+    /// given the longest any attached server asks for, in milliseconds, in
+    /// both of its variables, which the caller can still override.
+    #[test]
+    fn a_claude_run_waits_on_its_mcp_tools_as_long_as_its_longest_server_asks() {
+        let settings = CliSettings::default()
+            .with_mcp_server(
+                "host",
+                McpServer::remote("http://127.0.0.1:9/mcp")
+                    .with_tool_timeout(Duration::from_secs(1800)),
+            )
+            .with_mcp_server(
+                "relay",
+                McpServer::remote("http://127.0.0.1:9/relay")
+                    .with_tool_timeout(Duration::from_millis(90_500)),
+            )
+            .with_mcp_server(
+                "slow",
+                McpServer::remote("http://127.0.0.1:9/slow")
+                    .with_tool_timeout(Duration::from_secs(3600))
+                    .disable(),
+            )
+            .with_mcp_server("plain", McpServer::remote("http://127.0.0.1:9/plain"));
+        let attachment = attached(&settings);
+        let environment =
+            Environment::new(AgentKind::Claude, &settings, Some(&attachment), &host());
+
+        let variables = set(&environment);
+        for name in TIMEOUTS {
+            assert_eq!(variables[name].as_deref(), Some("1800000"), "{name}");
+        }
+        assert!(
+            !exposed(&environment)
+                .iter()
+                .any(|secret| secret == "1800000"),
+            "a timeout is no secret"
+        );
+
+        let overridden = settings.clone().with_variable("MCP_TOOL_TIMEOUT", "60000");
+        let variables = set(&Environment::new(
+            AgentKind::Claude,
+            &overridden,
+            Some(&attachment),
+            &host(),
+        ));
+        assert_eq!(variables["MCP_TOOL_TIMEOUT"].as_deref(), Some("60000"));
+        assert_eq!(
+            variables["CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT"].as_deref(),
+            Some("1800000")
+        );
+
+        let unattached = set(&Environment::new(
+            AgentKind::Claude,
+            &settings,
+            None,
+            &host(),
+        ));
+        let codex = set(&Environment::new(
+            AgentKind::Codex,
+            &settings,
+            None,
+            &host(),
+        ));
+        let untimed = CliSettings::default()
+            .with_mcp_server("plain", McpServer::remote("http://127.0.0.1:9/plain"));
+        let untimed_attachment = attached(&untimed);
+        let untimed = set(&Environment::new(
+            AgentKind::Claude,
+            &untimed,
+            Some(&untimed_attachment),
+            &host(),
+        ));
+        for variables in [unattached, codex, untimed] {
+            for name in TIMEOUTS {
+                assert!(!variables.contains_key(name), "{name}: {variables:?}");
+            }
+        }
+    }
+
+    /// A stdio server that refers to a default it is given reads it as
+    /// public, so the `1` it holds is never scrubbed from every log line.
+    #[test]
+    fn a_stdio_reference_to_a_default_never_makes_it_a_secret() {
+        let settings = CliSettings::default().isolate().with_mcp_server(
+            "notes",
+            McpServer::command("notes-server", ["mcp"])
+                .with_environment("NOTES_QUIET", "${DISABLE_AUTOUPDATER}"),
+        );
+        let attachment = attached(&settings);
+        let environment =
+            Environment::new(AgentKind::Claude, &settings, Some(&attachment), &host());
+
+        assert!(
+            !exposed(&environment).iter().any(|secret| secret == "1"),
+            "{:?}",
+            exposed(&environment)
+        );
     }
 }

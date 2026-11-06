@@ -33,6 +33,7 @@ use crate::environment::Environment;
 use crate::event::AgentEvent;
 use crate::execution::Execution;
 use crate::execution_error::ExecutionError;
+use crate::input::Input;
 use crate::kind::AgentKind;
 use crate::log::EXECUTION_LOG_PREVIEW_LIMIT;
 use crate::log::ExecutionLogFiles;
@@ -43,12 +44,12 @@ use crate::log::tail_preview;
 use crate::mcp::McpAttachment;
 use crate::reader::Reader;
 use crate::reaper::Reaper;
+use crate::rollout::Rollout;
 use crate::run::Run;
 use crate::scrubber::Scrubber;
 use crate::settings::CliSettings;
 use crate::spawned::Spawned;
 use crate::stdout_parse_result::StdoutParseResult;
-use crate::transcript;
 
 const NO_DIAGNOSTICS: &str = "the agent produced no diagnostics";
 const UNFINISHED: &str = "the agent exited without completing its event stream";
@@ -134,20 +135,37 @@ impl CliProvider {
     /// reports where its logs are, with every line read before it failed
     /// flushed to them.
     ///
-    /// The conversation reaches the agent as [`transcript::render`] flattens
-    /// it, every message under its role's label;
-    /// [`CliProvider::execute_prompt`] sends a prompt as written.
+    /// The conversation reaches the agent as
+    /// [`transcript::render`](crate::transcript::render) flattens it, every
+    /// message under its role's label, byte for byte as
+    /// [`CliProvider::execute_prompt`] would send that rendering, unless a
+    /// message carries [images](Message::images). Then Claude reads the
+    /// conversation's [parts](crate::transcript::parts) as one stream-json
+    /// message (`--input-format stream-json`), the images as base64 or url
+    /// content blocks, and Codex reads the text on stdin, each image marked
+    /// where it was sent, and opens the images from files it is pointed at
+    /// with `--image`, which are removed when the run ends. An image on an
+    /// earlier message that cannot be sent, such as a link Codex cannot open
+    /// or one past what one Claude request carries (10 MB of base64 an
+    /// image, 100 images, and 127 MB in all, its text sized as the JSON it is
+    /// sent as), is noted in its place instead; once one image is crowded
+    /// out, every older one is too. One on the last user message that cannot
+    /// be sent fails the run before the agent starts, as a
+    /// [`ProviderError::Agent`] naming the agent and the [`ImageError`] that
+    /// says why. The images are decoded, encoded and saved on the blocking
+    /// pool, off the runtime.
+    ///
+    /// [`ImageError`]: crate::ImageError
     pub async fn execute(
         &self,
         request: CompletionRequest<'_>,
         label: &str,
     ) -> Result<Execution, ExecutionError> {
-        self.execute_prompt(
-            Some(request.model),
-            transcript::render(request.messages),
-            label,
-        )
-        .await
+        let input = self.input(request.messages).await?;
+        self.start(Some(request.model), input, label, None)
+            .await?
+            .finish()
+            .await
     }
 
     /// [`CliProvider::execute`] with `prompt` written to the agent's stdin
@@ -158,14 +176,15 @@ impl CliProvider {
     /// Since nothing in `prompt` is escaped, a line in it that reads as a
     /// role label such as `Assistant:` reaches the agent as one. Text the
     /// caller does not control belongs in a conversation sent through
-    /// [`CliProvider::execute`], which [`transcript::render`] escapes.
+    /// [`CliProvider::execute`], which
+    /// [`transcript::render`](crate::transcript::render) escapes.
     pub async fn execute_prompt(
         &self,
         model: Option<&str>,
         prompt: impl Into<String>,
         label: &str,
     ) -> Result<Execution, ExecutionError> {
-        self.start(model, prompt.into(), label, None)
+        self.start(model, Input::raw(prompt.into()), label, None)
             .await?
             .finish()
             .await
@@ -175,6 +194,10 @@ impl CliProvider {
     /// its line is read. A Claude turn that succeeds yields its final answer
     /// as an [`AgentEvent::Answer`] just before the [`AgentEvent::Finished`]
     /// that ends it, after the [`AgentEvent::Text`] it streamed on the way.
+    /// A Codex agent that exits by itself, having named its session, yields
+    /// the [`AgentEvent::Occupancy`] its rollout reports last, before the
+    /// run's error when it failed; a run that timed out, was stopped, or
+    /// tripped [`CliSettings::tripwire`] reads no rollout.
     ///
     /// The agent is spawned before this returns, so settings it cannot
     /// honour and an agent that cannot be started are this call's error,
@@ -198,13 +221,16 @@ impl CliProvider {
     /// still runs, read or not, stops it, every process it forked and
     /// everything carrying the run's [marker](CliSettings::marker).
     ///
+    /// The conversation reaches the agent as [`CliProvider::execute`] hands
+    /// it over, its images included.
+    ///
     /// Call it within a Tokio runtime, which runs that task.
     pub async fn stream(
         &self,
         request: CompletionRequest<'_>,
     ) -> Result<AgentStream, ProviderError> {
-        self.stream_prompt(Some(request.model), transcript::render(request.messages))
-            .await
+        let input = self.input(request.messages).await?;
+        self.stream_input(Some(request.model), input).await
     }
 
     /// [`CliProvider::stream`] with `prompt` written to the agent's stdin as
@@ -217,10 +243,16 @@ impl CliProvider {
         model: Option<&str>,
         prompt: impl Into<String>,
     ) -> Result<AgentStream, ProviderError> {
+        self.stream_input(model, Input::raw(prompt.into())).await
+    }
+
+    async fn stream_input(
+        &self,
+        model: Option<&str>,
+        input: Input,
+    ) -> Result<AgentStream, ProviderError> {
         let (forward, mut events) = mpsc::unbounded_channel();
-        let run = self
-            .start(model, prompt.into(), &self.name, Some(forward))
-            .await?;
+        let run = self.start(model, input, &self.name, Some(forward)).await?;
         let name = self.name.clone();
         let mut finishing = JoinSet::new();
         finishing.spawn(run.finish());
@@ -244,17 +276,29 @@ impl CliProvider {
         }))
     }
 
-    /// Spawn the agent on `prompt` with the reading of its output under way,
+    /// `messages` as this provider's agent is handed them, or the reason an
+    /// image the turn was sent with cannot reach it.
+    async fn input(&self, messages: &[Message]) -> Result<Input, ExecutionError> {
+        Input::conversation(self.agent, messages)
+            .await
+            .map_err(|error| {
+                ExecutionError::new(ProviderError::agent(&self.name, &error.to_string()), None)
+            })
+    }
+
+    /// Spawn the agent on `input` with the reading of its output under way,
     /// forwarding each event read to `events` when given.
     async fn start(
         &self,
         model: Option<&str>,
-        prompt: String,
+        input: Input,
         label: &str,
         events: Option<mpsc::UnboundedSender<AgentEvent>>,
     ) -> Result<Run, ExecutionError> {
         let model = model.map(str::trim).filter(|model| !model.is_empty());
-        let mcp = self.attach();
+        let mcp = self
+            .attach()
+            .map_err(|error| ExecutionError::new(error, None))?;
         let instructions = self
             .instructions()
             .map_err(|error| ExecutionError::new(error, None))?;
@@ -268,13 +312,21 @@ impl CliProvider {
         if let Some(instructions) = &instructions {
             attachments = attachments.with_instructions(instructions.path());
         }
-        let options = self
+        let mut options = self
             .agent
             .options(&self.settings, &attachments)
             .map_err(|error| ExecutionError::new(error, None))?;
-        let arguments = self
-            .agent
-            .invocation_in(model, options, self.settings.session.as_ref());
+        if let Some(effort) = self.settings.effort {
+            options.extend(self.agent.effort_arguments(model, effort));
+        }
+        let arguments =
+            self.agent
+                .invocation_with(model, options, self.settings.session.as_ref(), &input);
+        let Input {
+            stdin: prompt,
+            directory: images,
+            ..
+        } = input;
         let marker = self
             .settings
             .marker
@@ -282,9 +334,17 @@ impl CliProvider {
             .map(Marker::new)
             .transpose()
             .map_err(|error| ExecutionError::new(ProviderError::config(error), None))?;
-        let environment = Environment::new(self.agent, &self.settings, mcp.as_ref(), &|name| {
-            std::env::var_os(name)
-        });
+        let host = |name: &str| std::env::var_os(name);
+        let environment = Environment::new(self.agent, &self.settings, mcp.as_ref(), &host);
+        let rollout = match self.agent {
+            AgentKind::Codex => Rollout::locate(
+                &environment,
+                &host,
+                self.settings.working_directory.as_deref(),
+                model,
+            ),
+            AgentKind::Claude => None,
+        };
         let scrubber = Scrubber::new(environment.secrets());
 
         let files = self
@@ -361,6 +421,7 @@ impl CliProvider {
             }
         });
 
+        let forward = events.clone();
         let (verdicts, settled) = mpsc::channel(2);
         let (draining, started) = watch::channel(false);
         let prose = Sink::open(files.as_ref().map(|files| files.stdout.as_path())).await;
@@ -377,6 +438,8 @@ impl CliProvider {
                 started.clone(),
             )
             .forwarding(events)
+            .printing(self.settings.tool_output_limit)
+            .in_directory(self.settings.working_directory.clone())
             .run(spawned.child.stdout.take()),
         );
         let diagnostics = tokio::spawn(
@@ -409,8 +472,11 @@ impl CliProvider {
             diagnostics,
             settled,
             draining,
+            rollout,
+            forward,
             _mcp: mcp,
             _instructions: instructions,
+            _images: images,
         })
     }
 
@@ -418,12 +484,18 @@ impl CliProvider {
     /// the run still loads strictly, with no server at all, and without its
     /// MCP tools can still answer, and fails loudly on its own if it truly
     /// needed them.
-    fn attach(&self) -> Option<McpAttachment> {
+    fn attach(&self) -> Result<Option<McpAttachment>, ProviderError> {
         let mcp = &self.settings.mcp;
         if mcp.is_empty() {
-            return None;
+            return Ok(None);
         }
-        match mcp.render(self.agent) {
+        if let Some((name, refusal)) = mcp.unattached_required(self.agent) {
+            return Err(ProviderError::config(format!(
+                "the required MCP server {name} cannot attach to {}: {refusal}",
+                self.agent
+            )));
+        }
+        let attachment = match mcp.render(self.agent) {
             Ok(Some(attachment)) => {
                 tracing::info!(
                     provider = %self.name,
@@ -439,6 +511,11 @@ impl CliProvider {
                 Some(attachment)
             }
             Ok(None) => None,
+            Err(error) if mcp.requires(self.agent) => {
+                return Err(ProviderError::config(format!(
+                    "could not render the MCP config of a run with a required server: {error}"
+                )));
+            }
             Err(error) => {
                 tracing::warn!(
                     provider = %self.name,
@@ -447,7 +524,8 @@ impl CliProvider {
                 );
                 None
             }
-        }
+        };
+        Ok(attachment)
     }
 
     /// Write the instructions to a private temporary file for the agent to
@@ -621,6 +699,7 @@ mod tests {
     use abnegate_llm::Message;
     use abnegate_llm::ProviderError;
     use abnegate_llm::ProviderKind;
+    use abnegate_llm::ReasoningEffort;
     use abnegate_llm::RequestOptions;
     use abnegate_llm::WindowKind;
     use abnegate_secret::SecretValue;
@@ -634,7 +713,10 @@ mod tests {
     use super::report;
     use crate::PROSE_EXCEEDED;
     use crate::STDERR_HEADING;
+    use crate::activity::activity;
     use crate::agent_stream::AgentStream;
+    use crate::codex_sandbox::CodexSandbox;
+    use crate::environment::INHERITED;
     use crate::environment::LOCALE;
     use crate::event::AgentEvent;
     use crate::execution::Execution;
@@ -653,8 +735,12 @@ mod tests {
     use crate::test_support::captured_logs;
     use crate::test_support::delegated;
     use crate::test_support::running;
+    use crate::test_support::untokened;
 
+    mod images;
     mod lifecycle;
+    mod occupancy;
+    mod subagents;
 
     const ETXTBSY: i32 = 26;
     const PROBE: &str = "FAKE_AGENT_PROBE";
@@ -831,7 +917,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.0
         assert_eq!(completion.provider, "claude");
         assert_eq!(
             completion.message.content.as_deref(),
-            Some("Looking now. It is empty.")
+            Some("Looking now. \n\nIt is empty.")
         );
         assert_eq!(completion.finish_reason.as_deref(), Some("success"));
 
@@ -1006,6 +1092,214 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
         }
     }
 
+    /// The arguments `agent` is started with on `model`, run with `given`
+    /// applied to a recording agent's settings.
+    async fn started_with(
+        agent: AgentKind,
+        model: Option<&str>,
+        given: impl FnOnce(CliSettings) -> CliSettings,
+    ) -> Vec<String> {
+        let directory = TempDir::new().expect("a temporary directory");
+        let (settings, _, arguments) = recorder(&directory);
+        let provider = CliProvider::agent(agent, given(settings));
+
+        provider
+            .execute_prompt(model, "hi", "effort")
+            .await
+            .expect("an execution");
+
+        recorded(&arguments).lines().map(str::to_string).collect()
+    }
+
+    fn effort_flags(arguments: &[String]) -> Vec<&str> {
+        arguments
+            .iter()
+            .enumerate()
+            .filter(|(_, argument)| {
+                *argument == "--effort" || argument.starts_with("model_reasoning_effort=")
+            })
+            .flat_map(|(at, argument)| match argument.as_str() {
+                "--effort" => [Some("--effort"), arguments.get(at + 1).map(String::as_str)],
+                _ => [
+                    at.checked_sub(1)
+                        .and_then(|before| arguments.get(before))
+                        .map(String::as_str),
+                    Some(argument),
+                ],
+            })
+            .flatten()
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn the_effort_a_run_is_given_reaches_the_agent_when_its_model_takes_it() {
+        for (agent, model, effort, expected) in [
+            (
+                AgentKind::Claude,
+                Some("opus"),
+                ReasoningEffort::Max,
+                &["--effort", "max"][..],
+            ),
+            (
+                AgentKind::Claude,
+                None,
+                ReasoningEffort::XHigh,
+                &["--effort", "xhigh"],
+            ),
+            (
+                AgentKind::Claude,
+                Some("  "),
+                ReasoningEffort::Low,
+                &["--effort", "low"],
+            ),
+            (
+                AgentKind::Codex,
+                Some("gpt-6-sol"),
+                ReasoningEffort::Ultra,
+                &["-c", r#"model_reasoning_effort="ultra""#],
+            ),
+            (AgentKind::Claude, Some("haiku"), ReasoningEffort::Low, &[]),
+            (
+                AgentKind::Claude,
+                Some("claude-opus-4-8"),
+                ReasoningEffort::Max,
+                &[],
+            ),
+            (AgentKind::Claude, Some("opus"), ReasoningEffort::Auto, &[]),
+            (AgentKind::Codex, None, ReasoningEffort::Off, &[]),
+            (
+                AgentKind::Codex,
+                Some("qwen2.5:7b-instruct"),
+                ReasoningEffort::High,
+                &[],
+            ),
+        ] {
+            let arguments =
+                started_with(agent, model, |settings| settings.with_effort(effort)).await;
+
+            assert_eq!(
+                effort_flags(&arguments),
+                expected,
+                "{agent} on {model:?} at {effort:?}: {arguments:?}"
+            );
+            if agent == AgentKind::Codex {
+                assert!(
+                    !arguments.contains(&"--effort".to_string()),
+                    "{arguments:?}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_run_given_no_effort_sends_none() {
+        for agent in AgentKind::ALL {
+            let model = agent.models().first().copied();
+            let arguments = started_with(*agent, model, |settings| settings).await;
+
+            assert!(
+                effort_flags(&arguments).is_empty(),
+                "{agent}: {arguments:?}"
+            );
+        }
+    }
+
+    /// The crate never second-guesses the model a caller names: a local
+    /// model Codex reaches through its own provider configuration is passed
+    /// as written, and only the effort it is not known to take is held back.
+    #[tokio::test]
+    async fn a_local_codex_model_still_reaches_the_agent_verbatim() {
+        let arguments = started_with(
+            AgentKind::Codex,
+            Some(" qwen2.5:7b-instruct "),
+            |settings| settings.with_effort(ReasoningEffort::High),
+        )
+        .await;
+
+        let model = arguments
+            .iter()
+            .position(|argument| argument == "--model")
+            .map(|at| arguments[at + 1].as_str());
+        assert_eq!(model, Some("qwen2.5:7b-instruct"), "{arguments:?}");
+        assert!(effort_flags(&arguments).is_empty(), "{arguments:?}");
+    }
+
+    #[tokio::test]
+    async fn a_resumed_codex_run_keeps_its_effort() {
+        let id = "019b2c41-0000-7000-8000-000000000001";
+        let arguments = started_with(AgentKind::Codex, Some("gpt-6-sol"), |settings| {
+            settings
+                .with_session(Session::resumed(id))
+                .with_sandbox(CodexSandbox::WorkspaceWrite)
+                .with_effort(ReasoningEffort::Ultra)
+        })
+        .await;
+
+        assert_eq!(
+            arguments,
+            [
+                "exec",
+                "--json",
+                "--skip-git-repo-check",
+                "-c",
+                r#"sandbox_mode="workspace-write""#,
+                "-c",
+                r#"model_reasoning_effort="ultra""#,
+                "--model",
+                "gpt-6-sol",
+                "resume",
+                id,
+                "-",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_read_only_claude_run_carries_its_effort() {
+        let arguments = started_with(AgentKind::Claude, Some("sonnet"), |settings| {
+            settings.read_only().with_effort(ReasoningEffort::High)
+        })
+        .await;
+
+        assert_eq!(
+            effort_flags(&arguments),
+            ["--effort", "high"],
+            "{arguments:?}"
+        );
+        assert!(
+            arguments.contains(&"--restricted".to_string()),
+            "{arguments:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_run_given_an_effort_refuses_a_caller_flag_setting_another() {
+        for (agent, arguments) in [
+            (AgentKind::Claude, &["--effort", "low"][..]),
+            (AgentKind::Codex, &["-c", "model_reasoning_effort=low"]),
+        ] {
+            let directory = TempDir::new().expect("a temporary directory");
+            let (settings, _, recorded) = recorder(&directory);
+            let provider = CliProvider::agent(
+                agent,
+                settings
+                    .with_arguments(arguments.iter().copied())
+                    .with_effort(ReasoningEffort::High),
+            );
+
+            let error = provider
+                .execute_prompt(None, "hi", "effort")
+                .await
+                .expect_err("a refusal");
+
+            assert!(
+                matches!(&*error.error, ProviderError::Config { detail, .. } if detail.contains("effort")),
+                "{agent}: {error:?}"
+            );
+            assert!(!recorded.exists(), "{agent} was started anyway");
+        }
+    }
+
     #[tokio::test]
     async fn a_prompt_reaches_codex_on_stdin_unchanged() {
         let directory = TempDir::new().expect("a temporary directory");
@@ -1160,7 +1454,10 @@ echo '{"type":"result","subtype":"error_max_turns","is_error":true,"result":"","
                 _ => None,
             })
             .collect();
-        assert_eq!(texts, [NARRATION, FINAL_REPORT]);
+        assert_eq!(
+            texts,
+            [NARRATION.to_string(), format!("\n\n{FINAL_REPORT}")]
+        );
         let [.., AgentEvent::Answer(answer), AgentEvent::Finished { .. }] = delivered.as_slice()
         else {
             panic!("expected the answer, then the finish: {delivered:?}");
@@ -1179,7 +1476,10 @@ echo '{"type":"result","subtype":"error_max_turns","is_error":true,"result":"","
         let execution = execute(&provider, &[Message::user("Check the deploy.")]).await;
 
         assert_eq!(execution.stdout.answer.as_deref(), Some(FINAL_REPORT));
-        assert_eq!(execution.stdout.text, format!("{NARRATION}{FINAL_REPORT}"));
+        assert_eq!(
+            execution.stdout.text,
+            format!("{NARRATION}\n\n{FINAL_REPORT}")
+        );
         assert_eq!(execution.stdout.reply(), FINAL_REPORT);
         let journal = recorded(&execution.log.expect("log files").events);
         let completed: Value = journal
@@ -1468,7 +1768,7 @@ sleep 120"#,
 
         assert_eq!(
             completion.message.content.as_deref(),
-            Some("Looking now. It is empty.")
+            Some("Looking now. \n\nIt is empty.")
         );
     }
 
@@ -1564,7 +1864,7 @@ sleep 120"#,
                 _ => None,
             })
             .collect();
-        assert_eq!(texts, ["Looking now. ", "It is empty."]);
+        assert_eq!(texts, ["Looking now. ", "\n\nIt is empty."]);
         let tool = delivered
             .iter()
             .position(
@@ -1573,7 +1873,7 @@ sleep 120"#,
             .expect("the tool call");
         let second = delivered
             .iter()
-            .position(|event| matches!(event, AgentEvent::Text(text) if text == "It is empty."))
+            .position(|event| matches!(event, AgentEvent::Text(text) if text == "\n\nIt is empty."))
             .expect("the second text");
         assert!(tool < second, "{delivered:?}");
         assert!(
@@ -1591,6 +1891,46 @@ sleep 120"#,
         assert_eq!(folded.session, executed.session);
         assert_eq!(folded.structured, executed.structured);
         assert_eq!(folded.cost, executed.cost);
+    }
+
+    /// The blocks a host's agent writes either side of a call of the host's
+    /// own tools are kept apart, and the call itself is left to the host.
+    #[tokio::test]
+    async fn a_host_agents_answer_keeps_its_blocks_apart() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = r#"
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"I will look first."}]}}'
+echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_01","name":"mcp__host__list_files","input":{"path":"."}}]}}'
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Found it."}]}}'
+echo '{"type":"result","subtype":"success","is_error":false}'
+"#;
+        let provider = CliProvider::agent(AgentKind::Claude, settings(&directory, script));
+        let messages = [Message::user("Find it.")];
+
+        let (delivered, failure, _) = collected(streamed(&provider, &messages).await).await;
+
+        assert!(failure.is_none(), "{failure:?}");
+        let spoken: String = delivered
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::Text(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(spoken, "I will look first.\n\nFound it.");
+        let listed: Vec<String> = delivered
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::Tool(call) => activity(call, &["mcp__host__"]),
+                _ => None,
+            })
+            .collect();
+        assert!(listed.is_empty(), "{listed:?}");
+
+        let folded: StdoutParseResult = delivered.into_iter().collect();
+        assert_eq!(folded.text, spoken);
+        let completion = run(&provider, &messages).await.expect("an answer");
+        assert_eq!(completion.message.content.as_deref(), Some(spoken.as_str()));
     }
 
     #[tokio::test]
@@ -1942,6 +2282,7 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
         for name in &names {
             assert!(
                 DEFAULT_ENVIRONMENT.contains(&name.as_str())
+                    || INHERITED.contains(&name.as_str())
                     || AgentKind::Claude.configuration().contains(&name.as_str())
                     || shell.contains(&name.as_str())
                     || LOCALE.contains(&name.as_str())
@@ -3718,6 +4059,48 @@ echo '{{"type":"turn.completed","usage":{{"input_tokens":1,"output_tokens":1}}}}
         );
     }
 
+    /// A required server Codex cannot be given fails the run before the agent
+    /// starts, rather than the run going ahead without it.
+    #[tokio::test]
+    async fn a_codex_run_fails_when_a_required_server_cannot_attach() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let captured = directory.path().join("arguments");
+        let recorded = directory.path().join("environment");
+        let settings = settings(&directory, &recording_codex(&captured, &recorded))
+            .with_mcp_server(
+                "events",
+                McpServer::remote("https://mcp.example.com/sse")
+                    .with_transport(McpTransport::Sse)
+                    .require(),
+            );
+        let provider = CliProvider::agent(AgentKind::Codex, settings);
+
+        let error = run(&provider, &[Message::user("hi")])
+            .await
+            .expect_err("a required server that cannot attach fails the run");
+
+        assert!(error.to_string().contains("events"), "{error}");
+        assert!(!captured.exists(), "the agent started anyway");
+    }
+
+    /// Claude Code has no required servers, so a Claude run goes ahead
+    /// without one it cannot be given, as it always has.
+    #[tokio::test]
+    async fn a_claude_run_ignores_a_required_server_it_cannot_attach() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let answer =
+            r#"echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'"#;
+        let settings = settings(&directory, answer).with_mcp_server(
+            "bad name",
+            McpServer::remote("https://mcp.example.com/mcp").require(),
+        );
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        run(&provider, &[Message::user("hi")])
+            .await
+            .expect("an answer");
+    }
+
     /// A stand-in for Claude that loads the repository's own settings, and
     /// runs the hook they declare, unless `--setting-sources` leaves the
     /// project out or `--restricted` leaves every settings file out, as the
@@ -3905,7 +4288,7 @@ echo '{{"type":"result","subtype":"success","is_error":false}}'"#,
         );
         assert_eq!(
             std::fs::read_to_string(&files.stdout).expect("the prose log"),
-            "Looking now. It is empty."
+            "Looking now. \n\nIt is empty."
         );
         assert_eq!(
             std::fs::read_to_string(&files.stderr).expect("the stderr log"),
@@ -4538,7 +4921,8 @@ echo '{"type":"turn.failed","error":{"message":"You have hit your usage limit. T
     }
 
     /// A turn usage credits carry past the plan's window is logged once, with
-    /// the window, and never with its credential.
+    /// the window and the turn's working directory, and never with its
+    /// credential.
     #[test]
     fn a_turn_on_usage_credits_is_logged_once_with_its_window() {
         const TOKEN: &str = concat!(
@@ -4557,6 +4941,7 @@ echo '{"type":"turn.failed","error":{"message":"You have hit your usage limit. T
         let provider = CliProvider::agent(
             AgentKind::Claude,
             settings(&directory, &replaying(&directory, &stream))
+                .with_working_directory(directory.path())
                 .with_credential(Credential::key("ANTHROPIC_API_KEY", TOKEN)),
         );
 
@@ -4578,7 +4963,59 @@ echo '{"type":"turn.failed","error":{"message":"You have hit your usage limit. T
         assert_eq!(credited.len(), 1, "{logged}");
         assert!(credited[0].contains("INFO"), "{logged}");
         assert!(credited[0].contains("five_hour"), "{logged}");
+        assert!(
+            credited[0].contains(&format!("directory={}", directory.path().display())),
+            "{logged}"
+        );
+        assert_eq!(
+            logged
+                .lines()
+                .filter(|line| line.contains("INFO") && line.contains("abnegate_agent_cli::reader"))
+                .count(),
+            1,
+            "{logged}"
+        );
         assert!(!logged.contains(TOKEN), "{logged}");
+    }
+
+    /// The working directory a credits line names is scrubbed of the run's
+    /// secrets like everything else the run logs.
+    #[test]
+    fn a_credits_line_scrubs_the_secrets_in_its_directory() {
+        const TOKEN: &str = concat!(
+            "sk-ant-",
+            "api03-",
+            "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+        );
+        let stream = [
+            json!({"type": "rate_limit_event", "rate_limit_info": {"status": "rejected", "rateLimitType": "five_hour", "overageStatus": "allowed", "isUsingOverage": true}}),
+            json!({"type": "result", "subtype": "success", "is_error": false, "result": "Reviewed."}),
+        ]
+        .map(|line| line.to_string());
+        let directory = TempDir::new().expect("a temporary directory");
+        let work = directory.path().join(TOKEN);
+        std::fs::create_dir(&work).expect("a working directory");
+        let provider = CliProvider::agent(
+            AgentKind::Claude,
+            settings(&directory, &replaying(&directory, &stream))
+                .with_working_directory(&work)
+                .with_credential(Credential::key("ANTHROPIC_API_KEY", TOKEN)),
+        );
+
+        let (completion, logged) =
+            captured_logs(|| blocking(run(&provider, &[Message::user("Review the change.")])));
+
+        completion.expect("a turn on usage credits");
+        let credited: Vec<&str> = logged
+            .lines()
+            .filter(|line| line.contains("usage credits"))
+            .collect();
+        assert_eq!(credited.len(), 1, "{logged}");
+        assert!(!credited[0].contains(TOKEN), "{logged}");
+        assert!(
+            credited[0].contains(&format!("directory={}", directory.path().display())),
+            "{logged}"
+        );
     }
 
     #[test]
@@ -4617,5 +5054,284 @@ echo '{"type":"turn.failed","error":{"message":"You have hit your usage limit. T
             error.to_string().contains(REFUSAL),
             "lost the agent's wording: {error}"
         );
+    }
+
+    /// A stand-in for Claude that records its arguments, its environment and
+    /// the MCP configuration file it is given, then answers as `claude
+    /// --print` does.
+    fn recording_claude(arguments: &Path, environment: &Path, file: &Path) -> String {
+        format!(
+            r#"printf '%s\n' "$@" > '{arguments}'
+env > '{environment}'
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--mcp-config" ]; then cp "$2" '{file}'; fi
+  shift
+done
+echo '{{"type":"result","subtype":"success","is_error":false,"result":"done"}}'"#,
+            arguments = arguments.display(),
+            environment = environment.display(),
+            file = file.display(),
+        )
+    }
+
+    const HOST_TOKEN: &str = "host-turn-notarealtoken";
+
+    /// The host's server as a host that serves its agent every tool it may
+    /// use attaches it: one remote endpoint, signed in with a token of the
+    /// run's own, offering exactly the tools named, waiting as long as a
+    /// turn on a call, required, and listed up front.
+    fn host_server() -> McpServer {
+        McpServer::remote("http://127.0.0.1:9/mcp")
+            .with_header("Authorization", "Bearer ${HOST_MCP_TOKEN}")
+            .with_secret("HOST_MCP_TOKEN", HOST_TOKEN)
+            .with_tools(["a", "b"])
+            .exclusive()
+            .with_tool_timeout(Duration::from_secs(1800))
+            .with_startup_timeout(Duration::from_secs(30))
+            .require()
+            .eager()
+    }
+
+    /// What a run of `agent` on `model` under `given` was started with: its
+    /// arguments, with the rendered file's path as `<file>` and the
+    /// generated variables' token as `TOKEN`, the file's contents, and the
+    /// child's environment.
+    async fn golden(
+        agent: AgentKind,
+        model: &str,
+        given: impl FnOnce(CliSettings) -> CliSettings,
+    ) -> (
+        Vec<String>,
+        Option<String>,
+        std::collections::BTreeMap<String, String>,
+    ) {
+        let directory = TempDir::new().expect("a temporary directory");
+        let captured = directory.path().join("arguments");
+        let recorded = directory.path().join("environment");
+        let copied = directory.path().join("mcp.json");
+        let script = match agent {
+            AgentKind::Claude => recording_claude(&captured, &recorded, &copied),
+            AgentKind::Codex => recording_codex(&captured, &recorded),
+        };
+        let provider = CliProvider::agent(agent, given(settings(&directory, &script)));
+
+        let execution = provider
+            .execute_prompt(Some(model), "hi", "golden")
+            .await
+            .expect("an execution");
+        assert_eq!(execution.status, ExitStatus::Code(0), "{execution:?}");
+
+        let mut arguments = recorded_arguments(&captured);
+        if let Some(at) = arguments
+            .iter()
+            .position(|argument| argument == "--mcp-config")
+        {
+            arguments[at + 1] = "<file>".to_string();
+        }
+        let arguments = arguments
+            .iter()
+            .map(|argument| untokened(argument))
+            .collect();
+        let file = std::fs::read_to_string(&copied)
+            .ok()
+            .map(|file| untokened(&file));
+        let environment = recorded_environment(&recorded)
+            .into_iter()
+            .map(|(variable, value)| (untokened(&variable), value))
+            .collect();
+        (arguments, file, environment)
+    }
+
+    const GOLDEN_FILE: &str = r#"{
+  "mcpServers": {
+    "host": {
+      "headers": {
+        "Authorization": "${ABNEGATE_MCP_TOKEN_0}"
+      },
+      "type": "http",
+      "url": "http://127.0.0.1:9/mcp"
+    }
+  }
+}"#;
+
+    const GOLDEN_OVERRIDE: &str = r#"mcp_servers.host={ "url" = "http://127.0.0.1:9/mcp", "env_http_headers" = { "Authorization" = "ABNEGATE_MCP_TOKEN_0" }, "enabled_tools" = ["a", "b"], "tool_timeout_sec" = 1800, "startup_timeout_sec" = 30, "default_tools_approval_mode" = "approve", "required" = true, "omit_tools_from" = ["deferred"] }"#;
+
+    /// Everything a host-shaped server attached as `host` gives each agent,
+    /// with the agent's own tools granted and withheld, pinned whole.
+    ///
+    /// Each flag and key has its counterpart in what a host driving the
+    /// CLIs itself would pass: isolation, strict MCP loading, the server and
+    /// its exact tools, the permission prompt on a granted Claude run, the
+    /// tool timeout in both of Claude's variables, and for Codex the strict
+    /// configuration, every withheld tool, the read-only sandbox and each of
+    /// the server's keys. The only differences are in how the same thing is
+    /// written:
+    ///
+    /// - Claude reads the server from a private file whose path is passed,
+    ///   not from inline JSON;
+    /// - each allowed tool gets an `--allowedTools` of its own, not one comma
+    ///   list;
+    /// - the token reaches the server through a generated variable, which
+    ///   the file's header refers to for Claude and `env_http_headers` names
+    ///   for Codex, not through a fixed variable and `bearer_token_env_var`;
+    /// - Codex is given the server as one inline table, not one `-c` per key;
+    /// - the options come after the streaming flags and before the model,
+    ///   and Codex's server after its own flags and before its sandbox.
+    #[tokio::test]
+    async fn a_host_shaped_server_reaches_each_agent_exactly_as_pinned() {
+        let isolation = [
+            "--setting-sources",
+            "",
+            "--settings",
+            r#"{"crossSessionInbound":"refuse"}"#,
+        ];
+        let allowed = [
+            "--allowedTools",
+            "mcp__host__a",
+            "--allowedTools",
+            "mcp__host__b",
+        ];
+
+        let (granted, file, environment) = golden(AgentKind::Claude, "opus", |settings| {
+            settings
+                .isolate()
+                .with_mcp_server("host", host_server())
+                .with_permission_prompt("host", "approve_tool_call")
+        })
+        .await;
+        let mut expected = vec![
+            "--verbose",
+            "--output-format",
+            "stream-json",
+            "--mcp-config",
+            "<file>",
+            "--strict-mcp-config",
+        ];
+        expected.extend(isolation);
+        expected.extend(allowed);
+        expected.extend([
+            "--permission-prompt-tool",
+            "mcp__host__approve_tool_call",
+            "--model",
+            "opus",
+            "--print",
+        ]);
+        assert_eq!(granted, expected);
+        assert_eq!(file.as_deref(), Some(GOLDEN_FILE));
+        for (variable, value) in [
+            ("MCP_TOOL_TIMEOUT", "1800000"),
+            ("CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT", "1800000"),
+            ("DISABLE_AUTOUPDATER", "1"),
+            ("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1"),
+            ("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1"),
+        ] {
+            assert_eq!(
+                environment.get(variable).map(String::as_str),
+                Some(value),
+                "{variable}"
+            );
+        }
+        let bearer = format!("Bearer {HOST_TOKEN}");
+        assert_eq!(
+            environment.get("ABNEGATE_MCP_TOKEN_0").map(String::as_str),
+            Some(bearer.as_str())
+        );
+        assert!(
+            !environment.contains_key("HOST_MCP_TOKEN"),
+            "{environment:?}"
+        );
+
+        let (withheld, file, _) = golden(AgentKind::Claude, "opus", |settings| {
+            settings
+                .isolate()
+                .withhold_tools()
+                .with_mcp_server("host", host_server())
+        })
+        .await;
+        let mut expected = vec![
+            "--verbose",
+            "--output-format",
+            "stream-json",
+            "--mcp-config",
+            "<file>",
+            "--strict-mcp-config",
+        ];
+        expected.extend(isolation);
+        expected.extend(["--tools", ""]);
+        expected.extend(allowed);
+        expected.extend(["--model", "opus", "--print"]);
+        assert_eq!(withheld, expected);
+        assert_eq!(file.as_deref(), Some(GOLDEN_FILE));
+
+        let strict = [
+            "--ignore-user-config",
+            "--disable",
+            "apps",
+            "--disable",
+            "plugins",
+        ];
+        let (granted, file, environment) = golden(AgentKind::Codex, "gpt-6-sol", |settings| {
+            settings
+                .isolate()
+                .with_mcp_server("host", host_server())
+                .with_sandbox(CodexSandbox::WorkspaceWrite)
+        })
+        .await;
+        let mut expected = vec!["exec", "--json", "--skip-git-repo-check"];
+        expected.extend(strict);
+        expected.extend([
+            "-c",
+            GOLDEN_OVERRIDE,
+            "--sandbox",
+            "workspace-write",
+            "--model",
+            "gpt-6-sol",
+            "-",
+        ]);
+        assert_eq!(granted, expected);
+        assert_eq!(file, None);
+        assert_eq!(
+            environment.get("ABNEGATE_MCP_TOKEN_0").map(String::as_str),
+            Some(bearer.as_str())
+        );
+        for variable in ["MCP_TOOL_TIMEOUT", "DISABLE_AUTOUPDATER"] {
+            assert!(!environment.contains_key(variable), "{variable}");
+        }
+
+        let (withheld, _, _) = golden(AgentKind::Codex, "gpt-6-sol", |settings| {
+            settings
+                .isolate()
+                .withhold_tools()
+                .with_mcp_server("host", host_server())
+        })
+        .await;
+        let mut expected = vec!["exec", "--json", "--skip-git-repo-check"];
+        expected.extend(strict);
+        expected.extend([
+            "--disable",
+            "shell_tool",
+            "--disable",
+            "view_image",
+            "--disable",
+            "goals",
+            "--disable",
+            "sleep_tool",
+            "--disable",
+            "image_generation",
+            "-c",
+            "agents.enabled=false",
+            "-c",
+            r#"web_search="disabled""#,
+            "-c",
+            "tools.experimental_request_user_input.enabled=false",
+            "-c",
+            GOLDEN_OVERRIDE,
+            "--sandbox",
+            "read-only",
+            "--model",
+            "gpt-6-sol",
+            "-",
+        ]);
+        assert_eq!(withheld, expected);
     }
 }

@@ -34,7 +34,9 @@
 //! names a CLI gives them: `list.files` enables a tool the server calls
 //! `list.files`, where `list_files` enables nothing, and Claude refuses the
 //! first. Its [working directory](McpServer::working_directory) becomes its
-//! `cwd`.
+//! `cwd`. Every call to its tools is approved in advance, with
+//! `default_tools_approval_mode = "approve"`, since `codex exec` has nobody
+//! to ask, unless the server is [supervised](McpServer::supervised).
 //!
 //! The file holds no literal environment or header value. Each environment
 //! and header value, and each URL, stdio command or argument that refers to
@@ -92,10 +94,14 @@ pub(crate) use crate::mcp::attachment::McpAttachment;
 pub use crate::mcp::config::DEFAULT_PREFIX;
 pub use crate::mcp::config::McpConfig;
 pub use crate::mcp::config_error::McpConfigError;
+#[cfg(test)]
+pub(crate) use crate::mcp::placeholders::NAMESPACE;
 pub(crate) use crate::mcp::placeholders::expand;
 pub(crate) use crate::mcp::placeholders::references;
 pub(crate) use crate::mcp::placeholders::whole_reference;
 pub use crate::mcp::server::McpServer;
+pub(crate) use crate::mcp::server::mcp_rule;
 pub(crate) use crate::mcp::server::qualified;
+pub(crate) use crate::mcp::server::serving;
 pub(crate) use crate::mcp::template::Template;
 pub use crate::mcp::transport::McpTransport;

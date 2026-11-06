@@ -401,6 +401,27 @@ impl McpConfig {
         json!({ SERVERS: servers })
     }
 
+    /// The first [required](McpServer::required) server that never attaches
+    /// to `agent`'s run, with why, for Codex, which fails a run that cannot
+    /// start one; Claude Code has no such setting, so none for Claude.
+    pub(crate) fn unattached_required(&self, agent: AgentKind) -> Option<(&str, Refusal)> {
+        match agent {
+            AgentKind::Claude => None,
+            AgentKind::Codex => self
+                .enabled()
+                .filter(|(_, server)| server.required)
+                .find_map(|(name, server)| {
+                    refusal(agent, name, server).map(|refusal| (name, refusal))
+                }),
+        }
+    }
+
+    /// Whether `agent`'s run has a [required](McpServer::required) server
+    /// to attach, which it cannot run without.
+    pub(crate) fn requires(&self, agent: AgentKind) -> bool {
+        agent == AgentKind::Codex && self.attachable(agent).any(|(_, server)| server.required)
+    }
+
     /// The `--allowedTools` entries for every server that attaches to
     /// `agent`, and none for Codex, which takes no such flag: a server's
     /// [`tools`](McpServer::tools) reach it as the server's `enabled_tools`.
@@ -500,6 +521,7 @@ mod tests {
     use std::io::Read;
     use std::path::Path;
     use std::path::PathBuf;
+    use std::time::Duration;
 
     use abnegate_llm::Credential;
     use abnegate_secret::SecretValue;
@@ -524,6 +546,7 @@ mod tests {
     use crate::mcp::transport::McpTransport;
     use crate::settings::CliSettings;
     use crate::test_support::captured_logs;
+    use crate::test_support::untokened;
 
     fn rendered(config: &McpConfig) -> McpAttachment {
         config
@@ -1109,6 +1132,99 @@ mod tests {
             config.allowed_tools(AgentKind::Claude),
             ["mcp__appwrite", "mcp__grafana__list_datasources"]
         );
+    }
+
+    /// An exclusive server allows exactly the tools it names, so one naming
+    /// none allows no tool at all, where a server that is not exclusive is
+    /// allowed whole.
+    #[test]
+    fn an_exclusive_server_allows_exactly_its_tools_however_many_it_names() {
+        let config = McpConfig::default()
+            .with_server("none", appwrite().exclusive())
+            .with_server("some", appwrite().with_tools(["a", "b"]).exclusive())
+            .with_server("open", appwrite());
+
+        assert_eq!(
+            config.allowed_tools(AgentKind::Claude),
+            ["mcp__open", "mcp__some__a", "mcp__some__b"]
+        );
+        assert_eq!(
+            config.scoped_tools(AgentKind::Claude),
+            ["mcp__some__a", "mcp__some__b"]
+        );
+        assert!(config.allowed_tools(AgentKind::Codex).is_empty());
+    }
+
+    /// The options Claude Code's entry has no key for change nothing in the
+    /// file it is given or in the log view: every byte of each is the same
+    /// with and without them, but the generated variables' token.
+    #[test]
+    fn the_claude_file_is_byte_identical_with_and_without_every_option() {
+        let remote = McpServer::remote("http://127.0.0.1:9/mcp")
+            .with_header("Authorization", "Bearer ${HOST_MCP_TOKEN}")
+            .with_secret("HOST_MCP_TOKEN", "host-token-marker")
+            .with_tools(["a", "b"]);
+        let configured = |optioned: bool| {
+            let options = |server: McpServer| match optioned {
+                true => server
+                    .with_tool_timeout(Duration::from_secs(1800))
+                    .with_startup_timeout(Duration::from_secs(30))
+                    .require()
+                    .eager()
+                    .exclusive()
+                    .supervise(),
+                false => server,
+            };
+            McpConfig::default()
+                .with_server("host", options(remote.clone()))
+                .with_server("appwrite", options(appwrite()))
+        };
+        let file = |config: &McpConfig| {
+            let attachment = rendered(config);
+            let path = attachment.file.as_ref().expect("a rendered file").path();
+            untokened(&std::fs::read_to_string(path).expect("the file"))
+        };
+
+        let plain = configured(false);
+        let optioned = configured(true);
+
+        assert_eq!(file(&optioned), file(&plain));
+        assert_eq!(
+            optioned.redacted(AgentKind::Claude),
+            plain.redacted(AgentKind::Claude)
+        );
+    }
+
+    /// A configuration written out and read back holds the same servers,
+    /// every option included, so an exclusive server naming no tool still
+    /// allows none of them.
+    #[test]
+    fn a_configuration_survives_a_round_trip_with_every_option() {
+        let config = McpConfig::default()
+            .with_server(
+                "host",
+                McpServer::remote("http://127.0.0.1:9/mcp")
+                    .with_header("Authorization", "Bearer ${HOST_MCP_TOKEN}")
+                    .with_tools(["a", "b"])
+                    .with_tool_timeout(Duration::from_secs(1800))
+                    .with_startup_timeout(Duration::from_secs(30))
+                    .require()
+                    .eager()
+                    .exclusive()
+                    .supervise(),
+            )
+            .with_server("closed", appwrite().exclusive());
+
+        let written = serde_json::to_string(&config).expect("serialisable");
+        let read: McpConfig = serde_json::from_str(&written).expect("a round trip");
+
+        assert_eq!(read, config);
+        assert!(
+            read.allowed_tools(AgentKind::Claude)
+                .iter()
+                .all(|rule| !rule.contains("closed"))
+        );
+        assert!(!read.servers["closed"].allows("list_projects"));
     }
 
     #[test]
