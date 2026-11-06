@@ -65,8 +65,10 @@ impl DeviceLogin {
     /// `CODEX_HOME` a private [`Staging`](crate::login::codex::Staging)
     /// directory under `<root>/.login`, because it deletes any login in its
     /// home before it prints a code: no login is touched until the caller
-    /// promotes the new one. One device sign-in may run per root at a time,
-    /// as each one clears what earlier attempts left there.
+    /// promotes the new one. Sign-ins under one root may overlap: each one
+    /// clears only what earlier attempts left there once nothing holds them,
+    /// never a running attempt or a [`Staging`](crate::login::codex::Staging)
+    /// that has not been dropped.
     ///
     /// `root` must be writable by this user alone, as every directory above
     /// it must be: whoever else can write to it can swap `.login` for a link

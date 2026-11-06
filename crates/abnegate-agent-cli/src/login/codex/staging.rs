@@ -1,11 +1,18 @@
 use std::fs;
 use std::fs::DirBuilder;
+use std::fs::File;
+use std::fs::OpenOptions;
 use std::fs::Permissions;
+use std::fs::TryLockError;
 use std::io;
 use std::os::unix::fs::DirBuilderExt;
+use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
+
+use nix::fcntl::OFlag;
 
 use crate::login::LoginError;
 use crate::login::codex::Account;
@@ -26,29 +33,43 @@ const PREFIX: &str = "attempt-";
 /// leaves every login where it was, and which home the new login belongs in
 /// is known only once codex has saved it. Promote it into that home, or
 /// read its `auth.json` from [`path`](Self::path) and keep it however the
-/// caller keeps credentials. Dropping it removes the directory and what is
-/// left in it.
+/// caller keeps credentials. It holds a lock on its directory for as long
+/// as it lives, so no other sign-in under the same root clears it. Dropping
+/// it removes the directory and what is left in it.
 #[derive(Debug)]
 pub struct Staging {
     path: PathBuf,
+    _lock: File,
 }
 
 impl Staging {
-    /// A fresh, private directory under `<root>/.login`. One device sign-in
-    /// runs per root at a time, so whatever earlier attempts left under
-    /// `.login` is removed first.
+    /// A fresh, private directory under `<root>/.login`, once whatever an
+    /// earlier attempt that no longer runs left there has been removed.
+    /// Attempts that are still running, or whose login waits to be promoted,
+    /// are left alone.
     pub(crate) fn create(root: &Path) -> Result<Self, LoginError> {
         let parent = root.join(DIRECTORY);
-        remove(&parent)
-            .and_then(|()| private(&parent))
-            .map_err(|error| filesystem("prepare", &parent, &error))?;
+        let prepare = |error: io::Error| filesystem("prepare", &parent, &error);
+        let _guard = locked(&parent).map_err(prepare)?;
+        sweep(&parent).map_err(prepare)?;
         let path = tempfile::Builder::new()
             .prefix(PREFIX)
             .permissions(Permissions::from_mode(MODE))
             .tempdir_in(&parent)
-            .map_err(|error| filesystem("prepare", &parent, &error))?
+            .map_err(prepare)?
             .keep();
-        let staging = Self { path };
+        let lock = match claim(&path) {
+            Ok(Some(lock)) => lock,
+            Ok(None) => {
+                let _ = remove(&path);
+                return Err(prepare(io::Error::from(io::ErrorKind::WouldBlock)));
+            }
+            Err(error) => {
+                let _ = remove(&path);
+                return Err(prepare(error));
+            }
+        };
+        let staging = Self { path, _lock: lock };
         fs::set_permissions(&staging.path, Permissions::from_mode(MODE))
             .map_err(|error| filesystem("prepare", &staging.path, &error))?;
         Ok(staging)
@@ -99,7 +120,9 @@ impl Drop for Staging {
                 "could not remove codex's sign-in staging directory"
             );
         }
-        if let Some(parent) = self.path.parent() {
+        if let Some(parent) = self.path.parent()
+            && let Ok(Some(_guard)) = held(parent)
+        {
             let _ = fs::remove_dir(parent);
         }
     }
@@ -113,9 +136,87 @@ fn filesystem(action: &'static str, path: &Path, error: &io::Error) -> LoginErro
     }
 }
 
-fn private(path: &Path) -> io::Result<()> {
-    DirBuilder::new().mode(MODE).create(path)?;
-    fs::set_permissions(path, Permissions::from_mode(MODE))
+/// `parent`, created private when it is missing, locked until the returned
+/// handle is dropped, so that no attempt is created, cleared or removed
+/// under it meanwhile.
+fn locked(parent: &Path) -> io::Result<File> {
+    loop {
+        match fs::symlink_metadata(parent) {
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => remove(parent)?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        match DirBuilder::new().mode(MODE).create(parent) {
+            Err(error) if error.kind() != io::ErrorKind::AlreadyExists => return Err(error),
+            _ => {}
+        }
+        if let Some(guard) = held(parent)? {
+            fs::set_permissions(parent, Permissions::from_mode(MODE))?;
+            return Ok(guard);
+        }
+    }
+}
+
+/// `parent` locked, once whoever holds it lets go, or `None` when it was
+/// removed or replaced before the lock was taken.
+fn held(parent: &Path) -> io::Result<Option<File>> {
+    let directory = match open(parent) {
+        Ok(directory) => directory,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    directory.lock()?;
+    let opened = directory.metadata()?;
+    match fs::symlink_metadata(parent) {
+        Ok(current) if current.dev() == opened.dev() && current.ino() == opened.ino() => {
+            Ok(Some(directory))
+        }
+        Ok(_) => Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// Removes everything under `parent` but the attempts still held. An
+/// attempt that removes itself meanwhile is gone either way.
+fn sweep(parent: &Path) -> io::Result<()> {
+    for entry in fs::read_dir(parent)? {
+        let entry = entry?;
+        let path = entry.path();
+        let cleared = match entry.file_type() {
+            Ok(kind) if !kind.is_dir() => fs::remove_file(&path),
+            Ok(_) => claim(&path).and_then(|lock| match lock {
+                Some(_lock) => fs::remove_dir_all(&path),
+                None => Ok(()),
+            }),
+            Err(error) => Err(error),
+        };
+        match cleared {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// The lock on the attempt directory at `path`, or `None` while another
+/// attempt holds it.
+fn claim(path: &Path) -> io::Result<Option<File>> {
+    let directory = open(path)?;
+    match directory.try_lock() {
+        Ok(()) => Ok(Some(directory)),
+        Err(TryLockError::WouldBlock) => Ok(None),
+        Err(TryLockError::Error(error)) => Err(error),
+    }
+}
+
+/// The directory at `path`, never through a link.
+fn open(path: &Path) -> io::Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .custom_flags((OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW).bits())
+        .open(path)
 }
 
 /// Removes `path` whatever it is, without following it if it is a link.
@@ -180,6 +281,52 @@ mod tests {
         assert_eq!(parent & 0o777, MODE);
         assert!(!stale.exists(), "a crashed attempt's directory was kept");
         drop(staging);
+        assert!(
+            !root.path().join(DIRECTORY).exists(),
+            "the staging directory was left"
+        );
+    }
+
+    #[test]
+    fn a_new_attempt_leaves_one_still_held_under_the_same_root() {
+        let root = TempDir::new().expect("an agent's root");
+        let first = Staging::create(root.path()).expect("the first staging directory");
+        fs::write(first.path().join(CREDENTIALS), b"{}").expect("the login codex saved");
+
+        let second = Staging::create(root.path()).expect("the second staging directory");
+
+        assert_ne!(first.path(), second.path());
+        let first = first
+            .saved()
+            .expect("the first login, still waiting to be promoted");
+        drop(second);
+        assert!(first.path().exists(), "the held attempt was removed");
+        drop(first);
+        assert!(
+            !root.path().join(DIRECTORY).exists(),
+            "the staging directory was left"
+        );
+    }
+
+    #[test]
+    fn overlapping_attempts_under_one_root_never_fail_one_another() {
+        const ATTEMPTS: usize = 8;
+        const ROUNDS: usize = 50;
+
+        let root = TempDir::new().expect("an agent's root");
+        std::thread::scope(|scope| {
+            for _ in 0..ATTEMPTS {
+                scope.spawn(|| {
+                    for _ in 0..ROUNDS {
+                        let staging = Staging::create(root.path()).expect("a staging directory");
+                        fs::write(staging.path().join(CREDENTIALS), b"{}")
+                            .expect("the login codex saved");
+                        staging.saved().expect("the login, until it is dropped");
+                    }
+                });
+            }
+        });
+
         assert!(
             !root.path().join(DIRECTORY).exists(),
             "the staging directory was left"
