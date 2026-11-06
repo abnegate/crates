@@ -278,11 +278,16 @@ impl Reader {
                     let directory = self
                         .directory
                         .clone()
-                        .or_else(|| std::env::current_dir().ok());
+                        .or_else(|| std::env::current_dir().ok())
+                        .map(|directory| {
+                            self.scrubber
+                                .scrub(&directory.display().to_string())
+                                .into_owned()
+                        });
                     tracing::info!(
                         agent = %self.agent,
                         %window,
-                        directory = directory.as_deref().map(|directory| tracing::field::display(directory.display())),
+                        directory = directory.as_deref().map(tracing::field::display),
                         "the turn runs on usage credits past the plan's window"
                     );
                     AgentEvent::Credits(window)

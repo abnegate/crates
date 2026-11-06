@@ -401,6 +401,27 @@ impl McpConfig {
         json!({ SERVERS: servers })
     }
 
+    /// The first [required](McpServer::required) server that never attaches
+    /// to `agent`'s run, with why, for Codex, which fails a run that cannot
+    /// start one; Claude Code has no such setting, so none for Claude.
+    pub(crate) fn unattached_required(&self, agent: AgentKind) -> Option<(&str, Refusal)> {
+        match agent {
+            AgentKind::Claude => None,
+            AgentKind::Codex => self
+                .enabled()
+                .filter(|(_, server)| server.required)
+                .find_map(|(name, server)| {
+                    refusal(agent, name, server).map(|refusal| (name, refusal))
+                }),
+        }
+    }
+
+    /// Whether `agent`'s run has a [required](McpServer::required) server
+    /// to attach, which it cannot run without.
+    pub(crate) fn requires(&self, agent: AgentKind) -> bool {
+        agent == AgentKind::Codex && self.attachable(agent).any(|(_, server)| server.required)
+    }
+
     /// The `--allowedTools` entries for every server that attaches to
     /// `agent`, and none for Codex, which takes no such flag: a server's
     /// [`tools`](McpServer::tools) reach it as the server's `enabled_tools`.

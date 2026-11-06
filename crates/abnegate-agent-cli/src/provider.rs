@@ -296,7 +296,9 @@ impl CliProvider {
         events: Option<mpsc::UnboundedSender<AgentEvent>>,
     ) -> Result<Run, ExecutionError> {
         let model = model.map(str::trim).filter(|model| !model.is_empty());
-        let mcp = self.attach();
+        let mcp = self
+            .attach()
+            .map_err(|error| ExecutionError::new(error, None))?;
         let instructions = self
             .instructions()
             .map_err(|error| ExecutionError::new(error, None))?;
@@ -482,12 +484,18 @@ impl CliProvider {
     /// the run still loads strictly, with no server at all, and without its
     /// MCP tools can still answer, and fails loudly on its own if it truly
     /// needed them.
-    fn attach(&self) -> Option<McpAttachment> {
+    fn attach(&self) -> Result<Option<McpAttachment>, ProviderError> {
         let mcp = &self.settings.mcp;
         if mcp.is_empty() {
-            return None;
+            return Ok(None);
         }
-        match mcp.render(self.agent) {
+        if let Some((name, refusal)) = mcp.unattached_required(self.agent) {
+            return Err(ProviderError::config(format!(
+                "the required MCP server {name} cannot attach to {}: {refusal}",
+                self.agent
+            )));
+        }
+        let attachment = match mcp.render(self.agent) {
             Ok(Some(attachment)) => {
                 tracing::info!(
                     provider = %self.name,
@@ -503,6 +511,11 @@ impl CliProvider {
                 Some(attachment)
             }
             Ok(None) => None,
+            Err(error) if mcp.requires(self.agent) => {
+                return Err(ProviderError::config(format!(
+                    "could not render the MCP config of a run with a required server: {error}"
+                )));
+            }
             Err(error) => {
                 tracing::warn!(
                     provider = %self.name,
@@ -511,7 +524,8 @@ impl CliProvider {
                 );
                 None
             }
-        }
+        };
+        Ok(attachment)
     }
 
     /// Write the instructions to a private temporary file for the agent to
@@ -4045,6 +4059,48 @@ echo '{{"type":"turn.completed","usage":{{"input_tokens":1,"output_tokens":1}}}}
         );
     }
 
+    /// A required server Codex cannot be given fails the run before the agent
+    /// starts, rather than the run going ahead without it.
+    #[tokio::test]
+    async fn a_codex_run_fails_when_a_required_server_cannot_attach() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let captured = directory.path().join("arguments");
+        let recorded = directory.path().join("environment");
+        let settings = settings(&directory, &recording_codex(&captured, &recorded))
+            .with_mcp_server(
+                "events",
+                McpServer::remote("https://mcp.example.com/sse")
+                    .with_transport(McpTransport::Sse)
+                    .require(),
+            );
+        let provider = CliProvider::agent(AgentKind::Codex, settings);
+
+        let error = run(&provider, &[Message::user("hi")])
+            .await
+            .expect_err("a required server that cannot attach fails the run");
+
+        assert!(error.to_string().contains("events"), "{error}");
+        assert!(!captured.exists(), "the agent started anyway");
+    }
+
+    /// Claude Code has no required servers, so a Claude run goes ahead
+    /// without one it cannot be given, as it always has.
+    #[tokio::test]
+    async fn a_claude_run_ignores_a_required_server_it_cannot_attach() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let answer =
+            r#"echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'"#;
+        let settings = settings(&directory, answer).with_mcp_server(
+            "bad name",
+            McpServer::remote("https://mcp.example.com/mcp").require(),
+        );
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        run(&provider, &[Message::user("hi")])
+            .await
+            .expect("an answer");
+    }
+
     /// A stand-in for Claude that loads the repository's own settings, and
     /// runs the hook they declare, unless `--setting-sources` leaves the
     /// project out or `--restricted` leaves every settings file out, as the
@@ -4920,6 +4976,46 @@ echo '{"type":"turn.failed","error":{"message":"You have hit your usage limit. T
             "{logged}"
         );
         assert!(!logged.contains(TOKEN), "{logged}");
+    }
+
+    /// The working directory a credits line names is scrubbed of the run's
+    /// secrets like everything else the run logs.
+    #[test]
+    fn a_credits_line_scrubs_the_secrets_in_its_directory() {
+        const TOKEN: &str = concat!(
+            "sk-ant-",
+            "api03-",
+            "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+        );
+        let stream = [
+            json!({"type": "rate_limit_event", "rate_limit_info": {"status": "rejected", "rateLimitType": "five_hour", "overageStatus": "allowed", "isUsingOverage": true}}),
+            json!({"type": "result", "subtype": "success", "is_error": false, "result": "Reviewed."}),
+        ]
+        .map(|line| line.to_string());
+        let directory = TempDir::new().expect("a temporary directory");
+        let work = directory.path().join(TOKEN);
+        std::fs::create_dir(&work).expect("a working directory");
+        let provider = CliProvider::agent(
+            AgentKind::Claude,
+            settings(&directory, &replaying(&directory, &stream))
+                .with_working_directory(&work)
+                .with_credential(Credential::key("ANTHROPIC_API_KEY", TOKEN)),
+        );
+
+        let (completion, logged) =
+            captured_logs(|| blocking(run(&provider, &[Message::user("Review the change.")])));
+
+        completion.expect("a turn on usage credits");
+        let credited: Vec<&str> = logged
+            .lines()
+            .filter(|line| line.contains("usage credits"))
+            .collect();
+        assert_eq!(credited.len(), 1, "{logged}");
+        assert!(!credited[0].contains(TOKEN), "{logged}");
+        assert!(
+            credited[0].contains(&format!("directory={}", directory.path().display())),
+            "{logged}"
+        );
     }
 
     #[test]
