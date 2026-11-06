@@ -198,13 +198,25 @@ fn named(name: &str, server: &McpServer) -> McpServer {
 
 #[cfg(test)]
 mod tests {
+    use rmcp::RoleServer;
     use rmcp::ServerHandler;
     use rmcp::ServiceExt;
     use rmcp::handler::server::wrapper::Parameters;
+    use rmcp::model::CancelledNotification;
+    use rmcp::model::CancelledNotificationParam;
+    use rmcp::model::ClientJsonRpcMessage;
+    use rmcp::model::ClientRequest;
+    use rmcp::model::InitializeResult;
+    use rmcp::model::JsonObject;
+    use rmcp::model::ListToolsResult;
+    use rmcp::model::ServerJsonRpcMessage;
+    use rmcp::model::Tool as RemoteTool;
     use rmcp::schemars;
     use rmcp::tool;
     use rmcp::tool_handler;
     use rmcp::tool_router;
+    use rmcp::transport::IntoTransport;
+    use rmcp::transport::Transport;
     use serde::Deserialize;
     use tokio::process::Command;
 
@@ -296,6 +308,88 @@ mod tests {
         assert!(
             result.output.as_deref().unwrap_or("").contains("pong:hi"),
             "{result:?}"
+        );
+
+        drop(registry);
+        drop(hub);
+        server_task.abort();
+    }
+
+    /// A server's cancellation no longer fails the call in flight: rmcp routes
+    /// it by the call's lifecycle, so a server that cancels and never answers
+    /// is ended by the command timeout instead of hanging the call.
+    #[tokio::test]
+    async fn a_call_the_server_cancels_and_never_answers_times_out() {
+        let (server_stream, client_stream) = tokio::io::duplex(64 * 1024);
+
+        let server_task = tokio::spawn(async move {
+            let mut server = IntoTransport::<RoleServer, _, _>::into_transport(server_stream);
+            while let Some(message) = server.receive().await {
+                let ClientJsonRpcMessage::Request(request) = message else {
+                    continue;
+                };
+                let reply = match request.request {
+                    ClientRequest::InitializeRequest(_) => ServerJsonRpcMessage::response(
+                        InitializeResult::default().into(),
+                        request.id,
+                    ),
+                    ClientRequest::ListToolsRequest(_) => ServerJsonRpcMessage::response(
+                        ListToolsResult::with_all_items(vec![RemoteTool::new(
+                            "hang",
+                            "Cancels every call and never answers",
+                            JsonObject::new(),
+                        )])
+                        .into(),
+                        request.id,
+                    ),
+                    ClientRequest::CallToolRequest(_) => ServerJsonRpcMessage::notification(
+                        CancelledNotification::new(CancelledNotificationParam::new(
+                            Some(request.id),
+                            Some("abandoned".to_string()),
+                        ))
+                        .into(),
+                    ),
+                    _ => continue,
+                };
+                server.send(reply).await.expect("server send");
+            }
+        });
+
+        let client = ().serve(client_stream).await.expect("client serve");
+        let remote_tools = client.list_all_tools().await.expect("list tools");
+        let hub = McpHub {
+            sessions: vec![Arc::new(McpSession::new(
+                "silent".to_string(),
+                remote_tools,
+                client,
+            ))],
+        };
+        let mut registry = ToolRegistry::new();
+        assert_eq!(register(&mut registry, &hub), 1);
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(30),
+            registry.execute(
+                "silent__hang",
+                serde_json::json!({}),
+                &ToolContext {
+                    command_timeout: Duration::from_secs(1),
+                    ..ToolContext::default()
+                },
+            ),
+        )
+        .await
+        .expect("the command timeout must end a call the server cancelled and never answered")
+        .expect("execute silent__hang");
+
+        assert!(!result.success, "{result:?}");
+        assert!(
+            result
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("timed out after 1 seconds"),
+            "a server's cancellation no longer ends the call, so the command timeout must: {result:?}"
         );
 
         drop(registry);
