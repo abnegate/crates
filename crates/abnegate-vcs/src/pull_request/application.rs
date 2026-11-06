@@ -12,14 +12,15 @@
 //! URL a request was sent to.
 //!
 //! [`ApplicationService`] asks GitHub about the App itself: it registers an
-//! App from its manifest with `convert_manifest`, which yields a
-//! `RegisteredApplication`; fetches, lists and deletes the App's
-//! installations with `fetch_installation`, `list_installations` and
-//! [`ApplicationService::delete_installation`], each an `Installation`; and
+//! App from its manifest with [`ApplicationService::convert_manifest`], which
+//! yields a [`RegisteredApplication`]; fetches, lists and deletes the App's
+//! installations with [`ApplicationService::fetch_installation`],
+//! [`ApplicationService::list_installations`] and
+//! [`ApplicationService::delete_installation`], each an [`Installation`]; and
 //! lists the repositories an installation reaches with
-//! `list_installation_repositories`, each an `InstalledRepository`. Every
-//! request but registering one carries the App's JWT or an installation's
-//! token, and none follows a redirect.
+//! [`ApplicationService::list_installation_repositories`], each an
+//! [`InstalledRepository`]. Every request but registering one carries the
+//! App's JWT or an installation's token, and none follows a redirect.
 //!
 //! [`SecretValue`]: abnegate_secret::SecretValue
 

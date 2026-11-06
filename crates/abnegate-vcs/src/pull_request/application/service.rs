@@ -29,15 +29,15 @@ mod repositories;
 /// Asks GitHub's REST API about a GitHub App: the App a manifest registers,
 /// the installations it has, and the repositories each installation reaches.
 ///
-/// - `convert_manifest` registers an App from the code GitHub hands back once
-///   someone creates it from a manifest, and needs no credential.
-/// - `fetch_installation` reads one installation, with the App's JWT.
-/// - `list_installations` reads a page of the App's installations, with the
-///   App's JWT.
+/// - [`Self::convert_manifest`] registers an App from the code GitHub hands
+///   back once someone creates it from a manifest, and needs no credential.
+/// - [`Self::fetch_installation`] reads one installation, with the App's JWT.
+/// - [`Self::list_installations`] reads a page of the App's installations,
+///   with the App's JWT.
 /// - [`Self::delete_installation`] uninstalls the App from one installation,
 ///   with the App's JWT.
-/// - `list_installation_repositories` reads a page of the repositories an
-///   installation reaches, with that installation's token.
+/// - [`Self::list_installation_repositories`] reads a page of the
+///   repositories an installation reaches, with that installation's token.
 ///
 /// It follows no redirect, since a redirect is the one way the JWT or token
 /// in a request's `Authorization` header reaches a host GitHub did not
