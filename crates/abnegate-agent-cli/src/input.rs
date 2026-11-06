@@ -718,6 +718,31 @@ mod tests {
         assert_eq!(claude_within(&parts, crowded), Err(ImageError::Crowded));
     }
 
+    /// An image of a type Claude never takes is refused for its type, however
+    /// large, and takes no room an older image could have.
+    #[test]
+    fn an_unsupported_image_is_refused_for_its_type_and_crowds_out_nothing() {
+        let svg = format!("data:image/svg+xml;base64,{}", "A".repeat(4096));
+        let current = parts(&[with_images(Message::user("Look."), &[&svg])]);
+        let small = ImageLimits {
+            image_bytes: 16,
+            ..ImageLimits::CLAUDE
+        };
+        assert_eq!(claude_within(&current, small), Err(ImageError::Unsupported));
+
+        let history = parts(&[
+            with_images(Message::user("Old."), &[PNG]),
+            with_images(Message::user("Vector."), &[&svg]),
+            Message::user("New."),
+        ]);
+        let tight = ImageLimits {
+            request_bytes: text_bytes(&history) + PNG_DATA.len(),
+            ..ImageLimits::CLAUDE
+        };
+        let content = claude_within(&history, tight).expect("deliverable");
+        assert_eq!(sent_images(&content), [true, false]);
+    }
+
     #[test]
     fn an_earlier_image_larger_than_claude_takes_is_noted() {
         let parts = parts(&[

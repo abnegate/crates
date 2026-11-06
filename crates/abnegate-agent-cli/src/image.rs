@@ -108,9 +108,18 @@ impl<'a> Image<'a> {
 }
 
 /// The bytes the base64 of the image a data URL carries takes once padded,
-/// counted without decoding it, or `None` for any other URL.
+/// counted without decoding it, or `None` for any other URL, a data URL
+/// [`Image::parse`] refuses by its header alone included, so that it is
+/// refused for what it is rather than for its size.
 pub(crate) fn encoded_length(url: &str) -> Option<usize> {
-    let (_, data) = url.strip_prefix(DATA_SCHEME)?.split_once(',')?;
+    let (header, data) = url.strip_prefix(DATA_SCHEME)?.split_once(',')?;
+    let declared = header.strip_suffix(BASE64_SUFFIX)?;
+    if !MEDIA_TYPES
+        .iter()
+        .any(|known| known.name.eq_ignore_ascii_case(declared))
+    {
+        return None;
+    }
     let length = data
         .bytes()
         .filter(|byte| !byte.is_ascii_whitespace())
@@ -157,6 +166,8 @@ mod tests {
         }
         assert_eq!(encoded_length("https://example.test/shot.png"), None);
         assert_eq!(encoded_length("data:image/png;base64"), None);
+        assert_eq!(encoded_length("data:image/svg+xml;base64,PHN2Zz4="), None);
+        assert_eq!(encoded_length("data:image/png,iVBORw0KGgo="), None);
     }
 
     #[test]
