@@ -31,6 +31,7 @@ mod error;
 mod fixtures;
 mod github_account;
 mod github_installation;
+mod github_installation_repositories;
 mod github_installed_repository;
 mod github_registered_application;
 mod id;

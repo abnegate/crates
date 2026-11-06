@@ -24,6 +24,7 @@ use url::Url;
 mod fixtures;
 mod installations;
 mod manifests;
+mod repositories;
 
 /// Asks GitHub's REST API about a GitHub App: the App a manifest registers,
 /// the installations it has, and the repositories each installation reaches.
