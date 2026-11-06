@@ -283,6 +283,42 @@ with no fill. A stream yields it last, after the event that ended the turn;
 `execute` and `complete` fold it in with the rest. A run that timed out, was
 stopped, was dropped or tripped the tripwire reads no rollout.
 
+## Sessions
+
+Claude keeps a session at `projects/<project>/<id>.jsonl` in its configuration
+directory, and Codex at `sessions/<yyyy>/<mm>/<dd>/rollout-<stamp>-<id>.jsonl`
+in its `CODEX_HOME`. `Session::locate` finds that file in a home for runs in a
+working directory, and `Session::carry` copies the newest copy of it from one
+home into another under the path the agent looks for it there, so a run signed
+in to the other home resumes the conversation. The copy is staged beside its
+destination at `0600`, synced, and renamed into place, so a file already there
+is replaced whole; each directory missing on the way is created at `0700`.
+`Session::relocate` moves a Claude session to the folder of the directory its
+next run starts in and removes the older copies carrying left behind; a Codex
+session is found by its id alone and stays where it is. `Session::project` is
+the folder name Claude gives a working directory: the path with every link
+resolved and each UTF-16 unit that is not an ASCII letter or digit made `-`,
+cut at 200 units and followed by a base-36 hash when it is longer. None of them
+follows a link between the home and the file, and an id other than ASCII
+letters, digits and `-` is refused as `SessionError::Invalid`.
+
+```rust,no_run
+use std::path::Path;
+
+use abnegate_agent_cli::AgentKind;
+use abnegate_agent_cli::Session;
+
+let session = Session::resumed("6f1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d");
+let carried = session.carry(
+    AgentKind::Claude,
+    Path::new("/home/agent/.claude-first"),
+    Path::new("/home/agent/.claude-second"),
+    Path::new("/path/to/repository"),
+)?;
+println!("{} bytes at {}", carried.bytes, carried.path.display());
+# Ok::<(), abnegate_agent_cli::SessionError>(())
+```
+
 ## Failures
 
 A failure the agent reported is its own words, then `STDERR_HEADING`, then the
