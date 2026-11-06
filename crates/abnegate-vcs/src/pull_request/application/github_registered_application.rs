@@ -2,6 +2,7 @@ use crate::pull_request::application::ApplicationError;
 use crate::pull_request::application::ApplicationId;
 use crate::pull_request::application::RegisteredApplication;
 use crate::pull_request::application::github_account::GitHubAccount;
+use crate::pull_request::repository::named;
 use abnegate_secret::SecretValue;
 use serde::Deserialize;
 
@@ -29,9 +30,13 @@ impl TryFrom<GitHubRegisteredApplication> for RegisteredApplication {
     /// The App `wire` describes, owned by the account of the kind its owner
     /// names. An empty webhook secret is none at all.
     ///
-    /// No owner, an owner [`GitHubAccount::account`] refuses, or an empty
+    /// No owner, an owner [`GitHubAccount::account`] refuses, a slug GitHub
+    /// would never put in the URL its installations are made at, or an empty
     /// client secret or private key is [`ApplicationError::Response`].
     fn try_from(wire: GitHubRegisteredApplication) -> Result<Self, Self::Error> {
+        if !named(&wire.slug) {
+            return Err(ApplicationError::Response);
+        }
         let owner = wire
             .owner
             .ok_or(ApplicationError::Response)?
@@ -177,6 +182,16 @@ mod tests {
             .expect_err("an unsafe owner is refused");
 
         assert!(matches!(error, ApplicationError::Response));
+    }
+
+    #[test]
+    fn a_slug_github_would_never_put_in_a_url_is_unreadable() {
+        for slug in ["../x", "a/b", ""] {
+            let error =
+                registered(with("slug", json!(slug))).expect_err("an unsafe slug is refused");
+
+            assert!(matches!(error, ApplicationError::Response), "{slug:?}");
+        }
     }
 
     #[test]
