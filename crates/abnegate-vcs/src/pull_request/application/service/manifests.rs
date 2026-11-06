@@ -6,10 +6,6 @@ use crate::pull_request::application::service::answered;
 use crate::pull_request::application::service::parsed;
 use reqwest::Method;
 
-/// Manifest codes that name no path segment of their own, or the one before
-/// it, and so would send the conversion to another endpoint.
-const UNSENDABLE_CODES: [&str; 3] = ["", ".", ".."];
-
 impl ApplicationService {
     /// Register the GitHub App a manifest describes, from the `code` GitHub
     /// redirects back with once someone creates the App from that manifest.
@@ -28,10 +24,10 @@ impl ApplicationService {
         &self,
         code: &str,
     ) -> Result<RegisteredApplication, ApplicationError> {
-        if UNSENDABLE_CODES.contains(&code) {
-            return Err(ApplicationError::InvalidCode);
-        }
-        let url = self.endpoint(&["app-manifests", code, "conversions"])?;
+        let url = self
+            .origin
+            .endpoint(&["app-manifests", code, "conversions"])
+            .map_err(|_| ApplicationError::InvalidCode)?;
         let body = answered(self.request(Method::POST, url)).await?;
         parsed::<GitHubRegisteredApplication>(&body)?.try_into()
     }
@@ -215,7 +211,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        for code in UNSENDABLE_CODES {
+        for code in ["", ".", ".."] {
             let error = stand_in(&server)
                 .convert_manifest(code)
                 .await

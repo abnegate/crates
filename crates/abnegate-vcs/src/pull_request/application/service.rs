@@ -106,7 +106,8 @@ impl ApplicationService {
     /// The origin's URL with `segments` appended, each percent-encoded as one
     /// path segment. A segment that is empty, `.` or `..` is
     /// [`ApplicationError::InvalidOrigin`], since it would reach another
-    /// endpoint.
+    /// endpoint; the fixed names and numeric ids every caller passes never
+    /// are.
     fn endpoint(&self, segments: &[&str]) -> Result<Url, ApplicationError> {
         self.origin
             .endpoint(segments)
@@ -304,7 +305,7 @@ mod tests {
         for refused in ["", ".", ".."] {
             assert!(
                 matches!(
-                    service.endpoint(&["app-manifests", refused, "conversions"]),
+                    service.endpoint(&["app", "installations", refused]),
                     Err(ApplicationError::InvalidOrigin)
                 ),
                 "{refused:?}"
@@ -312,10 +313,10 @@ mod tests {
         }
         assert_eq!(
             service
-                .endpoint(&["app-manifests", "a/b", "conversions"])
+                .endpoint(&["app", "installations", "a/b"])
                 .unwrap()
                 .as_str(),
-            "https://api.github.com/app-manifests/a%2Fb/conversions"
+            "https://api.github.com/app/installations/a%2Fb"
         );
     }
 

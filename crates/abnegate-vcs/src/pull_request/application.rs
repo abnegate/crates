@@ -20,7 +20,10 @@
 //! lists the repositories an installation reaches with
 //! [`ApplicationService::list_installation_repositories`], each an
 //! [`InstalledRepository`]. Every request but registering one carries the
-//! App's JWT or an installation's token, and none follows a redirect.
+//! App's JWT or an installation's token, and none follows a redirect. The
+//! manifest code is the one plain-text value this module puts in a URL: it is
+//! refused only when empty or a dot segment, and otherwise sent
+//! percent-encoded as a single path segment.
 //!
 //! [`SecretValue`]: abnegate_secret::SecretValue
 
