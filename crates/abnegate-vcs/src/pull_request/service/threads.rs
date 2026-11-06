@@ -3,6 +3,7 @@ use crate::pull_request::Collected;
 use crate::pull_request::ReviewThreadCount;
 use crate::pull_request::ReviewThreadRecord;
 use crate::pull_request::ThreadComment;
+use crate::pull_request::graphql_identified::GraphQlIdentified;
 use crate::pull_request::graphql_page_info::GraphQlPageInfo;
 use crate::pull_request::graphql_pull_request::GraphQlPullRequest;
 use crate::pull_request::graphql_query::GraphQlQuery;
@@ -32,24 +33,6 @@ const COUNTS: &str = "query($owner:String!,$name:String!,$number:Int!,$after:Str
 repository(owner:$owner,name:$name){pullRequest(number:$number){\
 reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor}\
 nodes{id isResolved}}}}}";
-
-/// A review thread as one page of a GraphQL answer holds it, known by the
-/// node id that tells a thread met twice from two threads.
-trait Identified {
-    fn id(&self) -> &str;
-}
-
-impl Identified for GraphQlReviewThread {
-    fn id(&self) -> &str {
-        &self.id
-    }
-}
-
-impl Identified for GraphQlThreadState {
-    fn id(&self) -> &str {
-        &self.id
-    }
-}
 
 impl PullRequestService {
     /// Mark a review thread resolved.
@@ -113,11 +96,13 @@ impl PullRequestService {
     /// How many of a pull request's review threads are open, and how many
     /// are resolved, without reading a comment in any of them.
     ///
-    /// Reads the threads [`Self::fetch_review_threads`] would, page by page
+    /// Reads the threads [`Self::collect_review_threads`] would, page by page
     /// and with the same limit, counting a thread met twice once, and fails
-    /// the same way it does. Each thread costs GitHub a node id and a flag,
-    /// so a pull request with long review conversations costs no more to
-    /// count than one without.
+    /// the same way it does. [`ReviewThreadCount::complete`] is `true` exactly
+    /// when [`Collected::complete`] would be: when the walk stops short, the
+    /// threads it never reached are in neither count. Each thread costs GitHub
+    /// a node id and a flag, so a pull request with long review conversations
+    /// costs no more to count than one without.
     pub async fn fetch_review_thread_counts(
         &self,
         reference: &PullRequestReference,
@@ -125,18 +110,17 @@ impl PullRequestService {
     ) -> PullRequestResult<ReviewThreadCount> {
         let collected: Collected<GraphQlThreadState> =
             self.review_thread_nodes(reference, token, COUNTS).await?;
+        let empty = ReviewThreadCount::new(0, 0, collected.complete);
         Ok(collected
             .items
             .iter()
-            .fold(ReviewThreadCount::default(), |count, thread| {
-                count.with(thread.is_resolved)
-            }))
+            .fold(empty, |count, thread| count.with(thread.is_resolved)))
     }
 
     /// Every review thread `query` reads a page of, following GitHub's
     /// cursor, with a thread met twice kept once, and whether that is every
     /// thread on the pull request.
-    async fn review_thread_nodes<T: DeserializeOwned + Identified>(
+    async fn review_thread_nodes<T: DeserializeOwned + GraphQlIdentified>(
         &self,
         reference: &PullRequestReference,
         token: &SecretValue,
@@ -754,7 +738,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(count, ReviewThreadCount::new(2, 3));
+        assert_eq!(count, ReviewThreadCount::new(2, 3, true));
     }
 
     #[tokio::test]
@@ -773,7 +757,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(count, ReviewThreadCount::default());
+        assert_eq!(count, ReviewThreadCount::new(0, 0, true));
     }
 
     #[tokio::test]
@@ -808,7 +792,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(count, ReviewThreadCount::new(1, 1));
+        assert_eq!(count, ReviewThreadCount::new(1, 1, true));
     }
 
     #[tokio::test]
@@ -831,7 +815,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(count, ReviewThreadCount::new(1, 1));
+        assert_eq!(count, ReviewThreadCount::new(1, 1, false));
         let received = server.received_requests().await.unwrap();
         let sent: Value = serde_json::from_slice(&received[1].body).unwrap();
         assert_eq!(sent, counted(Some("stuck")));
@@ -869,7 +853,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(count, ReviewThreadCount::new(2, 1));
+        assert_eq!(count, ReviewThreadCount::new(2, 1, true));
     }
 
     #[tokio::test]
@@ -901,7 +885,7 @@ mod tests {
 
         assert_eq!(
             count,
-            ReviewThreadCount::new(u32::try_from(MAXIMUM_PAGES).unwrap(), 0)
+            ReviewThreadCount::new(u32::try_from(MAXIMUM_PAGES).unwrap(), 0, false)
         );
     }
 

@@ -132,6 +132,7 @@ mod graphql_automated_repository;
 mod graphql_automation;
 mod graphql_connection;
 mod graphql_error;
+mod graphql_identified;
 mod graphql_merge_settings;
 mod graphql_page_info;
 mod graphql_pull_request;

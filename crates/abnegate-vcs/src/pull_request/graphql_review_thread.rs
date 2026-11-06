@@ -1,4 +1,5 @@
 use crate::pull_request::graphql_connection::GraphQlConnection;
+use crate::pull_request::graphql_identified::GraphQlIdentified;
 use crate::pull_request::graphql_thread_comment::GraphQlThreadComment;
 use serde::Deserialize;
 
@@ -14,4 +15,10 @@ pub(super) struct GraphQlReviewThread {
     #[serde(default)]
     pub(super) line: Option<u32>,
     pub(super) comments: GraphQlConnection<GraphQlThreadComment>,
+}
+
+impl GraphQlIdentified for GraphQlReviewThread {
+    fn id(&self) -> &str {
+        &self.id
+    }
 }
