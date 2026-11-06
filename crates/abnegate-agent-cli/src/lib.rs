@@ -47,6 +47,8 @@
 //! them, in an [`AgentStream`] that ends in the error
 //! [`complete`](abnegate_llm::CompletionProvider::complete) would have
 //! returned when the run failed; `complete` is that stream read to its end.
+//! [`activity`] is the markdown line a reader can be shown for a tool the
+//! agent ran for itself.
 //! [`AgentKind::ALL`] lists the agents, and [`AgentKind::named`] finds one by
 //! its name.
 //!
@@ -156,6 +158,7 @@
 //! Unix only, like the process-group handling it borrows from
 //! `abnegate-exec`.
 
+mod activity;
 mod agent_stream;
 mod attachments;
 mod cleanup;
@@ -193,6 +196,7 @@ pub mod transcript;
 mod tripwire;
 mod verdict;
 
+pub use crate::activity::activity;
 pub use crate::agent_stream::AgentStream;
 pub use crate::attachments::Attachments;
 pub use crate::cleanup::Cleanup;
