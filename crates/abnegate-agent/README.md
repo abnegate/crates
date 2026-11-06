@@ -3,9 +3,10 @@
 The parts an LLM agent is built from: a tool registry the model acts through, a
 ReAct loop that drives it, and the context, history and session handling a long
 conversation needs. `ToolRegistry` holds file, command and background-job tools,
-each declaring its own tier; file tools stay beneath the working directory, and
-commands run in a process group of their own that sees only the allowlisted
-environment the `ToolContext` names. `Agent` runs the loop over any
+each declaring its own tier; file tools stay beneath the working directory
+unless the context is unrestricted, and never reach what it denies. Commands run
+in a process group of their own that sees only the allowlisted environment the
+`ToolContext` names. `Agent` runs the loop over any
 `abnegate_llm::CompletionProvider` (ask the model, run the tools it calls, feed
 their results back, until it answers), and a call whose tier needs confirming
 runs only once `AgentCallback::approve` allows it, which by default it does not.

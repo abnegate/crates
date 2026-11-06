@@ -1,4 +1,5 @@
-//! Tools that read, write, list and search files beneath the working directory.
+//! Tools that read, write, list and search files beneath the working directory
+//! unless the context is unrestricted, and never in what it denies.
 
 mod denied;
 mod identity;
