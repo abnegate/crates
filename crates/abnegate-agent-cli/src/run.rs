@@ -93,8 +93,9 @@ impl Run {
     ///
     /// A Codex agent that exited by itself, and named its session, has the
     /// window its turn ran in read from its rollout, folded into its stdout
-    /// and handed on last to a stream. A run that timed out, or that the run
-    /// stopped or a tripwire settled, reads nothing.
+    /// and handed on last to a stream. A run that timed out, that the run
+    /// stopped, or whose diagnostics tripped its tripwire, reads nothing,
+    /// whether or not the agent also reported a failure of its own.
     pub(crate) async fn finish(mut self) -> Result<Execution, ExecutionError> {
         let deadline = self.deadline;
         let expiry = async move {
@@ -122,6 +123,7 @@ impl Run {
         let Settlement {
             stopped,
             failure,
+            mut tripped,
             exit,
         } = match settlement {
             Ok(settlement) => settlement,
@@ -156,12 +158,13 @@ impl Run {
                 ));
             }
         };
-        let failure = failure.or_else(|| {
-            std::iter::from_fn(|| self.settled.try_recv().ok()).find_map(|verdict| match verdict {
-                Verdict::Failed(reason) => Some(reason),
-                Verdict::Finished => None,
-            })
-        });
+        let mut failure = failure;
+        while let Ok(verdict) = self.settled.try_recv() {
+            tripped |= matches!(verdict, Verdict::Tripped(_));
+            if failure.is_none() {
+                failure = verdict.failure();
+            }
+        }
         let succeeded = stdout.finished
             && stdout.failure.is_none()
             && stopped.is_none()
@@ -199,7 +202,6 @@ impl Run {
             .append(Record::Exited, json!({ "status": status.to_string() }))
             .await;
 
-        let tripped = failure.is_some() && stdout.failure.is_none();
         if stopped.is_none()
             && !tripped
             && let (Some(rollout), Some(thread)) = (self.rollout.take(), stdout.session.clone())
@@ -254,6 +256,7 @@ impl Run {
                 return Ok(Settlement {
                     stopped: None,
                     failure: None,
+                    tripped: false,
                     exit,
                 });
             }
@@ -278,9 +281,10 @@ impl Run {
             Outcome::Settled(verdict) => verdict,
         };
 
-        let (reason, failure) = match verdict {
-            Verdict::Finished => (LINGERED.to_string(), None),
-            Verdict::Failed(reason) => {
+        let tripped = matches!(verdict, Verdict::Tripped(_));
+        let (reason, failure) = match verdict.failure() {
+            None => (LINGERED.to_string(), None),
+            Some(reason) => {
                 let reason = preview(&reason, EXECUTION_LOG_PREVIEW_LIMIT);
                 self.journal
                     .append(Record::Abandoned, json!({ "reason": reason }))
@@ -298,6 +302,7 @@ impl Run {
             return Ok(Settlement {
                 stopped: None,
                 failure,
+                tripped,
                 exit,
             });
         }
@@ -306,6 +311,7 @@ impl Run {
         Ok(Settlement {
             stopped: Some(reason),
             failure,
+            tripped,
             exit: None,
         })
     }

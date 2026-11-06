@@ -14,26 +14,26 @@ would have returned when the run failed. `CliProvider::execute_prompt` and
 role label, trimming or escaping, so Claude reads a leading slash command such
 as `/issue ENG-42` as one; text the caller does not control belongs in a
 conversation, whose role labels are escaped. A conversation's images reach
-Claude in a stream-json message and Codex as files (see [Images](#images)). A run can start the agent's own
-`Session` under an id of the caller's choosing, or resume one, and
-`Session::carry` moves a session's file into another home. A Claude or Codex
-run can attach MCP servers and withhold the agent's own tools, and a Claude run
-can restrict its tools, be confined to reading its working directory, or be
-isolated from what the host configured for it. A run that fails in any way
-takes every process the agent forked with it. The agent is
-given an allowlisted part of this process's environment and its locale
-categories (`LC_CTYPE`, `LC_TIME` and the rest), the names
-`CliSettings::allow` adds (a proxy among them with
-`CliSettings::with_proxy_variables`) and what the settings hand it, or this
-process's whole environment with `CliSettings::inherit_environment`. A name the
-agent signs in with (`AgentKind::credentials`) passes only when the credential is
-inherited, however `CliSettings::allow` names it, and never, nor a cloud
-sign-in in `CLOUD_CREDENTIALS` nor its configuration variables unless allowed,
-under `CliSettings::withhold_host_credentials`. Every value it is handed but
-the allowlisted names, its configuration variables, the public variables, the
-proxy bypass list and what it inherits is scrubbed from what the run writes
-down, as written, JSON-escaped or percent-encoded; a secret the agent re-encodes
-any other way is not recognised. Unix only.
+Claude in a stream-json message and Codex as files (see [Images](#images)). A
+run can start the agent's own `Session` under an id of the caller's choosing, or
+resume one, and `Session::carry` moves a session's file into another home. A
+Claude or Codex run can attach MCP servers and withhold the agent's own tools,
+and a Claude run can restrict its tools, be confined to reading its working
+directory, or be isolated from what the host configured for it. A run that fails
+in any way takes every process the agent forked with it. The agent is given an
+allowlisted part of this process's environment and its locale categories
+(`LC_CTYPE`, `LC_TIME` and the rest), the names `CliSettings::allow` adds (a
+proxy among them with `CliSettings::with_proxy_variables`) and what the settings
+hand it, or this process's whole environment with
+`CliSettings::inherit_environment`. A name the agent signs in with
+(`AgentKind::credentials`) passes only when the credential is inherited, however
+`CliSettings::allow` names it, and never, nor a cloud sign-in in
+`CLOUD_CREDENTIALS` nor its configuration variables unless allowed, under
+`CliSettings::withhold_host_credentials`. Every value it is handed but the
+allowlisted names, its configuration variables, the public variables, the proxy
+bypass list and what it inherits is scrubbed from what the run writes down, as
+written, JSON-escaped or percent-encoded; a secret the agent re-encodes any
+other way is not recognised. Unix only.
 
 The agent's own tools, and every stdio MCP server it starts, can read
 everything it is given. A remote MCP server is sent nothing the agent is given
@@ -293,12 +293,17 @@ background subagent's news can come after the event that ends the turn.
 
 Both are yielded by `CliProvider::stream` only. Neither is folded into a
 `StdoutParseResult`, and neither counts toward the output limit, which
-measures the agent's prose. Every word they carry, a tool's output, a
-subagent's description, summary, error and each step's subject, is sanitized
-and scrubbed of the run's secrets before it is yielded. Nothing renders them:
-a caller that lists a subagent's calls as it lists the main agent's renders
-each step itself, with `Subagent::activity` for instance, and counts it toward
-whatever budget it keeps.
+measures the agent's prose. Every word they carry is scrubbed of the run's
+secrets before it is yielded; a subagent's description, summary, error and
+each step's subject are sanitized too, while a tool's output is otherwise
+handed on as it printed it, and the call an `AgentEvent::Output` names keeps
+its arguments unscrubbed, as `AgentEvent::Tool` does. Since every event waits
+in the stream until it is read, a tool's output keeps at most
+`CliSettings::tool_output_limit` bytes (`DEFAULT_TOOL_OUTPUT_LIMIT`, 64 KiB):
+its start and its end, around a line saying how much was left out. Nothing
+renders either event: a caller that lists a subagent's calls as it lists the
+main agent's renders each step itself, with `Subagent::activity` for
+instance, and counts it toward whatever budget it keeps.
 
 A subagent's own calls, and those of every agent nested inside it, are steps
 of the subagent the main agent started, so they are no longer

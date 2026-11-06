@@ -436,6 +436,7 @@ impl CliProvider {
                 started.clone(),
             )
             .forwarding(events)
+            .printing(self.settings.tool_output_limit)
             .in_directory(self.settings.working_directory.clone())
             .run(spawned.child.stdout.take()),
         );

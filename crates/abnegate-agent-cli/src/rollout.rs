@@ -10,13 +10,16 @@
 use std::ffi::OsString;
 use std::fs;
 use std::fs::File;
+use std::fs::OpenOptions;
 use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use nix::fcntl::OFlag;
 use serde_json::Value;
 
 use crate::environment::Environment;
@@ -50,8 +53,9 @@ const LIMIT: u64 = 4 * 1024 * 1024;
 ///
 /// Nothing found under the home is trusted to be what its name says: the
 /// agent can write there, and a link, device or pipe in a file's place would
-/// hold the read, so links are never followed and only regular files are
-/// read.
+/// hold the read, so links are never followed, the sessions folder included,
+/// and a file is opened without following a link or waiting on a pipe and
+/// read only when what was opened is a regular file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Rollout {
     home: PathBuf,
@@ -111,7 +115,12 @@ impl Rollout {
     }
 
     fn read(&self, thread: &str) -> Option<Occupancy> {
-        let reported = locate(&self.home.join(SESSIONS), thread).and_then(|path| tail(&path));
+        let sessions = self.home.join(SESSIONS);
+        let reported = fs::symlink_metadata(&sessions)
+            .is_ok_and(|metadata| metadata.is_dir())
+            .then_some(&sessions)
+            .and_then(|sessions| locate(sessions, thread))
+            .and_then(|path| tail(&path));
         if reported.is_some() {
             return reported;
         }
@@ -163,9 +172,14 @@ fn directories(directory: &Path) -> Vec<PathBuf> {
 }
 
 /// `path` opened only when it is still a regular file once open, with its
-/// length.
+/// length. A link in its place is never followed, and a pipe is opened
+/// without waiting for a writer, so neither holds the read.
 fn regular(path: &Path) -> Option<(File, u64)> {
-    let file = File::open(path).ok()?;
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags((OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK).bits())
+        .open(path)
+        .ok()?;
     let metadata = file.metadata().ok()?;
     metadata.is_file().then_some((file, metadata.len()))
 }
@@ -223,9 +237,6 @@ fn last(content: &str) -> Option<Occupancy> {
 /// `context_window`, cut to its `effective_context_window_percent` when it
 /// names one.
 fn published(path: &Path, model: &str) -> Option<Occupancy> {
-    if !fs::symlink_metadata(path).ok()?.is_file() {
-        return None;
-    }
     let (file, length) = regular(path)?;
     if length > LIMIT {
         return None;
@@ -284,7 +295,11 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use std::path::PathBuf;
+    use std::sync::mpsc;
+    use std::time::Duration;
 
+    use nix::sys::stat::Mode;
+    use nix::unistd::mkfifo;
     use tempfile::TempDir;
 
     use super::LIMIT;
@@ -292,6 +307,7 @@ mod tests {
     use super::TAIL;
     use super::last;
     use super::published;
+    use super::regular;
     use crate::environment::Environment;
     use crate::kind::AgentKind;
     use crate::occupancy::Occupancy;
@@ -304,8 +320,23 @@ mod tests {
     const FILLER: &str =
         r#"{"type":"response_item","payload":{"type":"message","content":"padding"}}"#;
 
+    /// How long a read that must not wait on a pipe is given to return.
+    const PROMPTLY: Duration = Duration::from_secs(10);
+
     fn reported() -> Option<Occupancy> {
         Occupancy::reported(475_000, Some(24_638))
+    }
+
+    /// What `work` returns, or a failure when it is still waiting after
+    /// [`PROMPTLY`].
+    fn promptly<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(work());
+        });
+        receiver
+            .recv_timeout(PROMPTLY)
+            .expect("the read waited on a pipe")
     }
 
     fn rollout(home: &Path) -> Rollout {
@@ -463,6 +494,38 @@ mod tests {
         let month = home.path().join("sessions/2026/11");
         fs::create_dir_all(&month).expect("a month folder");
         std::os::unix::fs::symlink(&elsewhere, month.join("05")).expect("a link named as a day");
+        let unpublished = Rollout {
+            home: home.path().to_path_buf(),
+            model: None,
+        };
+
+        assert_eq!(unpublished.occupancy(THREAD.to_string()).await, None);
+    }
+
+    #[test]
+    fn a_pipe_swapped_into_a_files_place_is_never_waited_on() {
+        let home = TempDir::new().expect("a home");
+        let pipe = home.path().join("models_cache.json");
+        mkfifo(&pipe, Mode::S_IRUSR | Mode::S_IWUSR).expect("a pipe named as the catalogue");
+
+        let (opened, catalogue) = promptly(move || {
+            let opened = regular(&pipe).is_some();
+            (opened, published(&pipe, MODEL))
+        });
+
+        assert!(!opened, "a pipe was read as a file");
+        assert_eq!(catalogue, None);
+    }
+
+    #[tokio::test]
+    async fn a_linked_sessions_folder_is_never_followed() {
+        let home = TempDir::new().expect("a home");
+        let elsewhere = TempDir::new().expect("a folder outside the home");
+        let day = elsewhere.path().join("2026/11/05");
+        fs::create_dir_all(&day).expect("a day folder outside the home");
+        fs::write(day.join(named(THREAD)), ROLLOUT).expect("a rollout outside the home");
+        std::os::unix::fs::symlink(elsewhere.path(), home.path().join("sessions"))
+            .expect("a link named as the sessions folder");
         let unpublished = Rollout {
             home: home.path().to_path_buf(),
             model: None,

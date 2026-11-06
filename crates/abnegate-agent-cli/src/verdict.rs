@@ -6,7 +6,19 @@
 pub(crate) enum Verdict {
     /// The agent completed its turn.
     Finished,
-    /// The agent reported a failure, a diagnostic tripped the caller's
-    /// tripwire, or the output broke one of the stream's limits.
+    /// The agent reported a failure, or its output broke one of the
+    /// stream's limits.
     Failed(String),
+    /// A diagnostic tripped the caller's tripwire.
+    Tripped(String),
+}
+
+impl Verdict {
+    /// The failure this verdict settled the run with, if it failed it.
+    pub(crate) fn failure(self) -> Option<String> {
+        match self {
+            Self::Finished => None,
+            Self::Failed(reason) | Self::Tripped(reason) => Some(reason),
+        }
+    }
 }

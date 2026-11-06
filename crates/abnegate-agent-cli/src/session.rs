@@ -395,12 +395,20 @@ fn rollout(home: &Path, directory: &Path, suffix: &str) -> Option<PathBuf> {
 
 /// Copies `source`, never through a link, into a private file staged beside
 /// `destination` and synced to disk, then puts it in `destination`'s place
-/// in one rename. The staged file is removed when anything fails.
+/// in one rename. The staged file is removed when anything fails. A pipe in
+/// `source`'s place is opened without waiting for a writer, and refused with
+/// anything else that is not a regular file once open.
 fn copy(source: &Path, destination: &Path) -> io::Result<u64> {
     let mut reader = OpenOptions::new()
         .read(true)
-        .custom_flags(OFlag::O_NOFOLLOW.bits())
+        .custom_flags((OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK).bits())
         .open(source)?;
+    if !reader.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{} is not a regular file", source.display()),
+        ));
+    }
     let parent = destination.parent().unwrap_or(Path::new(""));
     let mut staged = Builder::new()
         .prefix(STAGING)
@@ -431,9 +439,12 @@ mod tests {
     use std::os::unix::fs::symlink;
     use std::path::Path;
     use std::path::PathBuf;
+    use std::sync::mpsc;
     use std::time::Duration;
     use std::time::SystemTime;
 
+    use nix::sys::stat::Mode;
+    use nix::unistd::mkfifo;
     use tempfile::TempDir;
 
     use super::Carried;
@@ -443,6 +454,7 @@ mod tests {
     use super::ROLLOUT;
     use super::Session;
     use super::SessionError;
+    use super::copy;
     use super::sanitized;
     use crate::kind::AgentKind;
 
@@ -838,6 +850,29 @@ mod tests {
                 );
             }
         }
+        assert!(empty(homes.to.path()));
+    }
+
+    /// A pipe swapped in for a session's file after it was found would hold
+    /// the copy open until something wrote to it.
+    #[test]
+    fn a_pipe_in_a_sessions_place_is_never_waited_on_or_copied() {
+        let homes = Homes::new();
+        let pipe = homes.from.path().join("session.jsonl");
+        mkfifo(&pipe, Mode::S_IRUSR | Mode::S_IWUSR).expect("a pipe named as a session");
+        let destination = homes.to.path().join("session.jsonl");
+        let (sender, receiver) = mpsc::channel();
+        let copied = destination.clone();
+        std::thread::spawn(move || {
+            let _ = sender.send(copy(&pipe, &copied).map_err(|error| error.kind()));
+        });
+
+        let copied = receiver
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the copy waited on a pipe");
+
+        assert_eq!(copied, Err(std::io::ErrorKind::InvalidInput));
+        assert!(!destination.exists());
         assert!(empty(homes.to.path()));
     }
 

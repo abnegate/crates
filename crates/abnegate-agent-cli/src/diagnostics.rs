@@ -137,7 +137,7 @@ impl Diagnostics {
             .is_some_and(|tripwire| tripwire.trips(&line))
             && let Some(verdicts) = self.verdicts.take()
         {
-            let _ = verdicts.try_send(Verdict::Failed(scrubbed.clone()));
+            let _ = verdicts.try_send(Verdict::Tripped(scrubbed.clone()));
         }
 
         tracing::debug!(line = %scrubbed, "agent stderr");

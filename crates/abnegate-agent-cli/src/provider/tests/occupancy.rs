@@ -12,6 +12,8 @@ use tempfile::TempDir;
 use super::collected;
 use super::request;
 use super::settings;
+use super::survivors;
+use super::written_pid;
 use crate::event::AgentEvent;
 use crate::kind::AgentKind;
 use crate::occupancy::Occupancy;
@@ -247,15 +249,62 @@ echo '{"type":"turn.completed"}'
     assert!(!read::under(home.path()), "a tripped run read its rollout");
 }
 
+/// The tripwire, not the agent's own report, settles the run here, and the
+/// agent then reports a failure and exits by itself: the run must still know
+/// a tripwire settled it.
+#[tokio::test]
+async fn a_codex_run_a_tripwire_settled_never_reads_its_rollout_though_the_agent_failed_too() {
+    let directory = TempDir::new().expect("a temporary directory");
+    let home = home(Some(ROLLOUT), None);
+    let script = r#"echo '{"type":"thread.started","thread_id":"019b2c41-0000-7000-8000-000000000001"}'
+echo 'API Error: 429 Too Many Requests' >&2
+sleep 1
+echo '{"type":"turn.failed","error":{"message":"the model refused the turn"}}'
+exit 1
+"#;
+    let settings =
+        codex(&directory, home.path(), script).with_tripwire(|line| line.contains("429"));
+    let provider = CliProvider::agent(AgentKind::Codex, settings);
+
+    let execution = provider
+        .execute(request(&[Message::user("hi")]), "test-run")
+        .await
+        .expect("an execution");
+
+    assert!(
+        execution
+            .failure
+            .as_deref()
+            .is_some_and(|failure| failure.contains("429")),
+        "{:?}",
+        execution.failure
+    );
+    assert!(
+        execution.stopped.is_none(),
+        "the agent was stopped before it exited by itself"
+    );
+    assert!(execution.stdout.failure.is_some());
+    assert!(execution.stdout.occupancy.is_none());
+    assert!(!read::under(home.path()), "a tripped run read its rollout");
+}
+
 #[tokio::test]
 async fn a_dropped_codex_stream_never_reads_its_rollout() {
     let directory = TempDir::new().expect("a temporary directory");
     let home = home(Some(ROLLOUT), None);
-    let script = r#"echo '{"type":"thread.started","thread_id":"019b2c41-0000-7000-8000-000000000001"}'
-sleep 1
-echo '{"type":"turn.completed"}'
-"#;
-    let provider = CliProvider::agent(AgentKind::Codex, codex(&directory, home.path(), script));
+    let leader = directory.path().join("leader");
+    let exited = directory.path().join("exited");
+    let script = format!(
+        r#"echo $$ > '{}'
+echo '{{"type":"thread.started","thread_id":"019b2c41-0000-7000-8000-000000000001"}}'
+sleep 5
+touch '{}'
+echo '{{"type":"turn.completed"}}'
+"#,
+        leader.display(),
+        exited.display()
+    );
+    let provider = CliProvider::agent(AgentKind::Codex, codex(&directory, home.path(), &script));
 
     let mut stream = provider
         .stream(request(&[Message::user("hi")]))
@@ -268,9 +317,18 @@ echo '{"type":"turn.completed"}'
         matches!(first, Some(Ok(AgentEvent::Session(_)))),
         "{first:?}"
     );
+    let group = written_pid(&leader).await;
     drop(stream);
-    tokio::time::sleep(Duration::from_secs(3)).await;
 
+    let survivors = survivors(group).await;
+    assert!(
+        survivors.is_empty(),
+        "dropping the stream left {survivors:?} running"
+    );
+    assert!(
+        !exited.exists(),
+        "the agent exited by itself, so the run was never stopped"
+    );
     assert!(!read::under(home.path()), "a dropped run read its rollout");
 }
 

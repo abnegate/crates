@@ -1,12 +1,15 @@
 //! How full a coding agent's context was when its turn ended.
 
-use serde::Deserialize;
 use serde::Serialize;
 
 /// The context window of the model an agent ran its turn on, and how many
 /// tokens of it the turn's last request filled, both as the agent reported
 /// them rather than as a caller would estimate them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// It serializes as the execution log records it. The crate makes one only
+/// through [`Occupancy::reported`], so one it hands over never has a window
+/// of zero, and nothing reads one back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[non_exhaustive]
 pub struct Occupancy {
     /// The model's context window, in tokens.
@@ -54,14 +57,16 @@ mod tests {
     }
 
     #[test]
-    fn it_round_trips_through_json() {
+    fn it_serialises_as_the_log_records_it() {
         let occupancy = Occupancy::reported(475_000, Some(24_638)).expect("an occupancy");
-        let json = serde_json::to_value(occupancy).expect("it serialises");
 
-        assert_eq!(json, serde_json::json!({"window": 475_000, "used": 24_638}));
         assert_eq!(
-            serde_json::from_value::<Occupancy>(json).expect("it deserialises"),
-            occupancy
+            serde_json::to_value(occupancy).expect("it serialises"),
+            serde_json::json!({"window": 475_000, "used": 24_638})
+        );
+        assert_eq!(
+            serde_json::to_value(Occupancy::reported(475_000, None)).expect("it serialises"),
+            serde_json::json!({"window": 475_000, "used": null})
         );
     }
 }

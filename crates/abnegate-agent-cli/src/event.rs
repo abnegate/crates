@@ -44,13 +44,18 @@ pub enum AgentEvent {
     Text(String),
     /// A tool the main agent ran for itself, reported and never replayed. A
     /// subagent's calls are steps of its [`AgentEvent::Subagent`] instead.
+    /// Its arguments are the agent's, not scrubbed of the run's secrets.
     Tool(ToolCall),
     /// What one of the agent's own tool calls printed once it finished, a
     /// subagent's included, and whether it worked. It is yielded on the
     /// stream only: never folded into a
     /// [`StdoutParseResult`](crate::StdoutParseResult), and never counted
     /// toward the output limit, since it is the tool's text and not the
-    /// agent's prose. Its text is scrubbed of the run's secrets.
+    /// agent's prose. Its [text](Output::text) is scrubbed of the run's
+    /// secrets and cut to the run's
+    /// [`tool_output_limit`](crate::CliSettings::tool_output_limit); its
+    /// call's `function.arguments` are not scrubbed, as in
+    /// [`AgentEvent::Tool`].
     Output(Output),
     /// Prompt and completion token counts, cache reads and writes counted
     /// as prompt.

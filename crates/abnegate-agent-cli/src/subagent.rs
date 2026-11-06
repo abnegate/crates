@@ -21,6 +21,10 @@ use crate::activity::line;
 /// An update carries only what that line said. Only [`id`](Subagent::id) is
 /// always set, and a field left `None` did not change, so a caller folds the
 /// updates on one id into what it knows of that subagent.
+///
+/// Like every event, an update is news to fold and has no serialized form.
+/// What a caller keeps of a subagent does: its [`SubagentStatus`] and each
+/// [`SubagentStep`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Subagent {

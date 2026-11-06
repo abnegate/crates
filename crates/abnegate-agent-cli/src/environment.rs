@@ -74,31 +74,29 @@ const ISOLATION_DEFAULTS: &[(&str, &str)] = &[
 const TOOL_TIMEOUTS: &[&str] = &["MCP_TOOL_TIMEOUT", "CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT"];
 
 /// The child's environment: an allowlist of host variables, the
-/// [locale](LOCALE) categories, the caller's allowed names and the agent's
-/// own configuration variables, or the whole host
-/// environment when the caller opts in, with every explicit value set on
-/// top. An allowed name the agent signs in with passes only when its
-/// credential is inherited: beside a credential of the caller's own, the
-/// host's would be one more the agent could sign in with. With credentials
-/// refused, no other agent's sign-in name passes however it is allowed or
-/// inherited, nor the agent's own but when it is signed in on the host. With
-/// the host's credentials withheld, no name any agent signs in with, and no
-/// [cloud sign-in](CLOUD_CREDENTIALS), passes from the host however it is
-/// allowed or inherited, and no agent's configuration
-/// variable passes unless it is allowed. Each allowed value but the proxy
-/// bypass list is a secret, since a proxy URL, say, can carry a password.
+/// [locale](LOCALE) categories, the caller's allowed names and the agent's own
+/// configuration variables, or the whole host environment when the caller opts
+/// in, with every explicit value set on top. An allowed name the agent signs in
+/// with passes only when its credential is inherited: beside a credential of
+/// the caller's own, the host's would be one more the agent could sign in with.
+/// With credentials refused, no other agent's sign-in name passes however it is
+/// allowed or inherited, nor the agent's own but when it is signed in on the
+/// host. With the host's credentials withheld, no name any agent signs in with,
+/// and no [cloud sign-in](CLOUD_CREDENTIALS), passes from the host however it
+/// is allowed or inherited, and no agent's configuration variable passes unless
+/// it is allowed. Each allowed value but the proxy bypass list is a secret,
+/// since a proxy URL, say, can carry a password.
 ///
-/// Explicit values go on in rising precedence: the agent's sign-in
-/// variables from the host when its credential is inherited, the
-/// [defaults] a Claude run is given for its isolation and its MCP
-/// tools' timeout, the caller's public variables and then its secret ones, the credential, and last the
-/// values an MCP configuration moved out of its file, under generated names
-/// no caller can know. A stdio server's references are resolved against the
-/// secrets bound to it first, and then what the child is given before those,
-/// falling back to the host, with the agent's sign-in variables and the
-/// credential's own read as set but empty, and only the resolved values are
-/// handed over: resolving one hands the child nothing under the name of the
-/// variable it refers to.
+/// Explicit values go on in rising precedence: the agent's sign-in variables
+/// from the host when its credential is inherited, the [defaults] a Claude run
+/// is given for its isolation and its MCP tools' timeout, the caller's public
+/// variables and then its secret ones, the credential, and last the values an
+/// MCP configuration moved out of its file, under generated names no caller can
+/// know. A stdio server's references are resolved against the secrets bound to
+/// it first, and then what the child is given before those, falling back to the
+/// host, with the agent's sign-in variables and the credential's own read as
+/// set but empty, and only the resolved values are handed over: resolving one
+/// hands the child nothing under the name of the variable it refers to.
 ///
 /// `Debug` names the variables and never prints a value: an inherited one,
 /// a proxy URL say, can carry a password.
