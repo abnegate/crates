@@ -89,6 +89,7 @@ mod pull_requests {
     use abnegate_vcs::PullRequestDetail;
     use abnegate_vcs::PullRequestError;
     use abnegate_vcs::PullRequestService;
+    use abnegate_vcs::ReviewComment;
     use abnegate_vcs::ReviewRecord;
     use abnegate_vcs::ReviewState;
     use abnegate_vcs::ReviewThreadCount;
@@ -531,6 +532,49 @@ mod pull_requests {
                 .with_outdated(true)
                 .with_comments_complete(false),
             ]
+        );
+    }
+
+    /// A caller reads one review comment whole by the id a thread names, and
+    /// builds the comment it expects the way this crate reads it back.
+    #[tokio::test]
+    async fn a_review_comment_reads_back_as_the_value_a_caller_builds() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/project/pulls/comments/99"))
+            .and(header("authorization", "Bearer token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": 99,
+                "user": { "login": "review-bot" },
+                "body": "handle the empty cart",
+                "path": "src/cart.ts",
+                "html_url": "https://github.com/acme/project/pull/7#discussion_r99",
+                "created_at": "2026-09-20T10:00:00Z",
+                "pull_request_url": "https://api.github.com/repos/acme/project/pulls/7",
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = PullRequestService::standing_in_for("github.com", &server.uri()).unwrap();
+        let reference = service
+            .pull_request("https://github.com/acme/project/pull/7")
+            .unwrap();
+
+        let comment = service
+            .fetch_review_comment(&reference, &SecretValue::new("token"), 99)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            comment,
+            ReviewComment::new(
+                99,
+                "review-bot",
+                "handle the empty cart",
+                "https://github.com/acme/project/pull/7#discussion_r99",
+                "2026-09-20T10:00:00Z",
+            )
+            .with_path("src/cart.ts")
         );
     }
 
