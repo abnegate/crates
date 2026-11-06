@@ -76,14 +76,7 @@ impl PullRequestService {
     ) -> PullRequestResult<MergedPullRequest> {
         let number = reference.number().to_string();
         let repository = reference.repository();
-        let url = self.origin.endpoint(&[
-            "repos",
-            repository.owner(),
-            repository.name(),
-            "pulls",
-            &number,
-            "merge",
-        ]);
+        let url = self.repository_endpoint(repository, &["pulls", &number, "merge"])?;
         let request = MergeRequest {
             commit_title: title,
             commit_message: message,

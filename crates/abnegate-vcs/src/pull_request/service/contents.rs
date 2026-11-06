@@ -7,10 +7,6 @@ use std::str;
 /// The media type GitHub answers with a pull request's unified diff in.
 const DIFF: &str = "application/vnd.github.diff";
 
-/// The media type GitHub answers with a file's own bytes in, in place of a
-/// JSON description of the file.
-const RAW: &str = "application/vnd.github.raw+json";
-
 /// The media type GitHub describes a directory's entries in, whatever was
 /// asked for. A file asked for raw never comes back in it, even one that holds
 /// JSON.
@@ -37,13 +33,7 @@ impl PullRequestService {
     ) -> PullRequestResult<Excerpt> {
         let number = reference.number().to_string();
         let repository = reference.repository();
-        let url = self.origin.endpoint(&[
-            "repos",
-            repository.owner(),
-            repository.name(),
-            "pulls",
-            &number,
-        ]);
+        let url = self.repository_endpoint(repository, &["pulls", &number])?;
 
         let response = answered(self.request(Method::GET, url, token, DIFF)).await?;
         excerpt(response, limit).await
@@ -67,11 +57,8 @@ impl PullRequestService {
         revision: &CommitSha,
         limit: usize,
     ) -> PullRequestResult<Excerpt> {
-        let segments: Vec<&str> = ["repos", repository.owner(), repository.name(), "contents"]
-            .into_iter()
-            .chain(path.segments())
-            .collect();
-        let mut url = self.origin.endpoint(&segments);
+        let segments: Vec<&str> = ["contents"].into_iter().chain(path.segments()).collect();
+        let mut url = self.repository_endpoint(repository, &segments)?;
         url.query_pairs_mut().append_pair("ref", revision.as_str());
 
         let response = answered(self.request(Method::GET, url, token, RAW)).await?;

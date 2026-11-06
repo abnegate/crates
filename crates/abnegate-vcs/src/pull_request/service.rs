@@ -31,35 +31,49 @@ use reqwest::header;
 use reqwest::header::HeaderMap;
 use reqwest::redirect::Policy;
 use serde::de::DeserializeOwned;
+use std::num::NonZeroU8;
+use std::num::NonZeroU32;
 use std::num::NonZeroU64;
 use std::time::Duration;
 use tokio::time::Instant;
 use url::Url;
 
+mod actions;
 mod automation;
 mod branches;
 mod checks;
 mod contents;
 mod conversation;
+mod deployments;
 #[cfg(test)]
 mod fixtures;
 mod graphql;
+mod issues;
 mod merging;
 mod pulls;
 #[cfg(test)]
 mod redirect_tests;
+mod releases;
 mod repositories;
 mod threads;
+mod trees;
 mod webhooks;
 
 /// What this crate calls itself to the GitHub API.
 const USER_AGENT: &str = "abnegate-vcs";
 
 /// GitHub's own REST origin, which answers for repositories on `github.com`.
-const GITHUB_API_URL: &str = "https://api.github.com";
+pub(super) const GITHUB_API_URL: &str = "https://api.github.com";
 
 /// The media type GitHub's REST API answers in.
-const ACCEPT: &str = "application/vnd.github+json";
+pub(super) const ACCEPT: &str = "application/vnd.github+json";
+
+/// The media type that asks GitHub for a file's or a blob's bytes as they are.
+pub(super) const RAW: &str = "application/vnd.github.raw+json";
+
+/// The header that names the version of GitHub's REST API a request was
+/// written against.
+const API_VERSION: &str = "x-github-api-version";
 
 /// Rows GitHub returns per page; its maximum for these collections.
 const PAGE_SIZE: usize = 100;
@@ -70,7 +84,7 @@ const PAGE_SIZE: usize = 100;
 const MAXIMUM_PAGES: usize = 10;
 
 /// Longest a request may take from sending to the last byte of its answer.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+pub(super) const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Longest a connection may take to open.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -108,7 +122,7 @@ const MAXIMUM_REFUSAL_BYTES: usize = 64 * 1024;
 /// in UTF-8 and up to six as a JSON `\u` escape, so a page of a hundred
 /// comments at GitHub's limit of 65,536 characters each can outgrow it, and
 /// such a page is an error rather than a shorter list.
-const MAXIMUM_ANSWER_BYTES: usize = 16 * 1024 * 1024;
+pub(super) const MAXIMUM_ANSWER_BYTES: usize = 16 * 1024 * 1024;
 
 /// What an answer this crate cannot read is reported as, in place of the
 /// parser's own message, which quotes the answer.
@@ -140,16 +154,21 @@ const GIT_SUFFIX: &str = ".git";
 /// GitHub Enterprise install, reads back how each one was received, and
 /// creates repositories there.
 ///
+/// - Naming what a request is about: [`Self::parse_github_url`],
+///   [`Self::repository_on`] and [`Self::pull_request`].
 /// - Opening: [`Self::get_default_branch`],
-///   [`Self::pull_request_exists_for_branch`] and
-///   [`Self::create_pull_request`].
+///   [`Self::pull_request_exists_for_branch`],
+///   [`Self::create_pull_request`] and [`Self::create_pull_request_from`].
 /// - Reading: [`Self::fetch_pull`], [`Self::fetch_files`],
 ///   [`Self::fetch_diff`], [`Self::fetch_file`], [`Self::fetch_mergeability`]
 ///   and [`Self::fetch_reception`].
-/// - Checking: [`Self::fetch_checks`].
+/// - Resolving a branch, tag or commit to the commit it names:
+///   [`Self::resolve_commit`].
+/// - Checking: [`Self::fetch_checks`], [`Self::collect_check_runs`] and
+///   [`Self::collect_statuses`].
 /// - Reviewing: [`Self::fetch_issue_comments`], [`Self::post_issue_comment`],
 ///   [`Self::fetch_reviews`], [`Self::submit_review`],
-///   [`Self::fetch_review_threads`],
+///   [`Self::fetch_review_threads`], [`Self::collect_review_threads`],
 ///   [`Self::reply_to_review_comment`] and [`Self::resolve_review_thread`].
 /// - Merging: [`Self::merge`], then [`Self::delete_branch`].
 /// - Merging once ready: [`Self::fetch_merge_settings`],
@@ -159,6 +178,16 @@ const GIT_SUFFIX: &str = ".git";
 /// - Creating a repository: [`Self::create_repository`].
 /// - Webhooks: [`Self::create_webhook`], [`Self::update_webhook`] and
 ///   [`Self::delete_webhook`].
+/// - Finding and listing pull requests: [`Self::find_pull_request`],
+///   [`Self::list_pull_requests`] and [`Self::list_files`].
+/// - Actions: [`Self::collect_workflow_runs`], [`Self::fetch_workflow_job`]
+///   and [`Self::fetch_job_log`].
+/// - Releases: [`Self::list_releases`] and [`Self::fetch_release`].
+/// - Deployments: [`Self::list_deployments`].
+/// - Issues: [`Self::list_issues`], [`Self::fetch_issue`],
+///   [`Self::list_comments`], [`Self::create_issue`], [`Self::update_issue`],
+///   [`Self::close_issue`] and [`Self::post_comment`].
+/// - Trees and blobs: [`Self::fetch_tree`] and [`Self::fetch_blob`].
 ///
 /// Review threads, resolving one, an administrator's merge, auto-merge,
 /// drafts and a repository's merge settings go to GitHub's GraphQL API;
@@ -174,12 +203,17 @@ const GIT_SUFFIX: &str = ".git";
 /// body; a redirect to another origin, which would carry the token there; one
 /// whose `Location` is missing or cannot be read; one past the tenth hop; one
 /// that answers once the write's time is spent; and any redirect of a write
-/// whose body can be sent only once.
+/// whose body can be sent only once. [`Self::fetch_job_log`] alone follows
+/// one redirect off the origin, without the token, to where GitHub stores
+/// logs.
 ///
 /// A request is given 30 seconds from when it is first sent to the last byte
 /// of its answer, and every hop of a redirect spends them rather than starting
 /// again. One that outlasts them is [`PullRequestError::Http`], whose error
 /// says it timed out.
+///
+/// No request names a version of GitHub's REST API, so GitHub answers in its
+/// default one, until [`Self::with_api_version`] names one for every request.
 ///
 /// A status that says what it means on its own is reported as that: 401 as
 /// [`PullRequestError::AuthenticationFailed`], 429 or a 403 that spent the
@@ -192,12 +226,17 @@ const GIT_SUFFIX: &str = ".git";
 /// keeps only GitHub's own message, bounded: never the raw answer, and never
 /// the token.
 ///
-/// A paged read takes a hundred rows a page and follows at most ten pages.
-/// Every JSON answer, each page of a paged read included, is read up to
-/// 16 MiB and never parsed in part, so a longer page is
-/// [`PullRequestError::GitHubApi`] rather than a shorter list.
-/// [`Self::fetch_diff`] and [`Self::fetch_file`] read only as far as the limit
-/// their caller passes.
+/// A read that walks every page itself and returns a list, such as
+/// [`Self::fetch_files`] or [`Self::fetch_reviews`], takes a hundred rows a
+/// page and follows at most ten pages. A read that returns a
+/// [`Page`](crate::pull_request::Page) reads only the page asked for, at the
+/// rows a page its caller asks for up to a hundred, and says in
+/// [`Page::next`](crate::pull_request::Page::next) which page follows. Every JSON answer,
+/// each page included, is read up to 16 MiB and never parsed in part, so a
+/// longer page is [`PullRequestError::GitHubApi`] rather than a shorter list.
+/// [`Self::fetch_diff`], [`Self::fetch_file`] and [`Self::fetch_blob`] read
+/// only as far as the limit their caller passes, and [`Self::fetch_blob`]
+/// reports a blob past it as [`PullRequestError::TooLarge`].
 ///
 /// [`Self::merge`] asks through REST first, and only a refusal by branch
 /// protection is asked again through the administrator's GraphQL mutation.
@@ -215,6 +254,7 @@ pub struct PullRequestService {
     writer: Client,
     origin: Origin,
     timeout: Duration,
+    api_version: Option<String>,
 }
 
 impl PullRequestService {
@@ -263,7 +303,23 @@ impl PullRequestService {
             writer: client(https_only, timeout, Policy::none())?,
             origin,
             timeout,
+            api_version: None,
         })
+    }
+
+    /// Name `version` of GitHub's REST API, such as `2022-11-28`, in the
+    /// `X-GitHub-Api-Version` header of every request this service sends:
+    /// every read and write, every GraphQL call, and the request for a job's
+    /// log and its redirect within the origin, though not the download of the
+    /// log from where GitHub stores it off the origin.
+    ///
+    /// Without it no version is named, and GitHub answers in its default one.
+    /// A version that cannot be sent as a header value fails every request,
+    /// unsent, as [`PullRequestError::Http`].
+    #[must_use]
+    pub fn with_api_version(mut self, version: impl Into<String>) -> Self {
+        self.api_version = Some(version.into());
+        self
     }
 
     /// Parse the repository a URL names.
@@ -320,7 +376,29 @@ impl PullRequestService {
             return Err(invalid());
         }
 
-        Repository::new(owner, name).ok_or_else(invalid)
+        Repository::new(owner, name).map_err(|_| invalid())
+    }
+
+    /// The repository `name` belonging to `owner` on `host`, which has to be
+    /// the host this service answers for, such as `github.com` or an
+    /// Enterprise install's, or the host its API is reached at, such as
+    /// `api.github.com`.
+    ///
+    /// Any other host is [`PullRequestError::InvalidRepositoryUrl`], because
+    /// its repository's requests, and the token sent with them, would go to
+    /// this service's origin instead; an owner or name GitHub does not allow
+    /// is [`PullRequestError::InvalidRepositoryName`].
+    pub fn repository_on(
+        &self,
+        host: &str,
+        owner: &str,
+        name: &str,
+    ) -> PullRequestResult<Repository> {
+        let host = host.trim();
+        if !self.origin.answers_for(host) && !self.origin.addressed_at(host) {
+            return Err(PullRequestError::InvalidRepositoryUrl);
+        }
+        Repository::new(owner, name)
     }
 
     /// Recover where a pull request lives from the URL a run recorded.
@@ -361,7 +439,7 @@ impl PullRequestService {
         }
 
         Ok(PullRequestReference::new(
-            Repository::new(owner, name).ok_or_else(invalid)?,
+            Repository::new(owner, name).map_err(|_| invalid())?,
             number,
         ))
     }
@@ -377,13 +455,37 @@ impl PullRequestService {
         body: &str,
         draft: bool,
     ) -> PullRequestResult<CreatedPullRequest> {
-        let url = self
-            .origin
-            .endpoint(&["repos", repository.owner(), repository.name(), "pulls"]);
+        self.open_pull_request(
+            repository,
+            token,
+            head.as_str(),
+            head,
+            base,
+            title,
+            body,
+            draft,
+        )
+        .await
+    }
+
+    /// Open a pull request into `base` whose head GitHub is sent as `label`,
+    /// `head` itself or a fork's `owner:head`.
+    async fn open_pull_request(
+        &self,
+        repository: &Repository,
+        token: &SecretValue,
+        label: &str,
+        head: &BranchName,
+        base: &BranchName,
+        title: &str,
+        body: &str,
+        draft: bool,
+    ) -> PullRequestResult<CreatedPullRequest> {
+        let url = self.repository_endpoint(repository, &["pulls"])?;
         let request = CreateRequest {
             title,
             body,
-            head: head.as_str(),
+            head: label,
             base: base.as_str(),
             draft,
         };
@@ -417,11 +519,7 @@ impl PullRequestService {
         token: &SecretValue,
     ) -> PullRequestResult<BranchName> {
         let detail: RepositoryDetail = self
-            .get(
-                self.origin
-                    .endpoint(&["repos", repository.owner(), repository.name()]),
-                token,
-            )
+            .get(self.repository_endpoint(repository, &[])?, token)
             .await?;
         Ok(BranchName::parse(&detail.default_branch)?)
     }
@@ -433,15 +531,28 @@ impl PullRequestService {
         token: &SecretValue,
         head: &BranchName,
     ) -> PullRequestResult<Option<String>> {
-        let mut url =
-            self.origin
-                .endpoint(&["repos", repository.owner(), repository.name(), "pulls"]);
+        let mut url = self.repository_endpoint(repository, &["pulls"])?;
         url.query_pairs_mut()
             .append_pair("head", &format!("{}:{head}", repository.owner()))
             .append_pair("state", "open");
 
         let open: Vec<GitHubPullRequest> = self.get(url, token).await?;
         Ok(open.into_iter().next().map(|found| found.html_url))
+    }
+
+    /// The REST endpoint for `repository`, followed by `rest`, each segment
+    /// one percent-encoded path segment; one that is empty, `.` or `..` is
+    /// [`PullRequestError::InvalidRepositoryUrl`].
+    pub(super) fn repository_endpoint(
+        &self,
+        repository: &Repository,
+        rest: &[&str],
+    ) -> PullRequestResult<Url> {
+        let segments: Vec<&str> = ["repos", repository.owner(), repository.name()]
+            .into_iter()
+            .chain(rest.iter().copied())
+            .collect();
+        self.origin.endpoint(&segments)
     }
 
     /// A request to `url` that carries `token` and asks for an answer in
@@ -460,11 +571,29 @@ impl PullRequestService {
             true => &self.reader,
             false => &self.writer,
         };
-        client
+        self.request_on(client, method, url, token, accept)
+    }
+
+    /// A request to `url` sent by `client`, carrying `token`, asking for an
+    /// answer in `accept`, naming the API version this service was given if
+    /// any, and given up on after this service's timeout.
+    fn request_on(
+        &self,
+        client: &Client,
+        method: Method,
+        url: Url,
+        token: &SecretValue,
+        accept: &'static str,
+    ) -> RequestBuilder {
+        let request = client
             .request(method, url)
             .bearer_auth(token.expose())
             .header(header::ACCEPT, accept)
-            .timeout(self.timeout)
+            .timeout(self.timeout);
+        match &self.api_version {
+            Some(version) => request.header(API_VERSION, version.as_str()),
+            None => request,
+        }
     }
 
     /// Send `request` and read its answer as `T`, or as the refusal it is.
@@ -481,15 +610,16 @@ impl PullRequestService {
             .await
     }
 
+    /// Every row `url` lists, a hundred a page for at most ten pages.
     async fn get_all<T: DeserializeOwned>(
         &self,
-        segments: &[&str],
+        url: &Url,
         token: &SecretValue,
     ) -> PullRequestResult<Vec<T>> {
         let mut collected: Vec<T> = Vec::new();
 
         for page in 1..=MAXIMUM_PAGES {
-            let mut url = self.origin.endpoint(segments);
+            let mut url = url.clone();
             url.query_pairs_mut()
                 .append_pair("per_page", &PAGE_SIZE.to_string())
                 .append_pair("page", &page.to_string());
@@ -517,13 +647,7 @@ impl PullRequestService {
         let repository = reference.repository();
         let detail: GitHubPullRequestDetail = self
             .get(
-                self.origin.endpoint(&[
-                    "repos",
-                    repository.owner(),
-                    repository.name(),
-                    "pulls",
-                    &number,
-                ]),
+                self.repository_endpoint(repository, &["pulls", &number])?,
                 token,
             )
             .await?;
@@ -545,20 +669,23 @@ impl PullRequestService {
     ) -> PullRequestResult<PullRequestReception> {
         let number = reference.number().to_string();
         let repository = reference.repository();
-        let pull = [
-            "repos",
-            repository.owner(),
-            repository.name(),
-            "pulls",
-            &number,
-        ];
-
-        let detail: GitHubPullRequestDetail = self.get(self.origin.endpoint(&pull), token).await?;
+        let detail: GitHubPullRequestDetail = self
+            .get(
+                self.repository_endpoint(repository, &["pulls", &number])?,
+                token,
+            )
+            .await?;
         let reviews: Vec<GitHubReview> = self
-            .get_all(&[&pull[..], &["reviews"]].concat(), token)
+            .get_all(
+                &self.repository_endpoint(repository, &["pulls", &number, "reviews"])?,
+                token,
+            )
             .await?;
         let inline: Vec<GitHubComment> = self
-            .get_all(&[&pull[..], &["comments"]].concat(), token)
+            .get_all(
+                &self.repository_endpoint(repository, &["pulls", &number, "comments"])?,
+                token,
+            )
             .await?;
 
         let submitted: Vec<SubmittedReview> = reviews
@@ -602,7 +729,11 @@ impl PullRequestService {
 /// opted in to plain HTTP or it is standing in for a test's mock server.
 ///
 /// A redirect it will not follow comes back as the answer itself.
-fn client(https_only: bool, timeout: Duration, redirect: Policy) -> PullRequestResult<Client> {
+pub(super) fn client(
+    https_only: bool,
+    timeout: Duration,
+    redirect: Policy,
+) -> PullRequestResult<Client> {
     Ok(Client::builder()
         .user_agent(USER_AGENT)
         .timeout(timeout)
@@ -795,7 +926,10 @@ fn returned(status: StatusCode) -> String {
 /// Room is set aside up front for the length the answer declares, but never
 /// for more than `limit` or [`MAXIMUM_ANSWER_BYTES`]; past that the prefix
 /// grows only as bytes arrive.
-async fn read_prefix(mut response: Response, limit: usize) -> PullRequestResult<(Vec<u8>, bool)> {
+pub(super) async fn read_prefix(
+    mut response: Response,
+    limit: usize,
+) -> PullRequestResult<(Vec<u8>, bool)> {
     let declared = response
         .content_length()
         .map_or(0, |length| usize::try_from(length).unwrap_or(usize::MAX));
@@ -853,6 +987,20 @@ async fn refusal(response: Response) -> PullRequestError {
     }
 }
 
+/// The rows to ask for when `per_page` are wanted: never more than GitHub
+/// sends.
+fn asked(per_page: NonZeroU8) -> usize {
+    usize::from(per_page.get()).min(PAGE_SIZE)
+}
+
+/// `url` asking for page `page` of `asked` rows.
+fn paged(mut url: Url, page: NonZeroU32, asked: usize) -> Url {
+    url.query_pairs_mut()
+        .append_pair("per_page", &asked.to_string())
+        .append_pair("page", &page.to_string());
+    url
+}
+
 /// `text` cut to [`MAXIMUM_ERROR_BYTES`], never inside a character.
 pub(super) fn bounded(text: &str) -> &str {
     &text[..text.floor_char_boundary(MAXIMUM_ERROR_BYTES)]
@@ -904,6 +1052,7 @@ fn separates(character: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pull_request::IssueReference;
     use crate::pull_request::PullRequestState;
     use crate::pull_request::ReviewTally;
     use crate::pull_request::service::fixtures::Expected;
@@ -920,6 +1069,7 @@ mod tests {
     use wiremock::ResponseTemplate;
     use wiremock::matchers::body_partial_json;
     use wiremock::matchers::header;
+    use wiremock::matchers::header_exists;
     use wiremock::matchers::method;
     use wiremock::matchers::path;
     use wiremock::matchers::query_param;
@@ -2104,5 +2254,99 @@ mod tests {
             .expect_err("an unauthorised read must not look like an empty pull request");
 
         assert!(matches!(failure, PullRequestError::AuthenticationFailed));
+    }
+
+    const VERSION: &str = "2026-03-10";
+
+    /// Every kind of request this service sends, each answered once: a
+    /// read, a write, a GraphQL call and the request for a job's log, and
+    /// each only when it names `version`, where one is given.
+    async fn every_kind(server: &MockServer, version: Option<&str>) {
+        let routes = [
+            (
+                "GET",
+                "/repos/acme/project",
+                serde_json::json!({ "default_branch": "main" }),
+            ),
+            (
+                "PATCH",
+                "/repos/acme/project/issues/5",
+                serde_json::json!({}),
+            ),
+            ("POST", "/graphql", serde_json::json!({ "data": {} })),
+            (
+                "GET",
+                "/repos/acme/project/actions/jobs/9/logs",
+                serde_json::json!("log"),
+            ),
+        ];
+        for (verb, route, answer) in routes {
+            let mock = Mock::given(method(verb)).and(path(route));
+            let mock = match version {
+                Some(version) => mock.and(header(API_VERSION, version)),
+                None => mock,
+            };
+            mock.respond_with(ResponseTemplate::new(200).set_body_json(answer))
+                .expect(1)
+                .mount(server)
+                .await;
+        }
+    }
+
+    /// Send one request of every kind `every_kind` answers.
+    async fn send_every_kind(service: &PullRequestService) -> PullRequestResult<()> {
+        let repository = project(service);
+        let issue = IssueReference::new(repository.clone(), NonZeroU64::new(5).unwrap());
+        service.get_default_branch(&repository, &token()).await?;
+        service.close_issue(&issue, &token()).await?;
+        service.resolve_review_thread("PRRT_1", &token()).await?;
+        service
+            .fetch_job_log(&repository, &token(), NonZeroU64::new(9).unwrap(), 64)
+            .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_api_version_once_given_is_named_on_every_request() {
+        let server = MockServer::start().await;
+        every_kind(&server, Some(VERSION)).await;
+        let service = stand_in(&server).await.with_api_version(VERSION);
+
+        send_every_kind(&service).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn no_api_version_is_named_until_one_is_given() {
+        let server = MockServer::start().await;
+        Mock::given(header_exists(API_VERSION))
+            .respond_with(ResponseTemplate::new(500))
+            .with_priority(1)
+            .expect(0)
+            .mount(&server)
+            .await;
+        every_kind(&server, None).await;
+        let service = stand_in(&server).await;
+
+        send_every_kind(&service).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_api_version_no_header_can_carry_fails_every_request_unsent() {
+        let server = MockServer::start().await;
+        Mock::given(wiremock::matchers::any())
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let service = stand_in(&server)
+            .await
+            .with_api_version("2026-03-10\r\nx: y");
+
+        let failure = service
+            .get_default_branch(&project(&service), &token())
+            .await
+            .unwrap_err();
+
+        assert!(matches!(failure, PullRequestError::Http(_)), "{failure:?}");
     }
 }

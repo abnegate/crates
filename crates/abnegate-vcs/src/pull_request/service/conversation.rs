@@ -1,6 +1,7 @@
 use super::*;
 use crate::commit_sha::CommitSha;
 use crate::pull_request::IssueComment;
+use crate::pull_request::IssueReference;
 use crate::pull_request::ReviewEvent;
 use crate::pull_request::ReviewRecord;
 use crate::pull_request::comment_request::CommentRequest;
@@ -16,6 +17,10 @@ impl PullRequestService {
     /// conversation the newest are the ones left unread. A page longer than
     /// the 16 MiB this crate reads is [`PullRequestError::GitHubApi`], never
     /// a partial or empty list.
+    ///
+    /// Kept for the callers that already read comments this way. A new caller
+    /// should page through [`Self::list_comments`] instead, which reads every
+    /// comment and the link and time of each.
     pub async fn fetch_issue_comments(
         &self,
         reference: &PullRequestReference,
@@ -25,14 +30,7 @@ impl PullRequestService {
         let repository = reference.repository();
         let comments: Vec<GitHubIssueComment> = self
             .get_all(
-                &[
-                    "repos",
-                    repository.owner(),
-                    repository.name(),
-                    "issues",
-                    &number,
-                    "comments",
-                ],
+                &self.repository_endpoint(repository, &["issues", &number, "comments"])?,
                 token,
             )
             .await?;
@@ -57,14 +55,7 @@ impl PullRequestService {
         let repository = reference.repository();
         let reviews: Vec<GitHubReview> = self
             .get_all(
-                &[
-                    "repos",
-                    repository.owner(),
-                    repository.name(),
-                    "pulls",
-                    &number,
-                    "reviews",
-                ],
+                &self.repository_endpoint(repository, &["pulls", &number, "reviews"])?,
                 token,
             )
             .await?;
@@ -80,6 +71,10 @@ impl PullRequestService {
     /// [`PullRequestError::GitHubApi`] although the comment was posted. A
     /// caller that retries on an error may post it twice, so it should look
     /// for the comment before posting again.
+    ///
+    /// Kept for the callers that already post comments this way. A new caller
+    /// should use [`Self::post_comment`] instead, which returns the comment as
+    /// GitHub recorded it.
     pub async fn post_issue_comment(
         &self,
         reference: &PullRequestReference,
@@ -88,14 +83,7 @@ impl PullRequestService {
     ) -> PullRequestResult<u64> {
         let number = reference.number().to_string();
         let repository = reference.repository();
-        let url = self.origin.endpoint(&[
-            "repos",
-            repository.owner(),
-            repository.name(),
-            "issues",
-            &number,
-            "comments",
-        ]);
+        let url = self.repository_endpoint(repository, &["issues", &number, "comments"])?;
 
         let posted: GitHubIdentified = self
             .exchange(
@@ -104,6 +92,32 @@ impl PullRequestService {
             )
             .await?;
         Ok(posted.id)
+    }
+
+    /// Comment on an issue's conversation, or a pull request's through
+    /// [`IssueReference::from`], and return the comment as GitHub recorded it.
+    ///
+    /// An error can follow a comment GitHub accepted: an answer this crate
+    /// cannot read, or that is too long to, is [`PullRequestError::GitHubApi`]
+    /// although the comment was posted. A caller that retries on an error may
+    /// post it twice, so it should look for the comment before posting again.
+    pub async fn post_comment(
+        &self,
+        reference: &IssueReference,
+        token: &SecretValue,
+        body: &str,
+    ) -> PullRequestResult<IssueComment> {
+        let number = reference.number().to_string();
+        let url =
+            self.repository_endpoint(reference.repository(), &["issues", &number, "comments"])?;
+
+        let posted: GitHubIssueComment = self
+            .exchange(
+                self.request(Method::POST, url, token, ACCEPT)
+                    .json(&CommentRequest { body }),
+            )
+            .await?;
+        Ok(IssueComment::from(posted))
     }
 
     /// Submit a review of the pull request as it stood at `commit`, and return
@@ -127,14 +141,7 @@ impl PullRequestService {
     ) -> PullRequestResult<u64> {
         let number = reference.number().to_string();
         let repository = reference.repository();
-        let url = self.origin.endpoint(&[
-            "repos",
-            repository.owner(),
-            repository.name(),
-            "pulls",
-            &number,
-            "reviews",
-        ]);
+        let url = self.repository_endpoint(repository, &["pulls", &number, "reviews"])?;
         let review = ReviewRequest {
             commit_id: commit.as_str(),
             body,
@@ -162,16 +169,10 @@ impl PullRequestService {
         let number = reference.number().to_string();
         let comment = comment.to_string();
         let repository = reference.repository();
-        let url = self.origin.endpoint(&[
-            "repos",
-            repository.owner(),
-            repository.name(),
-            "pulls",
-            &number,
-            "comments",
-            &comment,
-            "replies",
-        ]);
+        let url = self.repository_endpoint(
+            repository,
+            &["pulls", &number, "comments", &comment, "replies"],
+        )?;
 
         answered(
             self.request(Method::POST, url, token, ACCEPT)
@@ -206,6 +207,7 @@ mod tests {
     use super::*;
     use crate::pull_request::service::fixtures::Expected;
     use crate::pull_request::service::fixtures::commit;
+    use crate::pull_request::service::fixtures::project;
     use crate::pull_request::service::fixtures::seven;
     use crate::pull_request::service::fixtures::stand_in;
     use crate::pull_request::service::fixtures::token;
@@ -537,6 +539,76 @@ mod tests {
             .unwrap();
 
         assert_eq!(id, posted.id);
+    }
+
+    #[tokio::test]
+    async fn a_comment_is_posted_to_an_issue_or_a_pull_request_and_returned_whole() {
+        for (number, posted) in [(5, 1_234_567_890_124), (7, 1_234_567_890_123)] {
+            let server = MockServer::start().await;
+            let comment = IssueComment::new(
+                posted,
+                "automation",
+                "Looking into it.",
+                format!("https://github.com/acme/project/issues/{number}#issuecomment-{posted}"),
+                "2026-09-03T00:00:00Z",
+            );
+            Mock::given(method("POST"))
+                .and(path(format!(
+                    "/repos/acme/project/issues/{number}/comments"
+                )))
+                .and(header("authorization", "Bearer token"))
+                .and(header("accept", ACCEPT))
+                .and(body_json(json!({ "body": "Looking into it." })))
+                .respond_with(ResponseTemplate::new(201).set_body_json(described(&comment)))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let service = stand_in(&server).await;
+            let reference = match number {
+                7 => IssueReference::from(&seven(&service)),
+                _ => IssueReference::new(project(&service), NonZeroU64::new(number).unwrap()),
+            };
+
+            let returned = service
+                .post_comment(&reference, &token(), "Looking into it.")
+                .await
+                .unwrap();
+
+            assert_eq!(returned, comment, "#{number}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_posted_comment_github_describes_in_part_is_an_error() {
+        for answer in [
+            json!({ "id": 1, "body": SENTINEL, "created_at": "2026-09-03T00:00:00Z" }),
+            json!({ "id": 1, "body": SENTINEL, "html_url": SENTINEL }),
+            json!({ "body": SENTINEL, "html_url": SENTINEL, "created_at": SENTINEL }),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/repos/acme/project/issues/7/comments"))
+                .respond_with(ResponseTemplate::new(201).set_body_json(&answer))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let service = stand_in(&server).await;
+
+            let failure = service
+                .post_comment(
+                    &IssueReference::from(&seven(&service)),
+                    &token(),
+                    "Looking into it.",
+                )
+                .await
+                .unwrap_err();
+
+            assert!(
+                matches!(failure, PullRequestError::GitHubApi(ref text) if text == UNREADABLE),
+                "{answer}: {failure:?}"
+            );
+            assert!(!format!("{failure:?}").contains(SENTINEL), "{failure:?}");
+        }
     }
 
     #[tokio::test]

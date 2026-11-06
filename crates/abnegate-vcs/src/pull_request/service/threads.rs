@@ -1,4 +1,5 @@
 use super::*;
+use crate::pull_request::Collected;
 use crate::pull_request::ReviewThreadRecord;
 use crate::pull_request::ThreadComment;
 use crate::pull_request::graphql_page_info::GraphQlPageInfo;
@@ -47,16 +48,38 @@ impl PullRequestService {
     /// kept once. A repository or pull request GitHub cannot find, or will not
     /// show the token, is [`PullRequestError::NotFound`]. A page longer than
     /// the 16 MiB this crate reads is [`PullRequestError::GitHubApi`], never a
-    /// partial or empty list.
+    /// partial or empty list. [`Self::collect_review_threads`] reads the same
+    /// and says whether that is every thread.
     pub async fn fetch_review_threads(
         &self,
         reference: &PullRequestReference,
         token: &SecretValue,
     ) -> PullRequestResult<Vec<ReviewThreadRecord>> {
+        Ok(self.collect_review_threads(reference, token).await?.items)
+    }
+
+    /// Every review thread [`Self::fetch_review_threads`] reads, in the order
+    /// GitHub listed them, and whether that is every thread on the pull
+    /// request.
+    ///
+    /// [`Collected::complete`] is `true` only when the last page read was one
+    /// GitHub said no page follows. It is `false` when the walk stopped at the
+    /// page limit while GitHub said another page follows, when such a page
+    /// named no cursor or handed back the cursor it was just given, or when a
+    /// page said nothing of what follows it, since a thread not reached may be
+    /// the one still unresolved. It speaks for the threads alone: a thread
+    /// carries at most its first twenty comments either way. A failure is the
+    /// one [`Self::fetch_review_threads`] reports, never a partial list.
+    pub async fn collect_review_threads(
+        &self,
+        reference: &PullRequestReference,
+        token: &SecretValue,
+    ) -> PullRequestResult<Collected<ReviewThreadRecord>> {
         let repository = reference.repository();
         let mut threads: Vec<ReviewThreadRecord> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
         let mut after: Option<String> = None;
+        let mut complete = false;
 
         for _ in 0..MAXIMUM_PAGES {
             let answer: GraphQlQuery<GraphQlRepository<GraphQlPullRequest>> = self
@@ -83,14 +106,20 @@ impl PullRequestService {
                     .filter(|thread| seen.insert(thread.id.clone()))
                     .map(record),
             );
+            complete = last(page.page_info.as_ref());
             match next_cursor(page.page_info, after.as_deref()) {
                 Some(cursor) => after = Some(cursor),
                 None => break,
             }
         }
 
-        Ok(threads)
+        Ok(Collected::new(threads, complete))
     }
+}
+
+/// Whether GitHub said no page follows the one that ended at `page`.
+fn last(page: Option<&GraphQlPageInfo>) -> bool {
+    page.is_some_and(|page| !page.has_next_page)
 }
 
 /// The cursor to read the next page after: the one a page ended at, when
@@ -437,5 +466,179 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(format!("{failure:?}"), format!("GitHubApi({UNREADABLE:?})"));
+    }
+
+    fn threads(first: usize, count: usize) -> Value {
+        (first..first + count)
+            .map(|number| thread(&format!("PRRT_{number}")))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn full_pages_that_run_out_are_every_thread() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(body_json(asked(None)))
+            .respond_with(page(threads(0, PAGE_SIZE), true, Some("Y3Vyc29yOjE=")))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(body_json(asked(Some("Y3Vyc29yOjE="))))
+            .respond_with(page(
+                threads(PAGE_SIZE, PAGE_SIZE),
+                true,
+                Some("Y3Vyc29yOjI="),
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(body_json(asked(Some("Y3Vyc29yOjI="))))
+            .respond_with(page(
+                threads(2 * PAGE_SIZE, PAGE_SIZE),
+                false,
+                Some("Y3Vyc29yOjM="),
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+
+        let collected = service
+            .collect_review_threads(&seven(&service), &token())
+            .await
+            .unwrap();
+
+        assert!(collected.complete);
+        assert_eq!(collected.items.len(), 3 * PAGE_SIZE);
+        assert_eq!(collected.items[0].id, "PRRT_0");
+        assert_eq!(collected.items[3 * PAGE_SIZE - 1].id, "PRRT_299");
+    }
+
+    #[tokio::test]
+    async fn a_walk_the_page_limit_cuts_short_is_not_every_thread() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(|request: &Request| {
+                let sent: Value = serde_json::from_slice(&request.body).unwrap();
+                let read = sent["variables"]["after"]
+                    .as_str()
+                    .map_or(0, |cursor| cursor.parse::<usize>().unwrap());
+                let next = read + 1;
+                page(
+                    json!([thread(&format!("PRRT_{next}"))]),
+                    true,
+                    Some(&next.to_string()),
+                )
+            })
+            .expect(u64::try_from(MAXIMUM_PAGES).unwrap())
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+
+        let collected = service
+            .collect_review_threads(&seven(&service), &token())
+            .await
+            .unwrap();
+
+        assert!(!collected.complete);
+        assert_eq!(collected.items.len(), MAXIMUM_PAGES);
+    }
+
+    #[tokio::test]
+    async fn a_last_page_read_while_another_follows_is_not_every_thread() {
+        for (described, page_info) in [
+            ("names no cursor", json!({ "hasNextPage": true })),
+            (
+                "hands back its cursor",
+                json!({ "hasNextPage": true, "endCursor": "stuck" }),
+            ),
+            ("says nothing of what follows", Value::Null),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/graphql"))
+                .and(body_json(asked(None)))
+                .respond_with(page(json!([thread("PRRT_1")]), true, Some("stuck")))
+                .mount(&server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path("/graphql"))
+                .and(body_json(asked(Some("stuck"))))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "data": { "repository": { "pullRequest": { "reviewThreads": {
+                        "pageInfo": page_info,
+                        "nodes": [thread("PRRT_2")],
+                    } } } },
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let service = stand_in(&server).await;
+
+            let collected = service
+                .collect_review_threads(&seven(&service), &token())
+                .await
+                .unwrap();
+
+            assert!(!collected.complete, "a last page that {described}");
+            assert_eq!(identifiers(&collected.items), ["PRRT_1", "PRRT_2"]);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_thread_holding_as_many_comments_as_are_read_leaves_the_threads_complete() {
+        let mut crowded = thread("PRRT_1");
+        let comment = crowded["comments"]["nodes"][0].clone();
+        crowded["comments"]["nodes"] = Value::Array(vec![comment; 20]);
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(page(json!([crowded]), false, None))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+
+        let collected = service
+            .collect_review_threads(&seven(&service), &token())
+            .await
+            .unwrap();
+
+        assert!(collected.complete);
+        assert_eq!(collected.items[0].comments.len(), 20);
+    }
+
+    #[tokio::test]
+    async fn resolved_threads_that_could_not_be_paginated_are_not_every_thread() {
+        let mut resolved = thread("PRRT_1");
+        resolved["isResolved"] = json!(true);
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": { "repository": { "pullRequest": { "reviewThreads": {
+                    "pageInfo": { "hasNextPage": true },
+                    "nodes": [resolved],
+                } } } },
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+
+        let collected = service
+            .collect_review_threads(&seven(&service), &token())
+            .await
+            .unwrap();
+
+        assert!(!collected.complete);
+        assert!(collected.items.iter().all(|thread| thread.resolved));
+        assert_eq!(identifiers(&collected.items), ["PRRT_1"]);
     }
 }

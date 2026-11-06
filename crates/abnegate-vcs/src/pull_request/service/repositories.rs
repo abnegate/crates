@@ -46,14 +46,14 @@ impl PullRequestService {
 
         let organisation = match owner {
             Some(owner) => {
-                let account = login(self.get(self.origin.endpoint(&["user"]), token).await?)?;
+                let account = login(self.get(self.origin.endpoint(&["user"])?, token).await?)?;
                 (!owner.eq_ignore_ascii_case(&account)).then_some(owner)
             }
             None => None,
         };
         let url = match organisation {
-            Some(organisation) => self.origin.endpoint(&["orgs", organisation, "repos"]),
-            None => self.origin.endpoint(&["user", "repos"]),
+            Some(organisation) => self.origin.endpoint(&["orgs", organisation, "repos"])?,
+            None => self.origin.endpoint(&["user", "repos"])?,
         };
         let request = RepositoryRequest {
             name,
@@ -92,7 +92,7 @@ fn login(user: GitHubUser) -> PullRequestResult<String> {
 fn created(answer: GitHubCreatedRepository) -> PullRequestResult<CreatedRepository> {
     let owner = answer.owner.login.unwrap_or_default();
     let repository = Repository::new(&owner, &answer.name)
-        .ok_or_else(|| PullRequestError::GitHubApi(UNACCEPTED.to_string()))?;
+        .map_err(|_| PullRequestError::GitHubApi(UNACCEPTED.to_string()))?;
     Ok(CreatedRepository {
         repository,
         url: answer.html_url,

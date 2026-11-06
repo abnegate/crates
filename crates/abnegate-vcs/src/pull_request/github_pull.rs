@@ -36,4 +36,6 @@ pub(super) struct GitHubPull {
     pub(super) deletions: u32,
     #[serde(default)]
     pub(super) commits: u32,
+    #[serde(default)]
+    pub(super) updated_at: Option<String>,
 }

@@ -2,8 +2,8 @@ use crate::pull_request::IssueComment;
 use crate::pull_request::github_user::GitHubUser;
 use serde::Deserialize;
 
-/// A comment on a pull request's conversation as the GitHub REST API returns
-/// it.
+/// A comment on an issue's or a pull request's conversation as the GitHub
+/// REST API returns it.
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct GitHubIssueComment {
     id: u64,

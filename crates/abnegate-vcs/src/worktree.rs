@@ -34,7 +34,7 @@ use crate::git::LOCATING;
 use crate::git::WorktreeEntry;
 #[cfg(unix)]
 use crate::git::group::Group;
-use crate::git::harden;
+use crate::git::hardened;
 use crate::git::refused;
 pub use crate::worktree::unfinished::Unfinished;
 use std::io::Read;
@@ -91,9 +91,8 @@ const TRACKED_STATUS: [&str; 5] = [
 /// [`crate::git::GitService`] commands run with, that additionally may use no
 /// transport at all, so nothing here can reach the network -- not even a lazy
 /// fetch of an object the clone lacks -- and needs no timeout.
-fn local(repository: &Path) -> Command {
-    let mut command = Command::new("git");
-    harden(&mut command);
+pub(crate) fn local(repository: &Path) -> Command {
+    let mut command = hardened();
     command
         .env("GIT_ALLOW_PROTOCOL", "")
         .current_dir(repository)
@@ -167,7 +166,7 @@ fn run(command: &mut Command, what: &str) -> std::io::Result<Vec<u8>> {
     });
     match receiver.recv_timeout(OUTPUT_TIMEOUT) {
         Ok(collected) if collected.len() > MAXIMUM_OUTPUT_BYTES => {
-            terminate(&mut child);
+            terminate(child);
             Err(std::io::Error::other(format!(
                 "git produced too much output to {what}"
             )))
@@ -180,13 +179,13 @@ fn run(command: &mut Command, what: &str) -> std::io::Result<Vec<u8>> {
             }
         }
         Err(RecvTimeoutError::Timeout) => {
-            terminate(&mut child);
+            terminate(child);
             Err(std::io::Error::other(format!(
                 "git took too long to {what}"
             )))
         }
         Err(RecvTimeoutError::Disconnected) => {
-            terminate(&mut child);
+            terminate(child);
             Err(std::io::Error::other(format!("git could not {what}")))
         }
     }
@@ -194,9 +193,17 @@ fn run(command: &mut Command, what: &str) -> std::io::Result<Vec<u8>> {
 
 /// Kill a local git command and, where the platform has process groups, every
 /// helper it started with it.
-fn terminate(child: &mut Child) {
-    #[cfg(unix)]
-    drop(Group::new(nix::unistd::Pid::from_raw(child.id() as i32)));
+#[cfg(unix)]
+fn terminate(child: Child) {
+    drop(Group::new(
+        nix::unistd::Pid::from_raw(child.id() as i32),
+        child,
+    ));
+}
+
+/// Kill a local git command.
+#[cfg(not(unix))]
+fn terminate(mut child: Child) {
     let _ = child.kill();
     let _ = child.wait();
 }

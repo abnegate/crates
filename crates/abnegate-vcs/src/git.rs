@@ -56,6 +56,10 @@ mod error;
 #[cfg(unix)]
 pub(crate) mod group;
 mod hardening;
+#[cfg(unix)]
+pub(crate) mod leader;
+#[cfg(unix)]
+mod pursuit;
 mod remote_head;
 mod service;
 mod worktree_entry;
@@ -73,7 +77,9 @@ pub(crate) use crate::git::hardening::LOCATING;
 pub(crate) use crate::git::hardening::NO_FETCH_HEAD;
 pub(crate) use crate::git::hardening::PINS;
 pub(crate) use crate::git::hardening::REPOSITORY_ENVIRONMENT;
-pub(crate) use crate::git::hardening::harden;
+pub(crate) use crate::git::hardening::hardened;
+#[cfg(test)]
+pub(crate) use crate::git::hardening::invoking;
 pub(crate) use crate::git::hardening::native;
 pub(crate) use crate::git::hardening::refused;
 pub use crate::git::remote_head::RemoteHead;

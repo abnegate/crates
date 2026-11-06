@@ -1,14 +1,21 @@
 use super::*;
 use crate::commit_sha::CommitSha;
+use crate::pull_request::CheckRun;
 use crate::pull_request::ChecksOutcome;
+use crate::pull_request::Collected;
+use crate::pull_request::CommitStatus;
 use crate::pull_request::github_check_conclusion::GitHubCheckConclusion;
 use crate::pull_request::github_check_run::GitHubCheckRun;
+use crate::pull_request::github_check_run_record::GitHubCheckRunRecord;
 use crate::pull_request::github_check_runs::GitHubCheckRuns;
 use crate::pull_request::github_check_status::GitHubCheckStatus;
 use crate::pull_request::github_combined_status::GitHubCombinedStatus;
 use crate::pull_request::github_commit_status::GitHubCommitStatus;
+use crate::pull_request::github_commit_status_record::GitHubCommitStatusRecord;
 use crate::pull_request::github_status_state::GitHubStatusState;
 use std::collections::BTreeSet;
+use std::collections::HashSet;
+use std::hash::Hash;
 
 /// Conclusions that fail a commit.
 const FAILING_CONCLUSIONS: [GitHubCheckConclusion; 6] = [
@@ -44,8 +51,10 @@ impl PullRequestService {
     /// finished stale, with a conclusion this crate does not know or with
     /// none, a status pending or in a state this crate does not know, and a
     /// read that could not reach every row all make it pending. A walk
-    /// stopped at the page limit on a full page, or one that collected fewer
-    /// rows than GitHub counted, is never a success. A neutral or skipped run
+    /// stopped at the page limit on a full page, one that collected fewer
+    /// rows than GitHub counted, or one whose rows moved between pages, as
+    /// [`Collected::complete`] describes, is never a success. A neutral or
+    /// skipped run
     /// fails nothing and counts as passing. Nothing reporting at all is
     /// [`ChecksOutcome::Absent`], whose meaning a caller decides: a new
     /// repository has no checks yet, and that is not a pass.
@@ -59,45 +68,152 @@ impl PullRequestService {
         token: &SecretValue,
         commit: &CommitSha,
     ) -> PullRequestResult<ChecksOutcome> {
-        let commits = [
-            "repos",
-            repository.owner(),
-            repository.name(),
-            "commits",
-            commit.as_str(),
-        ];
-        let mut runs = self
-            .origin
-            .endpoint(&[&commits[..], &["check-runs"]].concat());
-        runs.query_pairs_mut().append_pair("filter", "latest");
-        let statuses = self.origin.endpoint(&[&commits[..], &["status"]].concat());
+        let runs = self.latest_check_runs(repository, commit)?;
+        let statuses = self.on_commit(repository, commit, "status")?;
 
-        let ((runs, every_run), (statuses, every_status)) = tokio::try_join!(
-            walk(self, &runs, token, |page: GitHubCheckRuns| {
-                (page.total_count, page.check_runs)
-            }),
-            walk(self, &statuses, token, |page: GitHubCombinedStatus| {
-                (page.total_count, page.statuses)
-            }),
+        let (runs, statuses) = tokio::try_join!(
+            walk(
+                self,
+                &runs,
+                token,
+                |page: GitHubCheckRuns| (page.total_count, page.check_runs),
+                |run: &GitHubCheckRun| run.id,
+                read_to_the_end,
+            ),
+            walk(
+                self,
+                &statuses,
+                token,
+                |page: GitHubCombinedStatus| (page.total_count, page.statuses),
+                |status: &GitHubCommitStatus| Some(status.context.clone()),
+                read_to_the_end,
+            ),
         )?;
 
-        Ok(fold(&runs, &statuses, every_run && every_status))
+        Ok(fold(
+            &runs.items,
+            &statuses.items,
+            runs.complete && statuses.complete,
+        ))
+    }
+
+    /// The latest attempt of every check run on `commit`, in the order GitHub
+    /// lists them, read page after page, and whether that is every run.
+    ///
+    /// The read stops at the tenth page, so a full tenth page, fewer runs
+    /// than GitHub counted, or a run listed twice because the runs moved
+    /// between pages, is [`Collected::complete`] `false`, never a shorter
+    /// list passed off as all of them; so is a read of more than one page
+    /// whose runs GitHub sent without their identifiers. A run GitHub sends without a
+    /// status, or a page longer than the 16 MiB this crate reads, is
+    /// [`PullRequestError::GitHubApi`], and a run on a commit this crate does
+    /// not accept is [`PullRequestError::Parse`]: never a partial list.
+    pub async fn collect_check_runs(
+        &self,
+        repository: &Repository,
+        token: &SecretValue,
+        commit: &CommitSha,
+    ) -> PullRequestResult<Collected<CheckRun>> {
+        let runs = walk(
+            self,
+            &self.latest_check_runs(repository, commit)?,
+            token,
+            |page: GitHubCheckRuns<GitHubCheckRunRecord>| (page.total_count, page.check_runs),
+            |run: &GitHubCheckRunRecord| run.id,
+            read_to_the_end,
+        )
+        .await?;
+        let items = runs
+            .items
+            .into_iter()
+            .map(CheckRun::try_from)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(Collected::new(items, runs.complete))
+    }
+
+    /// The latest status every context reported on `commit`, from its
+    /// combined status, in the order GitHub lists them, read page after page,
+    /// and whether that is every status.
+    ///
+    /// GitHub keeps only each context's latest status there, so a context
+    /// that failed and then passed reads as passed. The read stops at the
+    /// tenth page, so a full tenth page, fewer statuses than GitHub counted,
+    /// or a context listed twice because the statuses moved between pages,
+    /// is [`Collected::complete`] `false`. A status GitHub sends
+    /// without its context or state, or a page longer than the 16 MiB this
+    /// crate reads, is [`PullRequestError::GitHubApi`]: never a partial list.
+    pub async fn collect_statuses(
+        &self,
+        repository: &Repository,
+        token: &SecretValue,
+        commit: &CommitSha,
+    ) -> PullRequestResult<Collected<CommitStatus>> {
+        let statuses = walk(
+            self,
+            &self.on_commit(repository, commit, "status")?,
+            token,
+            |page: GitHubCombinedStatus<GitHubCommitStatusRecord>| {
+                (page.total_count, page.statuses)
+            },
+            |status: &GitHubCommitStatusRecord| Some(status.context.clone()),
+            read_to_the_end,
+        )
+        .await?;
+
+        Ok(Collected::new(
+            statuses.items.into_iter().map(CommitStatus::from).collect(),
+            statuses.complete,
+        ))
+    }
+
+    /// Where the latest attempt of each check run on `commit` in `repository`
+    /// is read.
+    fn latest_check_runs(
+        &self,
+        repository: &Repository,
+        commit: &CommitSha,
+    ) -> PullRequestResult<Url> {
+        let mut url = self.on_commit(repository, commit, "check-runs")?;
+        url.query_pairs_mut().append_pair("filter", "latest");
+        Ok(url)
+    }
+
+    /// Where `resource` on `commit` in `repository` is read.
+    fn on_commit(
+        &self,
+        repository: &Repository,
+        commit: &CommitSha,
+        resource: &str,
+    ) -> PullRequestResult<Url> {
+        self.repository_endpoint(repository, &["commits", commit.as_str(), resource])
     }
 }
 
 /// Every row a paged answer at `url` holds, page after page until a short
-/// one, and whether that is all of them.
+/// one or [`MAXIMUM_PAGES`], and whether that is all of them.
 ///
-/// It is not when the walk stopped at [`MAXIMUM_PAGES`] on a full page, or
-/// when it collected fewer rows than the largest count a page gave.
-async fn walk<P: DeserializeOwned, R>(
+/// `complete` judges that from the rows read, the largest count a page gave,
+/// and whether the walk ended on a short page. A walk is never complete when
+/// a row it reached was one `identity` names as already read, since the rows
+/// moved between pages and one may have moved past the pages read, nor when
+/// it read more than one page and `identity` names no row of it, since a
+/// move could not then be seen.
+pub(super) async fn walk<P: DeserializeOwned, R, K: Eq + Hash>(
     service: &PullRequestService,
     url: &Url,
     token: &SecretValue,
     rows: impl Fn(P) -> (Option<u64>, Vec<R>),
-) -> PullRequestResult<(Vec<R>, bool)> {
+    identity: fn(&R) -> Option<K>,
+    complete: fn(u64, Option<u64>, bool) -> bool,
+) -> PullRequestResult<Collected<R>> {
     let mut collected: Vec<R> = Vec::new();
-    let mut total: Option<u64> = None;
+    let mut counted: Option<u64> = None;
+    let mut ended = false;
+    let mut identified: HashSet<K> = HashSet::new();
+    let mut repeated = false;
+    let mut anonymous = false;
+    let mut pages = 0;
 
     for page in 1..=MAXIMUM_PAGES {
         let mut paged = url.clone();
@@ -106,18 +222,32 @@ async fn walk<P: DeserializeOwned, R>(
             .append_pair("per_page", &PAGE_SIZE.to_string())
             .append_pair("page", &page.to_string());
         let (count, batch) = rows(service.get(paged, token).await?);
-        total = total.max(count);
-        let short = batch.len() < PAGE_SIZE;
+        pages = page;
+        counted = counted.max(count);
+        ended = batch.len() < PAGE_SIZE;
+        for row in &batch {
+            match identity(row) {
+                Some(key) => repeated |= !identified.insert(key),
+                None => anonymous = true,
+            }
+        }
         collected.extend(batch);
-        if short {
-            let every = total.is_none_or(|counted| {
-                u64::try_from(collected.len()).is_ok_and(|read| counted <= read)
-            });
-            return Ok((collected, every));
+        if ended {
+            break;
         }
     }
 
-    Ok((collected, false))
+    let read = u64::try_from(collected.len()).unwrap_or(u64::MAX);
+    let shifted = repeated || (anonymous && pages > 1);
+    let every = !shifted && complete(read, counted, ended);
+    Ok(Collected::new(collected, every))
+}
+
+/// Whether a walk that read `read` rows reached every one: only when it
+/// `ended` on a short page, having read at least as many as GitHub
+/// `counted`, if it counted any.
+fn read_to_the_end(read: u64, counted: Option<u64>, ended: bool) -> bool {
+    ended && counted.is_none_or(|counted| counted <= read)
 }
 
 /// What the runs and statuses read add up to: every failure, named, ahead of
@@ -163,9 +293,11 @@ fn concluded(run: &GitHubCheckRun, conclusions: &[GitHubCheckConclusion]) -> boo
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parse_error::ParseError;
     use crate::pull_request::service::fixtures::Expected;
     use crate::pull_request::service::fixtures::commit;
     use crate::pull_request::service::fixtures::project;
+    use crate::pull_request::service::fixtures::query_is;
     use crate::pull_request::service::fixtures::stand_in;
     use crate::pull_request::service::fixtures::token;
     use serde_json::Value;
@@ -179,6 +311,8 @@ mod tests {
     use wiremock::matchers::query_param;
     use wiremock::matchers::query_param_is_missing;
 
+    const SENTINEL: &str = "RAW-SENTINEL";
+
     fn runs(sha: &CommitSha) -> String {
         format!("/repos/acme/project/commits/{sha}/check-runs")
     }
@@ -191,13 +325,31 @@ mod tests {
         ResponseTemplate::new(200).set_body_json(body)
     }
 
-    /// `count` runs that finished and passed, each under its own name.
-    fn passing(count: usize) -> Vec<Value> {
-        (0..count)
-            .map(|index| {
-                json!({ "name": format!("check-{index}"), "status": "completed", "conclusion": "success" })
+    /// `count` runs that finished and passed, numbered on from `first`, each
+    /// under its own name.
+    fn passing(first: usize, count: usize) -> Vec<Value> {
+        (first..first + count)
+            .map(|id| {
+                json!({ "id": id, "name": format!("check-{id}"), "status": "completed", "conclusion": "success" })
             })
             .collect()
+    }
+
+    /// Ten full pages of check runs at `route`, page `n` holding what `rows`
+    /// gives for the runs numbered on from `(n - 1) * PAGE_SIZE`, each page
+    /// asked for once.
+    async fn full_pages(server: &MockServer, route: String, rows: impl Fn(usize) -> Vec<Value>) {
+        for number in 1..=MAXIMUM_PAGES {
+            Mock::given(method("GET"))
+                .and(path(route.clone()))
+                .and(query_param("page", number.to_string()))
+                .respond_with(answer(
+                    json!({ "check_runs": rows((number - 1) * PAGE_SIZE) }),
+                ))
+                .expect(1)
+                .mount(server)
+                .await;
+        }
     }
 
     async fn answering(server: &MockServer, route: String, body: Value) {
@@ -255,13 +407,21 @@ mod tests {
         let sha = commit('3');
         Mock::given(method("GET"))
             .and(path(runs(&sha)))
-            .and(query_param("page", "1"))
-            .respond_with(answer(json!({ "check_runs": passing(PAGE_SIZE) })))
+            .and(query_is(&[
+                ("filter", "latest"),
+                ("per_page", "100"),
+                ("page", "1"),
+            ]))
+            .respond_with(answer(json!({ "check_runs": passing(0, PAGE_SIZE) })))
             .mount(&server)
             .await;
         Mock::given(method("GET"))
             .and(path(runs(&sha)))
-            .and(query_param("page", "2"))
+            .and(query_is(&[
+                ("filter", "latest"),
+                ("per_page", "100"),
+                ("page", "2"),
+            ]))
             .respond_with(answer(json!({
                 "check_runs": [{ "name": "deploy", "status": "completed", "conclusion": "failure" }]
             })))
@@ -325,8 +485,7 @@ mod tests {
         .await;
         Mock::given(method("GET"))
             .and(path(statuses(&sha)))
-            .and(query_param("per_page", "100"))
-            .and(query_param("page", "1"))
+            .and(query_is(&[("per_page", "100"), ("page", "1")]))
             .respond_with(answer(json!({
                 "state": "failure",
                 "total_count": PAGE_SIZE + 1,
@@ -337,8 +496,7 @@ mod tests {
             .await;
         Mock::given(method("GET"))
             .and(path(statuses(&sha)))
-            .and(query_param("per_page", "100"))
-            .and(query_param("page", "2"))
+            .and(query_is(&[("per_page", "100"), ("page", "2")]))
             .respond_with(answer(json!({
                 "state": "failure",
                 "total_count": PAGE_SIZE + 1,
@@ -364,15 +522,10 @@ mod tests {
         let statuses_short = commit('8');
         let unsent = commit('9');
 
-        Mock::given(method("GET"))
-            .and(path(runs(&capped)))
-            .respond_with(answer(json!({ "check_runs": passing(PAGE_SIZE) })))
-            .expect(u64::try_from(MAXIMUM_PAGES).unwrap())
-            .mount(&server)
-            .await;
+        full_pages(&server, runs(&capped), |first| passing(first, PAGE_SIZE)).await;
         answering(&server, statuses(&capped), json!({ "statuses": [] })).await;
 
-        let mut timed_out = passing(PAGE_SIZE - 1);
+        let mut timed_out = passing(0, PAGE_SIZE - 1);
         timed_out
             .push(json!({ "name": "deploy", "status": "completed", "conclusion": "timed_out" }));
         answering(&server, runs(&failing), json!({ "check_runs": timed_out })).await;
@@ -381,7 +534,7 @@ mod tests {
         answering(
             &server,
             runs(&runs_short),
-            json!({ "total_count": 3, "check_runs": passing(2) }),
+            json!({ "total_count": 3, "check_runs": passing(0, 2) }),
         )
         .await;
         answering(
@@ -394,7 +547,7 @@ mod tests {
         answering(
             &server,
             runs(&statuses_short),
-            json!({ "total_count": 1, "check_runs": passing(1) }),
+            json!({ "total_count": 1, "check_runs": passing(0, 1) }),
         )
         .await;
         answering(
@@ -497,9 +650,11 @@ mod tests {
         Mock::given(method("GET"))
             .and(path(runs(&sha)))
             .and(header("authorization", "Bearer token"))
-            .and(query_param("filter", "latest"))
-            .and(query_param("per_page", "100"))
-            .and(query_param("page", "1"))
+            .and(query_is(&[
+                ("filter", "latest"),
+                ("per_page", "100"),
+                ("page", "1"),
+            ]))
             .respond_with(answer(json!({
                 "total_count": 1,
                 "check_runs": [{ "name": "test", "status": "completed", "conclusion": "success" }],
@@ -510,9 +665,7 @@ mod tests {
         Mock::given(method("GET"))
             .and(path(statuses(&sha)))
             .and(header("authorization", "Bearer token"))
-            .and(query_param_is_missing("filter"))
-            .and(query_param("per_page", "100"))
-            .and(query_param("page", "1"))
+            .and(query_is(&[("per_page", "100"), ("page", "1")]))
             .respond_with(answer(json!({ "total_count": 0, "statuses": [] })))
             .expect(1)
             .mount(&server)
@@ -531,7 +684,7 @@ mod tests {
         let sha = commit('d');
         Mock::given(method("GET"))
             .and(path(runs(&sha)))
-            .respond_with(answer(json!({ "check_runs": passing(3) })))
+            .respond_with(answer(json!({ "check_runs": passing(0, 3) })))
             .expect(1)
             .mount(&server)
             .await;
@@ -634,7 +787,7 @@ mod tests {
     /// A check-runs page with no runs, padded to exactly `length` bytes with a
     /// sentinel no error may repeat.
     fn padded(length: usize) -> String {
-        let opening = r#"{"total_count":0,"check_runs":[],"padding":"RAW-SENTINEL"#;
+        let opening = format!(r#"{{"total_count":0,"check_runs":[],"padding":"{SENTINEL}"#);
         let closing = r#""}"#;
         let padding = "x".repeat(length - opening.len() - closing.len());
         format!("{opening}{padding}{closing}")
@@ -668,7 +821,7 @@ mod tests {
             matches!(read, Err(PullRequestError::GitHubApi(ref text)) if text == OVERSIZED),
             "a page too long to read is not an empty one: {read:?}"
         );
-        assert!(!format!("{read:?}").contains("RAW-SENTINEL"), "{read:?}");
+        assert!(!format!("{read:?}").contains(SENTINEL), "{read:?}");
     }
 
     #[tokio::test]
@@ -695,6 +848,531 @@ mod tests {
             outcome(&server, &sha).await,
             ChecksOutcome::Pending,
             "a run GitHub marked stale never said it passed"
+        );
+    }
+
+    /// `count` runs on `sha` that finished and passed, numbered on from
+    /// `first`, each under its own name.
+    fn passing_on(sha: &CommitSha, first: usize, count: usize) -> Vec<Value> {
+        (first..first + count)
+            .map(|id| {
+                json!({
+                    "id": id,
+                    "name": format!("check-{id}"),
+                    "head_sha": sha.as_str(),
+                    "status": "completed",
+                    "conclusion": "success",
+                })
+            })
+            .collect()
+    }
+
+    async fn check_runs(server: &MockServer, sha: &CommitSha) -> Collected<CheckRun> {
+        let service = stand_in(server).await;
+        service
+            .collect_check_runs(&project(&service), &token(), sha)
+            .await
+            .unwrap()
+    }
+
+    async fn commit_statuses(server: &MockServer, sha: &CommitSha) -> Collected<CommitStatus> {
+        let service = stand_in(server).await;
+        service
+            .collect_statuses(&project(&service), &token(), sha)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_failed_run_past_the_first_page_is_returned() {
+        let server = MockServer::start().await;
+        let sha = commit('1');
+        Mock::given(method("GET"))
+            .and(path(runs(&sha)))
+            .and(header("authorization", "Bearer token"))
+            .and(query_is(&[
+                ("filter", "latest"),
+                ("per_page", "100"),
+                ("page", "1"),
+            ]))
+            .respond_with(answer(
+                json!({ "check_runs": passing_on(&sha, 0, PAGE_SIZE) }),
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(runs(&sha)))
+            .and(query_is(&[
+                ("filter", "latest"),
+                ("per_page", "100"),
+                ("page", "2"),
+            ]))
+            .respond_with(answer(json!({
+                "check_runs": [{
+                    "id": 900,
+                    "name": "deploy",
+                    "head_sha": sha.as_str(),
+                    "status": "completed",
+                    "conclusion": "failure",
+                }]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let read = check_runs(&server, &sha).await;
+
+        assert_eq!(read.items.len(), PAGE_SIZE + 1);
+        assert_eq!(
+            read.items.last(),
+            Some(
+                &CheckRun::new("completed")
+                    .with_id(900)
+                    .with_name("deploy")
+                    .with_head_sha(sha.clone())
+                    .with_conclusion("failure")
+            ),
+            "the failure on the second page is read"
+        );
+        assert!(
+            read.complete,
+            "a short second page ends the walk with every run"
+        );
+    }
+
+    #[tokio::test]
+    async fn fewer_runs_than_github_counted_are_incomplete() {
+        let server = MockServer::start().await;
+        let sha = commit('2');
+        let counted = 150;
+        Mock::given(method("GET"))
+            .and(path(runs(&sha)))
+            .and(query_is(&[
+                ("filter", "latest"),
+                ("per_page", "100"),
+                ("page", "1"),
+            ]))
+            .respond_with(answer(json!({
+                "total_count": counted,
+                "check_runs": passing_on(&sha, 0, PAGE_SIZE),
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(runs(&sha)))
+            .and(query_is(&[
+                ("filter", "latest"),
+                ("per_page", "100"),
+                ("page", "2"),
+            ]))
+            .respond_with(answer(json!({
+                "total_count": counted,
+                "check_runs": passing_on(&sha, PAGE_SIZE, 10),
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let read = check_runs(&server, &sha).await;
+
+        assert_eq!(read.items.len(), PAGE_SIZE + 10);
+        assert!(
+            !read.complete,
+            "110 runs read of 150 counted are not every run"
+        );
+    }
+
+    #[tokio::test]
+    async fn runs_stopped_at_the_page_limit_on_a_full_page_are_incomplete() {
+        let server = MockServer::start().await;
+        let sha = commit('3');
+        full_pages(&server, runs(&sha), |first| {
+            passing_on(&sha, first, PAGE_SIZE)
+        })
+        .await;
+
+        let read = check_runs(&server, &sha).await;
+
+        assert_eq!(read.items.len(), PAGE_SIZE * MAXIMUM_PAGES);
+        assert!(
+            !read.complete,
+            "a walk stopped on a full tenth page may have missed a run"
+        );
+    }
+
+    #[tokio::test]
+    async fn every_field_of_a_run_is_read_and_a_missing_head_sha_is_none() {
+        let server = MockServer::start().await;
+        let sha = commit('4');
+        answering(
+            &server,
+            runs(&sha),
+            json!({
+                "total_count": 2,
+                "check_runs": [
+                    {
+                        "id": 7,
+                        "name": "build",
+                        "head_sha": sha.as_str().to_ascii_uppercase(),
+                        "status": "completed",
+                        "conclusion": "success",
+                        "html_url": "https://github.com/acme/project/runs/7",
+                        "details_url": "https://ci.example/7",
+                        "started_at": "2026-09-28T02:51:09Z",
+                        "completed_at": "2026-09-28T02:52:09Z",
+                    },
+                    { "status": "in_progress", "conclusion": null },
+                ],
+            }),
+        )
+        .await;
+
+        let read = check_runs(&server, &sha).await;
+
+        assert_eq!(
+            read,
+            Collected::new(
+                vec![
+                    CheckRun::new("completed")
+                        .with_id(7)
+                        .with_name("build")
+                        .with_head_sha(sha.clone())
+                        .with_conclusion("success")
+                        .with_url("https://github.com/acme/project/runs/7")
+                        .with_details_url("https://ci.example/7")
+                        .with_started_at("2026-09-28T02:51:09Z")
+                        .with_completed_at("2026-09-28T02:52:09Z"),
+                    CheckRun::new("in_progress"),
+                ],
+                true,
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn a_run_this_crate_cannot_hold_fails_the_whole_read() {
+        let refusals: [(Value, Expected); 2] = [
+            (
+                json!({ "name": "build", "head_sha": "HEAD", "status": "completed" }),
+                |failure| matches!(failure, PullRequestError::Parse(ParseError::CommitSha(value)) if value == "HEAD"),
+            ),
+            (
+                json!({ "name": "build", "conclusion": "success" }),
+                |failure| matches!(failure, PullRequestError::GitHubApi(text) if text == UNREADABLE),
+            ),
+        ];
+
+        for (row, expected) in refusals {
+            let server = MockServer::start().await;
+            let sha = commit('5');
+            answering(&server, runs(&sha), json!({ "check_runs": [row] })).await;
+            let service = stand_in(&server).await;
+
+            let read = service
+                .collect_check_runs(&project(&service), &token(), &sha)
+                .await;
+
+            assert!(read.as_ref().is_err_and(expected), "{row}: {read:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn statuses_are_read_from_the_combined_status_page_after_page() {
+        let server = MockServer::start().await;
+        let sha = commit('6');
+        let first: Vec<Value> = (0..PAGE_SIZE)
+            .map(|index| json!({ "context": format!("ci/{index}"), "state": "success" }))
+            .collect();
+        Mock::given(method("GET"))
+            .and(path(format!("/repos/acme/project/commits/{sha}/statuses")))
+            .respond_with(answer(json!([])))
+            .expect(0)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/repos/acme/project/commits/{sha}/status")))
+            .and(header("authorization", "Bearer token"))
+            .and(query_is(&[("per_page", "100"), ("page", "1")]))
+            .respond_with(answer(json!({
+                "state": "failure",
+                "total_count": PAGE_SIZE + 1,
+                "statuses": first,
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/repos/acme/project/commits/{sha}/status")))
+            .and(query_is(&[("per_page", "100"), ("page", "2")]))
+            .respond_with(answer(json!({
+                "state": "failure",
+                "total_count": PAGE_SIZE + 1,
+                "statuses": [{ "context": "ci/deploy", "state": "failure" }],
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let read = commit_statuses(&server, &sha).await;
+
+        assert_eq!(read.items.len(), PAGE_SIZE + 1);
+        assert_eq!(
+            read.items.last(),
+            Some(&CommitStatus::new("ci/deploy", "failure")),
+            "the status on the second page is read"
+        );
+        assert!(read.complete);
+    }
+
+    #[tokio::test]
+    async fn statuses_come_back_as_github_listed_them() {
+        let server = MockServer::start().await;
+        let sha = commit('7');
+        answering(
+            &server,
+            statuses(&sha),
+            json!({
+                "state": "pending",
+                "total_count": 3,
+                "statuses": [
+                    {
+                        "context": "ci/test",
+                        "state": "pending",
+                        "description": "Running",
+                        "target_url": "https://ci.example/test",
+                        "created_at": "2026-09-28T02:51:09Z",
+                    },
+                    { "context": "ci/deploy", "state": "error", "description": null },
+                    { "context": "ci/build", "state": "success" },
+                ],
+            }),
+        )
+        .await;
+
+        let read = commit_statuses(&server, &sha).await;
+
+        assert_eq!(
+            read,
+            Collected::new(
+                vec![
+                    CommitStatus::new("ci/test", "pending")
+                        .with_description("Running")
+                        .with_target_url("https://ci.example/test")
+                        .with_created_at("2026-09-28T02:51:09Z"),
+                    CommitStatus::new("ci/deploy", "error"),
+                    CommitStatus::new("ci/build", "success"),
+                ],
+                true,
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn fewer_statuses_than_github_counted_are_incomplete() {
+        let server = MockServer::start().await;
+        let sha = commit('8');
+        answering(
+            &server,
+            statuses(&sha),
+            json!({
+                "total_count": 2,
+                "statuses": [{ "context": "ci/deploy", "state": "success" }],
+            }),
+        )
+        .await;
+
+        let read = commit_statuses(&server, &sha).await;
+
+        assert_eq!(read.items, vec![CommitStatus::new("ci/deploy", "success")]);
+        assert!(
+            !read.complete,
+            "one status read of two counted is not every status"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_status_without_its_context_or_state_fails_the_whole_read() {
+        let whole = json!({
+            "context": "ci/deploy",
+            "state": "success",
+            "description": SENTINEL,
+        });
+        let mut broken: Vec<Value> = ["context", "state"]
+            .iter()
+            .map(|required| {
+                let mut row = whole.clone();
+                row.as_object_mut().unwrap().remove(*required);
+                row
+            })
+            .collect();
+        for (field, spoiled) in [
+            ("context", Value::Null),
+            ("context", json!(7)),
+            ("state", Value::Null),
+            ("state", json!(["success"])),
+        ] {
+            let mut row = whole.clone();
+            row[field] = spoiled;
+            broken.push(row);
+        }
+        broken.push(json!(SENTINEL));
+
+        for row in broken {
+            let server = MockServer::start().await;
+            let sha = commit('9');
+            Mock::given(method("GET"))
+                .and(path(statuses(&sha)))
+                .and(query_is(&[("per_page", "100"), ("page", "1")]))
+                .respond_with(answer(json!({
+                    "total_count": 2,
+                    "statuses": [{ "context": "ci/build", "state": "success" }, row],
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let service = stand_in(&server).await;
+
+            let failure = service
+                .collect_statuses(&project(&service), &token(), &sha)
+                .await
+                .unwrap_err();
+
+            assert!(
+                matches!(failure, PullRequestError::GitHubApi(ref text) if text == UNREADABLE),
+                "{row}: {failure:?}"
+            );
+            assert!(!format!("{failure:?}").contains(SENTINEL), "{failure:?}");
+        }
+    }
+
+    /// Two pages at `route` that each say GitHub counted 150 rows: a full
+    /// first page, and a second of fifty, so the walk reads as many rows as
+    /// were counted.
+    async fn two_pages(
+        server: &MockServer,
+        route: String,
+        key: &str,
+        first: Vec<Value>,
+        second: Vec<Value>,
+    ) {
+        for (number, rows) in [("1", first), ("2", second)] {
+            let mut body = json!({ "total_count": PAGE_SIZE + 50 });
+            body[key] = Value::Array(rows);
+            Mock::given(method("GET"))
+                .and(path(route.clone()))
+                .and(query_param("page", number))
+                .respond_with(answer(body))
+                .expect(1)
+                .mount(server)
+                .await;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_run_listed_on_two_pages_is_never_complete() {
+        let server = MockServer::start().await;
+        let sha = commit('a');
+        two_pages(
+            &server,
+            runs(&sha),
+            "check_runs",
+            passing_on(&sha, 0, PAGE_SIZE),
+            passing_on(&sha, PAGE_SIZE - 1, 50),
+        )
+        .await;
+
+        let read = check_runs(&server, &sha).await;
+
+        assert_eq!(read.items.len(), PAGE_SIZE + 50);
+        assert!(
+            !read.complete,
+            "a run listed twice moved between pages, and another may have moved past them"
+        );
+    }
+
+    #[tokio::test]
+    async fn runs_without_identifiers_past_one_page_are_never_complete() {
+        let server = MockServer::start().await;
+        let sha = commit('b');
+        let anonymous = |first, count| {
+            passing_on(&sha, first, count)
+                .into_iter()
+                .map(|mut run| {
+                    run.as_object_mut().unwrap().remove("id");
+                    run
+                })
+                .collect::<Vec<Value>>()
+        };
+        two_pages(
+            &server,
+            runs(&sha),
+            "check_runs",
+            anonymous(0, PAGE_SIZE),
+            anonymous(PAGE_SIZE, 50),
+        )
+        .await;
+
+        let read = check_runs(&server, &sha).await;
+
+        assert_eq!(read.items.len(), PAGE_SIZE + 50);
+        assert!(
+            !read.complete,
+            "runs that cannot be told apart cannot show that they moved between pages"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_run_listed_on_two_pages_keeps_the_commit_pending() {
+        let server = MockServer::start().await;
+        let sha = commit('c');
+        two_pages(
+            &server,
+            runs(&sha),
+            "check_runs",
+            passing(0, PAGE_SIZE),
+            passing(PAGE_SIZE - 1, 50),
+        )
+        .await;
+        answering(
+            &server,
+            statuses(&sha),
+            json!({ "total_count": 0, "statuses": [] }),
+        )
+        .await;
+
+        assert_eq!(
+            outcome(&server, &sha).await,
+            ChecksOutcome::Pending,
+            "a run that moved between pages may have pushed a failure past them"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_context_listed_on_two_pages_is_never_complete() {
+        let server = MockServer::start().await;
+        let sha = commit('d');
+        let reported = |first: usize, count: usize| {
+            (first..first + count)
+                .map(|index| json!({ "context": format!("ci/{index}"), "state": "success" }))
+                .collect::<Vec<Value>>()
+        };
+        two_pages(
+            &server,
+            statuses(&sha),
+            "statuses",
+            reported(0, PAGE_SIZE),
+            reported(PAGE_SIZE - 1, 50),
+        )
+        .await;
+
+        let read = commit_statuses(&server, &sha).await;
+
+        assert_eq!(read.items.len(), PAGE_SIZE + 50);
+        assert!(
+            !read.complete,
+            "a context listed twice moved between pages, and another may have moved past them"
         );
     }
 }

@@ -17,60 +17,115 @@
 //! origin serves.
 //!
 //! Every URL a call reaches is built from numbers and validated values: a
-//! [`Repository`] from [`PullRequestService::parse_github_url`], a
-//! [`PullRequestReference`] from [`PullRequestService::pull_request`], a
-//! [`crate::BranchName`], a [`crate::CommitSha`], a [`RepositoryPath`], and a
-//! new repository's owner held to a [`Repository`]'s rules. Each travels
-//! percent-encoded under the configured origin, as path segments or as a query
-//! value: the owner and head branch
+//! [`Repository`] from [`PullRequestService::parse_github_url`] or
+//! [`PullRequestService::repository_on`], a [`PullRequestReference`] from
+//! [`PullRequestService::pull_request`], an [`IssueReference`], a
+//! [`crate::BranchName`], a [`crate::CommitSha`], a [`crate::ObjectId`], a
+//! [`RepositoryPath`], and a new repository's owner held to a
+//! [`Repository`]'s rules. Each travels percent-encoded under the configured
+//! origin, as path segments or as a query value, and a segment that is
+//! empty, `.` or `..` is refused before anything is sent.
+//!
+//! Three values a caller passes as plain text are held to rules before they
+//! travel:
+//!
+//! - the ref [`PullRequestService::resolve_commit`] resolves, held to a
+//!   [`crate::BranchName`]'s rules unless it is `HEAD`, travels as one path
+//!   segment, a `/` in it sent as `%2F`;
+//! - the tag [`PullRequestService::fetch_release`] reads, held to the same
+//!   rules, travels as one path segment the same way;
+//! - the fork owner [`PullRequestService::find_pull_request`] and
+//!   [`PullRequestService::create_pull_request_from`] take, held to a
+//!   [`Repository`] owner's rules, travels with the head branch as the
+//!   `owner:branch` of the `head` query value or JSON field.
+//!
+//! Of the rest, the owner and head branch
 //! [`PullRequestService::pull_request_exists_for_branch`] looks for travel
-//! together as `head`, and the commit [`PullRequestService::fetch_file`] reads
-//! at travels as `ref`. So no value, not even a path someone else chose,
-//! reaches another endpoint or adds a parameter. Everything else a call sends,
-//! such as a GraphQL node id, a title or a body, travels in its JSON, never in
-//! its URL. What GitHub answers is held to the same types: a branch or commit
-//! this crate does not accept is [`PullRequestError::Parse`], never read as
-//! something else.
+//! together as `head`, and the commit [`PullRequestService::fetch_file`]
+//! reads at travels as `ref`. So no value, not even a path someone else
+//! chose, reaches another endpoint or adds a parameter. Everything else a
+//! call sends, such as a GraphQL node id, a title or a body, travels in its
+//! JSON, never in its URL. What GitHub answers is held to the same types: a
+//! branch or commit this crate does not accept is
+//! [`PullRequestError::Parse`], never read as something else.
 //!
 //! [`PullRequestService::fetch_diff`] and [`PullRequestService::fetch_file`]
 //! read no more of the answer than the byte limit their caller passes, and
 //! return an [`Excerpt`] that is never longer than that limit, never ends inside
 //! a character, and says in [`Excerpt::truncated`] whether the text went on;
 //! displayed, a cut excerpt ends with [`Excerpt::MARKER`].
+//!
+//! [`WebhookSignature`] checks that a webhook delivery was signed with the
+//! secret its webhook was registered with, before anything reads it.
+//!
+//! The `github-app` feature adds what authenticating as a GitHub App
+//! installation takes, rather than with a personal access token:
+//! `ApplicationClaims` signs the JWT that proves the caller is the App,
+//! `InstallationIssuer` trades it for an installation access token, and
+//! `TokenCache` holds each installation's token until it comes within five
+//! minutes of expiring.
 
+#[cfg(feature = "github-app")]
+mod application;
 mod auto_merge;
 mod automation;
+mod blob;
 mod changed_file;
+mod check_run;
 mod checks_outcome;
+mod collected;
 mod comment_request;
+mod commit_status;
 mod create_request;
 mod created;
 mod created_repository;
+mod deployment;
+mod deployment_status;
 mod description;
 mod detail;
 mod enabled_auto_merge;
 mod error;
 mod excerpt;
 mod file_status;
+mod found;
 mod github_branch;
 mod github_check_conclusion;
 mod github_check_run;
+mod github_check_run_record;
 mod github_check_runs;
 mod github_check_status;
 mod github_combined_status;
 mod github_comment;
+mod github_commit;
 mod github_commit_status;
+mod github_commit_status_record;
 mod github_created_repository;
+mod github_deployment;
+mod github_deployment_status;
 mod github_identified;
+mod github_issue;
 mod github_issue_comment;
+mod github_issue_pull_request;
+mod github_issue_request;
+mod github_issue_row;
+mod github_label;
+mod github_listed_branch;
+mod github_listed_pull;
 mod github_merge;
 mod github_pull;
 mod github_pull_request;
 mod github_pull_request_detail;
 mod github_refusal;
+mod github_release;
+mod github_repository_name;
 mod github_review;
 mod github_status_state;
+mod github_tree;
+mod github_tree_entry;
 mod github_user;
+mod github_workflow_job;
+mod github_workflow_run;
+mod github_workflow_runs;
 mod graphql_actor;
 mod graphql_auto_merge_request;
 mod graphql_automated_repository;
@@ -86,7 +141,15 @@ mod graphql_request;
 mod graphql_response;
 mod graphql_review_thread;
 mod graphql_thread_comment;
+mod issue;
 mod issue_comment;
+mod issue_reference;
+mod issue_state;
+mod issue_update;
+mod job_log;
+mod job_log_error;
+mod label;
+mod listed;
 mod merge_method;
 mod merge_request;
 mod merge_settings;
@@ -94,8 +157,10 @@ mod mergeability;
 mod mergeable_state;
 mod merged;
 mod origin;
+mod page;
 mod reception;
 mod reference;
+mod release;
 mod repository;
 mod repository_detail;
 mod repository_path;
@@ -108,18 +173,46 @@ mod review_tally;
 mod review_thread_record;
 mod service;
 mod state;
+mod state_filter;
 mod submitted_review;
 mod thread_comment;
+mod tree;
+mod tree_entry;
+mod tree_entry_kind;
 mod webhook_configuration;
 mod webhook_event;
 mod webhook_request;
+mod webhook_signature;
+mod workflow_job;
+mod workflow_run;
+mod workflow_run_filter;
 
+#[cfg(feature = "github-app")]
+pub use crate::pull_request::application::ApplicationClaims;
+#[cfg(feature = "github-app")]
+pub use crate::pull_request::application::ApplicationError;
+#[cfg(feature = "github-app")]
+pub use crate::pull_request::application::ApplicationId;
+#[cfg(feature = "github-app")]
+pub use crate::pull_request::application::InstallationId;
+#[cfg(feature = "github-app")]
+pub use crate::pull_request::application::InstallationIssuer;
+#[cfg(feature = "github-app")]
+pub use crate::pull_request::application::InstallationToken;
+#[cfg(feature = "github-app")]
+pub use crate::pull_request::application::TokenCache;
 pub use crate::pull_request::auto_merge::AutoMerge;
 pub use crate::pull_request::automation::PullRequestAutomation;
+pub use crate::pull_request::blob::Blob;
 pub use crate::pull_request::changed_file::ChangedFile;
+pub use crate::pull_request::check_run::CheckRun;
 pub use crate::pull_request::checks_outcome::ChecksOutcome;
+pub use crate::pull_request::collected::Collected;
+pub use crate::pull_request::commit_status::CommitStatus;
 pub use crate::pull_request::created::CreatedPullRequest;
 pub use crate::pull_request::created_repository::CreatedRepository;
+pub use crate::pull_request::deployment::Deployment;
+pub use crate::pull_request::deployment_status::DeploymentStatus;
 pub use crate::pull_request::description::Description;
 pub use crate::pull_request::detail::PullRequestDetail;
 pub use crate::pull_request::enabled_auto_merge::EnabledAutoMerge;
@@ -127,17 +220,28 @@ pub use crate::pull_request::error::PullRequestError;
 pub use crate::pull_request::error::PullRequestResult;
 pub use crate::pull_request::excerpt::Excerpt;
 pub use crate::pull_request::file_status::FileStatus;
+pub use crate::pull_request::found::FoundPullRequest;
 pub use crate::pull_request::github_branch::GitHubBranch;
 pub use crate::pull_request::github_pull_request::GitHubPullRequest;
+pub use crate::pull_request::issue::Issue;
 pub use crate::pull_request::issue_comment::IssueComment;
+pub use crate::pull_request::issue_reference::IssueReference;
+pub use crate::pull_request::issue_state::IssueState;
+pub use crate::pull_request::issue_update::IssueUpdate;
+pub use crate::pull_request::job_log::JobLog;
+pub use crate::pull_request::job_log_error::JobLogError;
+pub use crate::pull_request::label::Label;
+pub use crate::pull_request::listed::ListedPullRequest;
 pub use crate::pull_request::merge_method::MergeMethod;
 pub use crate::pull_request::merge_settings::MergeSettings;
 pub use crate::pull_request::mergeability::Mergeability;
 pub use crate::pull_request::mergeable_state::MergeableState;
 pub use crate::pull_request::merged::MergedPullRequest;
+pub use crate::pull_request::page::Page;
 pub use crate::pull_request::reception::PullRequestReception;
 pub use crate::pull_request::reception::minutes_between;
 pub use crate::pull_request::reference::PullRequestReference;
+pub use crate::pull_request::release::Release;
 pub use crate::pull_request::repository::Repository;
 pub use crate::pull_request::repository_path::RepositoryPath;
 pub use crate::pull_request::review_event::ReviewEvent;
@@ -148,6 +252,14 @@ pub use crate::pull_request::review_tally::tally;
 pub use crate::pull_request::review_thread_record::ReviewThreadRecord;
 pub use crate::pull_request::service::PullRequestService;
 pub use crate::pull_request::state::PullRequestState;
+pub use crate::pull_request::state_filter::StateFilter;
 pub use crate::pull_request::submitted_review::SubmittedReview;
 pub use crate::pull_request::thread_comment::ThreadComment;
+pub use crate::pull_request::tree::Tree;
+pub use crate::pull_request::tree_entry::TreeEntry;
+pub use crate::pull_request::tree_entry_kind::TreeEntryKind;
 pub use crate::pull_request::webhook_event::WebhookEvent;
+pub use crate::pull_request::webhook_signature::WebhookSignature;
+pub use crate::pull_request::workflow_job::WorkflowJob;
+pub use crate::pull_request::workflow_run::WorkflowRun;
+pub use crate::pull_request::workflow_run_filter::WorkflowRunFilter;

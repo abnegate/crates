@@ -1,9 +1,36 @@
 use super::*;
 use crate::commit_sha::CommitSha;
+use tokio::io::AsyncReadExt;
+use tokio::io::AsyncWriteExt;
+use tokio::net::TcpListener;
+use wiremock::Match;
 use wiremock::MockServer;
+use wiremock::Request;
 
 /// Whether an error is the one a refusal has to be reported as.
 pub(super) type Expected = fn(&PullRequestError) -> bool;
+
+/// Matches a request whose query holds exactly these parameters, each once,
+/// in any order, and nothing else.
+pub(super) struct ExactQuery(Vec<(String, String)>);
+
+impl Match for ExactQuery {
+    fn matches(&self, request: &Request) -> bool {
+        let mut sent: Vec<(String, String)> = request.url.query_pairs().into_owned().collect();
+        sent.sort();
+        sent == self.0
+    }
+}
+
+/// A matcher for a request whose query is `pairs` and nothing else.
+pub(super) fn query_is(pairs: &[(&str, &str)]) -> ExactQuery {
+    let mut expected: Vec<(String, String)> = pairs
+        .iter()
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect();
+    expected.sort();
+    ExactQuery(expected)
+}
 
 pub(super) fn token() -> SecretValue {
     SecretValue::new("token")
@@ -27,4 +54,33 @@ pub(super) fn project(service: &PullRequestService) -> Repository {
 
 pub(super) fn commit(digit: char) -> CommitSha {
     CommitSha::parse(&digit.to_string().repeat(40)).unwrap()
+}
+
+/// A stand-in server on a loopback port that answers each request with
+/// what `answer` gives for its request line, and then hangs up; an empty
+/// answer hangs up without one.
+pub(super) async fn hanging_up(answer: fn(&str) -> &'static str) -> PullRequestService {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("a loopback port to listen on");
+    let address = listener
+        .local_addr()
+        .expect("the address the listener is bound to");
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            let mut request = Vec::new();
+            let mut buffer = [0; 1024];
+            while !request.windows(4).any(|end| end == b"\r\n\r\n") {
+                let read = stream.read(&mut buffer).await.unwrap_or_default();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+            }
+            let head = String::from_utf8_lossy(&request);
+            let line = head.lines().next().unwrap_or_default().to_string();
+            let _ = stream.write_all(answer(&line).as_bytes()).await;
+        }
+    });
+    PullRequestService::standing_in_for("github.com", &format!("http://{address}")).unwrap()
 }
