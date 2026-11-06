@@ -15,6 +15,7 @@ use tempfile::TempDir;
 
 use crate::image::Image;
 use crate::image::ImageError;
+use crate::image::encoded_length;
 use crate::kind::AgentKind;
 use crate::transcript;
 use crate::transcript::Part;
@@ -87,7 +88,10 @@ impl Input {
 /// An earlier image Claude cannot take is noted rather than sent: one the
 /// API would refuse fails every turn that resends the history, and a link may
 /// have died since it was attached. Images are kept newest first until one
-/// passes the request's limits, and every older one is noted.
+/// passes the request's limits, and every older one is noted. An image is
+/// decoded only once it is known to fit: one past the request's images or
+/// room, or whose base64 alone is larger than one image may be, is refused
+/// unread.
 fn claude(parts: &[Part], limits: ImageLimits) -> Result<String, InputError> {
     let mut room = limits.request_bytes.saturating_sub(text_bytes(parts));
     let mut allowed = limits.images;
@@ -98,14 +102,21 @@ fn claude(parts: &[Part], limits: ImageLimits) -> Result<String, InputError> {
         let Part::Image { url, current } = part else {
             continue;
         };
-        images[index] = Some(
-            Image::parse(url)
+        let unread = if allowed == 0 {
+            Some(ImageError::Excess)
+        } else if crowded {
+            Some(ImageError::Crowded)
+        } else if encoded_length(url).is_some_and(|size| size > limits.image_bytes) {
+            Some(ImageError::Oversized)
+        } else {
+            None
+        };
+        images[index] = Some(match unread {
+            Some(reason) => Err(reason),
+            None => Image::parse(url)
                 .and_then(|image| claude_block(image, *current, limits.image_bytes))
                 .and_then(|(block, size)| {
-                    if allowed == 0 {
-                        return Err(ImageError::Excess);
-                    }
-                    if crowded || size > room {
+                    if size > room {
                         crowded = true;
                         return Err(ImageError::Crowded);
                     }
@@ -113,7 +124,7 @@ fn claude(parts: &[Part], limits: ImageLimits) -> Result<String, InputError> {
                     room -= size;
                     Ok(block)
                 }),
-        );
+        });
     }
 
     let mut content = Vec::with_capacity(parts.len());
@@ -677,6 +688,24 @@ mod tests {
         };
 
         assert_eq!(claude_within(&parts, limits), Err(ImageError::Oversized));
+    }
+
+    /// An image too large to send is refused by its length alone, before
+    /// a byte of it is decoded, so it never reads as malformed.
+    #[test]
+    fn an_image_too_large_to_send_is_refused_before_it_is_decoded() {
+        let unread = format!("data:image/png;base64,{}", "!".repeat(64));
+        let parts = parts(&[with_images(Message::user("Look."), &[&unread])]);
+        let limits = ImageLimits {
+            image_bytes: 16,
+            ..ImageLimits::CLAUDE
+        };
+
+        assert_eq!(claude_within(&parts, limits), Err(ImageError::Oversized));
+        assert_eq!(
+            claude_within(&parts, ImageLimits::CLAUDE),
+            Err(ImageError::Malformed)
+        );
     }
 
     #[test]

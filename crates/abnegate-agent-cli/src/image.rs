@@ -20,6 +20,7 @@ pub use crate::image::image_error::ImageError;
 const DATA_SCHEME: &str = "data:";
 const BASE64_SUFFIX: &str = ";base64";
 const LINK_SCHEMES: &[&str] = &["https://", "http://"];
+const BASE64_QUANTUM: usize = 4;
 
 const MEDIA_TYPES: &[MediaType] = &[
     MediaType::new(
@@ -106,6 +107,17 @@ impl<'a> Image<'a> {
     }
 }
 
+/// The bytes the base64 of the image a data URL carries takes once padded,
+/// counted without decoding it, or `None` for any other URL.
+pub(crate) fn encoded_length(url: &str) -> Option<usize> {
+    let (_, data) = url.strip_prefix(DATA_SCHEME)?.split_once(',')?;
+    let length = data
+        .bytes()
+        .filter(|byte| !byte.is_ascii_whitespace())
+        .count();
+    Some(length.div_ceil(BASE64_QUANTUM) * BASE64_QUANTUM)
+}
+
 fn compact(data: &str) -> Cow<'_, str> {
     if data.bytes().any(|byte| byte.is_ascii_whitespace()) {
         Cow::Owned(
@@ -122,6 +134,7 @@ fn compact(data: &str) -> Cow<'_, str> {
 mod tests {
     use super::Image;
     use super::ImageError;
+    use super::encoded_length;
 
     const PNG_BYTES: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
 
@@ -131,6 +144,19 @@ mod tests {
             extension,
             bytes: PNG_BYTES.to_vec(),
         }
+    }
+
+    #[test]
+    fn a_data_urls_encoded_length_is_its_padded_base64() {
+        for url in [
+            "data:image/png;base64,iVBORw0KGgo=",
+            "data:image/png;base64,iVBORw0KGgo",
+            "data:image/png;base64,iVBORw0K\nGgo=",
+        ] {
+            assert_eq!(encoded_length(url), Some(12), "{url}");
+        }
+        assert_eq!(encoded_length("https://example.test/shot.png"), None);
+        assert_eq!(encoded_length("data:image/png;base64"), None);
     }
 
     #[test]
