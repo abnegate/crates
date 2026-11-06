@@ -13,6 +13,10 @@ pub(crate) enum Event {
         #[serde(default)]
         thread_id: Option<String>,
     },
+    #[serde(rename = "item.started")]
+    Begun { item: Item },
+    #[serde(rename = "item.updated")]
+    Updated { item: Item },
     #[serde(rename = "item.completed")]
     Completed { item: Item },
     #[serde(rename = "turn.completed")]

@@ -1,5 +1,6 @@
 //! Turning an agent's stdout into events while it streams.
 
+use std::borrow::Cow;
 use std::path::PathBuf;
 
 use abnegate_exec::executor::OutputLimiter;
@@ -22,6 +23,7 @@ use crate::parser;
 use crate::parser::Turn;
 use crate::scrubber::Scrubber;
 use crate::stdout_parse_result::StdoutParseResult;
+use crate::subagent::Subagent;
 use crate::verdict::Verdict;
 
 const BUFFER: usize = 8 * 1024;
@@ -36,7 +38,9 @@ const BUFFER: usize = 8 * 1024;
 ///
 /// Only the prose counts against the output limit. The rest of the stream,
 /// tool results included, is parsed and dropped, so however long a run goes
-/// on it costs no more memory than its answer.
+/// on it costs no more memory than its answer. What a tool printed and news
+/// of a subagent are handed on and never kept, their text scrubbed of the
+/// run's secrets first.
 ///
 /// A [partial message](AgentKind::partial) is counted but never journaled: a
 /// secret streamed across several pieces matches none of them, while the
@@ -232,6 +236,13 @@ impl Reader {
                     tracing::debug!(agent = %self.agent, tool = %call.function.name, "agent tool call");
                     AgentEvent::Tool(call)
                 }
+                AgentEvent::Output(mut output) => {
+                    scrub(&self.scrubber, &mut output.text);
+                    AgentEvent::Output(output)
+                }
+                AgentEvent::Subagent(subagent) => {
+                    AgentEvent::Subagent(scrubbed(&self.scrubber, subagent))
+                }
                 AgentEvent::Failed(message) => {
                     let message = self.scrubber.scrub(&message).into_owned();
                     self.settle(Verdict::Failed(message.clone()));
@@ -288,6 +299,35 @@ impl Reader {
             let _ = verdicts.try_send(verdict);
         }
     }
+}
+
+/// `text`, with whatever `scrubber` removes from it removed.
+fn scrub(scrubber: &Scrubber, text: &mut String) {
+    if let Cow::Owned(scrubbed) = scrubber.scrub(text) {
+        *text = scrubbed;
+    }
+}
+
+/// `subagent`, with every word it carries scrubbed.
+fn scrubbed(scrubber: &Scrubber, mut subagent: Subagent) -> Subagent {
+    let words = [
+        &mut subagent.description,
+        &mut subagent.kind,
+        &mut subagent.model,
+        &mut subagent.last_tool,
+        &mut subagent.summary,
+        &mut subagent.error,
+    ];
+    for text in words.into_iter().flatten() {
+        scrub(scrubber, text);
+    }
+    if let Some(step) = &mut subagent.step {
+        scrub(scrubber, &mut step.name);
+        if let Some(subject) = &mut step.subject {
+            scrub(scrubber, subject);
+        }
+    }
+    subagent
 }
 
 #[cfg(test)]

@@ -8,7 +8,9 @@ use abnegate_llm::Usage;
 use abnegate_llm::Window;
 
 use crate::occupancy::Occupancy;
+use crate::output::Output;
 use crate::parser::claude::CliUsage;
+use crate::subagent::Subagent;
 
 /// A normalised event, whichever agent produced it.
 ///
@@ -40,8 +42,16 @@ pub enum AgentEvent {
     /// the first starts with a paragraph break, `\n\n`, so that the blocks
     /// read apart when joined.
     Text(String),
-    /// A tool the agent ran for itself, reported and never replayed.
+    /// A tool the main agent ran for itself, reported and never replayed. A
+    /// subagent's calls are steps of its [`AgentEvent::Subagent`] instead.
     Tool(ToolCall),
+    /// What one of the agent's own tool calls printed once it finished, a
+    /// subagent's included, and whether it worked. It is yielded on the
+    /// stream only: never folded into a
+    /// [`StdoutParseResult`](crate::StdoutParseResult), and never counted
+    /// toward the output limit, since it is the tool's text and not the
+    /// agent's prose. Its text is scrubbed of the run's secrets.
+    Output(Output),
     /// Prompt and completion token counts, cache reads and writes counted
     /// as prompt.
     Usage(Usage),
@@ -101,6 +111,19 @@ pub enum AgentEvent {
     /// the agent has exited by itself, so a Codex stream yields it last,
     /// after the event that ended the turn.
     Occupancy(Occupancy),
+    /// What one line of the agent's output said about a subagent it started
+    /// for itself: its start, its progress, each of its own tool calls as a
+    /// [step](Subagent::step), and how it ended. A background subagent's
+    /// news can come after the event that ends the turn.
+    ///
+    /// Like [`AgentEvent::Output`], it is yielded on the stream only, never
+    /// folded into a [`StdoutParseResult`](crate::StdoutParseResult) or
+    /// counted toward the output limit, and its words are sanitized and
+    /// scrubbed of the run's secrets. Nothing renders it: a caller that shows
+    /// a subagent's calls as it shows the main agent's renders each step
+    /// itself, with [`Subagent::activity`] for instance, and counts it toward
+    /// whatever budget it keeps.
+    Subagent(Subagent),
 }
 
 impl AgentEvent {
@@ -140,8 +163,13 @@ mod tests {
     use abnegate_llm::WindowKind;
 
     use super::AgentEvent;
+    use abnegate_llm::ToolCall;
+
     use crate::occupancy::Occupancy;
+    use crate::output::Output;
     use crate::parser::claude::CliUsage;
+    use crate::subagent::Subagent;
+    use crate::subagent::SubagentStatus;
 
     #[test]
     fn only_a_result_ends_the_run() {
@@ -197,6 +225,14 @@ mod tests {
             AgentEvent::Diagnostic("Reconnecting... 1/5".to_string()),
             AgentEvent::Credits("five_hour".to_string()),
             AgentEvent::Occupancy(Occupancy::reported(200_000, Some(16_632)).expect("a window")),
+            AgentEvent::Output(Output::new(
+                ToolCall::function("toolu_01", "Bash", "{}"),
+                "done",
+                true,
+            )),
+            AgentEvent::Subagent(
+                Subagent::new("toolu_01Agent").with_status(SubagentStatus::Completed),
+            ),
         ] {
             assert!(!event.terminal(), "{event:?} ended the run");
         }

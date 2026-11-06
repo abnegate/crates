@@ -6,7 +6,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::parser::claude::lenient;
+use crate::parser::lenient;
 
 const ALLOWED: [&str; 2] = ["allowed", "allowed_warning"];
 

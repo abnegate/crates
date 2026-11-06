@@ -1,9 +1,11 @@
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::parser::codex::collab::Collab;
 use crate::parser::codex::reason::Reason;
+use crate::parser::lenient;
 
-/// The part of a completed item this crate reads.
+/// The part of an item this crate reads.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
 pub(crate) enum Item {
@@ -15,6 +17,11 @@ pub(crate) enum Item {
         id: String,
         #[serde(default)]
         command: String,
+        /// Everything the command printed, stdout and stderr together.
+        #[serde(default, deserialize_with = "lenient")]
+        aggregated_output: Option<String>,
+        #[serde(default, deserialize_with = "lenient")]
+        exit_code: Option<i64>,
     },
     /// A call to an MCP server's tool, completed or refused. Codex's own
     /// refusal carries `error`; a server's refusal is its `result`.
@@ -29,6 +36,9 @@ pub(crate) enum Item {
         #[serde(default)]
         error: Option<Reason>,
     },
+    /// A call to one of codex's collaboration tools.
+    #[serde(rename = "collab_tool_call")]
+    Collab(Collab),
     #[serde(other)]
     Ignored,
 }

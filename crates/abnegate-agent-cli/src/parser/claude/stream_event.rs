@@ -5,10 +5,10 @@ use serde::Deserialize;
 use crate::event::AgentEvent;
 use crate::parser::claude::cli_message::CliMessage;
 use crate::parser::claude::cli_usage::CliUsage;
-use crate::parser::claude::lenient;
 use crate::parser::claude::model_usage::ModelUsage;
 use crate::parser::claude::rate_limit_report::RateLimitReport;
 use crate::parser::claude::turn::Turn;
+use crate::parser::lenient;
 
 /// One line of `claude --output-format stream-json`.
 ///
@@ -64,11 +64,22 @@ pub enum StreamEvent {
         #[serde(default)]
         api_error: Option<String>,
     },
-    /// Tool results fed back to the model, which carry nothing this crate
-    /// reads.
+    /// What the agent's tools printed, fed back to the model.
     #[serde(rename = "user")]
     #[non_exhaustive]
-    User {},
+    User {
+        /// The message, whose [`ToolResult`](crate::CliContentBlock::ToolResult)
+        /// blocks each answer one of the agent's calls. A message of another
+        /// shape, such as a prompt's plain text, reads as absent rather than
+        /// losing the whole event.
+        #[serde(default, deserialize_with = "lenient")]
+        message: Option<CliMessage>,
+        /// The tool's own account of the call the event answers, read from
+        /// `tool_use_result` or `toolUseResult`, in a shape of the tool's
+        /// own: the report of the subagent an Agent call started, say.
+        #[serde(default, alias = "toolUseResult", deserialize_with = "lenient")]
+        tool_use_result: Option<serde_json::Value>,
+    },
     /// The run's final event: its answer or failure, and what it cost.
     #[serde(rename = "result")]
     #[non_exhaustive]
@@ -334,11 +345,51 @@ mod tests {
                 session_id: Some("xyz".to_string()),
             }
         );
-        assert_eq!(parse(r#"{"type":"user"}"#), StreamEvent::User {});
+        assert_eq!(
+            parse(r#"{"type":"user"}"#),
+            StreamEvent::User {
+                message: None,
+                tool_use_result: None,
+            }
+        );
         assert_eq!(
             parse(r#"{"type":"user","message":{"role":"user","content":"hello"},"extra":true}"#),
-            StreamEvent::User {}
+            StreamEvent::User {
+                message: None,
+                tool_use_result: None,
+            }
         );
+    }
+
+    #[test]
+    fn a_user_event_carries_its_tool_results_and_the_tools_account_of_them() {
+        let event = parse(
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":"fn main() {}"}]},"tool_use_result":{"status":"completed"}}"#,
+        );
+        let StreamEvent::User {
+            message: Some(message),
+            tool_use_result,
+        } = event
+        else {
+            panic!("unexpected event: {event:?}");
+        };
+        assert_eq!(
+            message.content,
+            [CliContentBlock::ToolResult {
+                tool_use_id: "toolu_01".to_string(),
+                content: json!("fn main() {}"),
+                is_error: false,
+            }]
+        );
+        assert_eq!(tool_use_result, Some(json!({"status": "completed"})));
+
+        let StreamEvent::User {
+            tool_use_result, ..
+        } = parse(r#"{"type":"user","toolUseResult":"Error: no such file"}"#)
+        else {
+            panic!("expected a user event");
+        };
+        assert_eq!(tool_use_result, Some(json!("Error: no such file")));
     }
 
     #[test]

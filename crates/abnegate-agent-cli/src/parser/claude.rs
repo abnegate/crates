@@ -4,10 +4,18 @@ mod cli_content_block;
 mod cli_message;
 mod cli_usage;
 mod credits_refusal;
+mod delegation;
 mod model_usage;
+mod notice;
 mod rate_limit_report;
 mod refusal;
+mod reply;
+mod report;
+mod roster;
 mod stream_event;
+mod task_event;
+mod task_patch;
+mod task_usage;
 mod turn;
 
 pub use crate::parser::claude::cli_content_block::CliContentBlock;
@@ -18,9 +26,6 @@ pub use crate::parser::claude::rate_limit_report::RateLimitReport;
 pub use crate::parser::claude::stream_event::StreamEvent;
 pub use crate::parser::claude::turn::Turn;
 
-use serde::Deserialize;
-use serde::Deserializer;
-use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::event::AgentEvent;
@@ -88,17 +93,6 @@ pub fn essential(prefix: &str) -> bool {
     top(ASSISTANT)
         && parser::field(prefix, PARENT).is_none()
         && (blocks.peek().is_none() || blocks.any(|kind| kind == TEXT))
-}
-
-/// A field claude may one day send in another shape, read as absent rather
-/// than losing the whole line, and with it a refusal, to a parse error.
-pub(crate) fn lenient<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
-where
-    D: Deserializer<'de>,
-    T: DeserializeOwned,
-{
-    let value = Option::<Value>::deserialize(deserializer)?;
-    Ok(value.and_then(|value| serde_json::from_value(value).ok()))
 }
 
 /// A line that is not a stream event can still be the CLI's final JSON

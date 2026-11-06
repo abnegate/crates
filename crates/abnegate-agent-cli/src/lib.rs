@@ -52,7 +52,12 @@
 //! returned when the run failed; `complete` is that stream read to its end.
 //! Each block of prose after the first starts with a paragraph break, so the
 //! blocks read apart when joined, and [`activity`] is the markdown line a
-//! reader can be shown for a tool the agent ran for itself.
+//! reader can be shown for a tool the agent ran for itself. What a tool
+//! printed is an [`AgentEvent::Output`], and news of a subagent the agent
+//! started, its own calls among it, an [`AgentEvent::Subagent`]: both are
+//! streamed only, scrubbed of the run's secrets, and never kept in a
+//! [`StdoutParseResult`], whose [`tools`](StdoutParseResult::tools) are the
+//! main agent's alone.
 //! [`AgentKind::ALL`] lists the agents, and [`AgentKind::named`] finds one by
 //! its name.
 //!
@@ -195,6 +200,7 @@ pub mod log;
 pub mod mcp;
 mod occupancy;
 mod outcome;
+mod output;
 mod overlong_error;
 mod paragraphs;
 pub mod parser;
@@ -212,6 +218,7 @@ mod spawned;
 mod stdout_parse_result;
 pub mod stream;
 mod structured_result;
+mod subagent;
 #[cfg(test)]
 mod test_support;
 pub mod transcript;
@@ -242,6 +249,7 @@ pub use crate::mcp::McpConfigError;
 pub use crate::mcp::McpServer;
 pub use crate::mcp::McpTransport;
 pub use crate::occupancy::Occupancy;
+pub use crate::output::Output;
 pub use crate::overlong_error::OverlongError;
 pub use crate::parser::Turn;
 pub use crate::parser::claude::CREDITS_REQUIRED;
@@ -276,6 +284,10 @@ pub use crate::stream::ApiMessage;
 pub use crate::stream::ApiMessageDelta;
 pub use crate::stream::ApiStreamEvent;
 pub use crate::structured_result::StructuredResult;
+pub use crate::subagent::StepStatus;
+pub use crate::subagent::Subagent;
+pub use crate::subagent::SubagentStatus;
+pub use crate::subagent::SubagentStep;
 pub use crate::tripwire::Tripwire;
 
 /// Stands between an agent's own report of a failure and the end of its

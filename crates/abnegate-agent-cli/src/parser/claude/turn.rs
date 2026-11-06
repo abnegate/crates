@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use abnegate_llm::Limit;
+use abnegate_llm::ToolCall;
 use abnegate_llm::Usage;
 use abnegate_llm::Window;
 use chrono::DateTime;
@@ -10,18 +11,24 @@ use serde_json::Value;
 
 use crate::event::AgentEvent;
 use crate::occupancy::Occupancy;
+use crate::parser;
 use crate::parser::claude::CREDITS_UNCONFIRMED;
 use crate::parser::claude::cli_content_block::CliContentBlock;
 use crate::parser::claude::cli_message::CliMessage;
 use crate::parser::claude::cli_usage::CliUsage;
 use crate::parser::claude::credits_refusal::CreditsRefusal;
 use crate::parser::claude::model_usage::ModelUsage;
+use crate::parser::claude::notice::Notice;
 use crate::parser::claude::rate_limit_report::OVERAGE_INCLUDED_WINDOW;
 use crate::parser::claude::rate_limit_report::RateLimitReport;
 use crate::parser::claude::refusal::Refusal;
 use crate::parser::claude::refusal::limited;
+use crate::parser::claude::reply::Reply;
+use crate::parser::claude::report::Report;
+use crate::parser::claude::roster::Roster;
 use crate::parser::claude::salvage;
 use crate::parser::claude::stream_event::StreamEvent;
+use crate::parser::claude::task_event::TaskEvent;
 
 /// The wording a throttled run is reported with, followed by the refused
 /// window and its status in brackets.
@@ -40,6 +47,12 @@ const UNNAMED_WINDOW: &str = "request";
 
 /// The system notice claude opens a session with, naming it.
 const INIT_SUBTYPE: &str = "init";
+
+/// The kind of line that tells of the session or of a task claude runs.
+const SYSTEM: &str = "system";
+
+/// The kind of line that hands the model back what its tools printed.
+const USER: &str = "user";
 
 /// Why claude could not look the account's usage credits up, which a later
 /// attempt may get past.
@@ -61,10 +74,21 @@ const UNAUTHORIZED: u16 = 401;
 /// failed result. A line the main agent writes past it shows its own request
 /// went through, and the window was a subagent's.
 ///
-/// A subagent's line contributes only the tools it calls: its words, its
-/// token counts and its API errors are its own conversation's, and claude
-/// hands its failure to the main agent as the result of the call that
-/// started it.
+/// A subagent's words, its token counts and its API errors are its own
+/// conversation's, and claude hands its failure to the main agent as the
+/// result of the call that started it. The main agent's call that starts a
+/// subagent, with Claude's Agent tool or the Task tool of older releases, is
+/// one of its [tools](AgentEvent::Tool), followed by the
+/// [subagent](AgentEvent::Subagent)'s start; every call the subagent makes,
+/// or an agent nested inside it, is a step of the subagent's run, and claude's
+/// `task_*` notices and the call's report say how it goes and how it ends. A
+/// call by an agent no known subagent descends from is the main agent's.
+/// Every tool result is the [output](AgentEvent::Output) of the call it
+/// answers, a subagent's included.
+///
+/// A `system` or `user` line is read straight into the shape this crate
+/// needs, and a tool's account of its call no further than a subagent's
+/// report goes; every other line is read as a [`StreamEvent`].
 ///
 /// The session is announced once, from the first `init` notice, though
 /// claude repeats its id on other notices and on the result.
@@ -96,6 +120,9 @@ pub struct Turn {
     model: Option<String>,
     /// The tokens the main agent's latest request filled.
     used: Option<u64>,
+    /// The calls waiting on their results and the subagents the main agent
+    /// started.
+    roster: Roster,
 }
 
 impl Turn {
@@ -106,9 +133,23 @@ impl Turn {
         if line.is_empty() {
             return;
         }
-        match serde_json::from_str::<StreamEvent>(line) {
-            Ok(event) => self.read(event, events),
-            Err(_) => salvage(line, events),
+        match parser::kind(line) {
+            Some(SYSTEM) => match serde_json::from_str::<Notice>(line) {
+                Ok(notice) => self.notice(notice, events),
+                Err(_) => salvage(line, events),
+            },
+            Some(USER) => match serde_json::from_str::<Reply>(line) {
+                Ok(reply) => self.roster.returned(
+                    results(reply.message),
+                    reply.tool_use_result.as_ref(),
+                    events,
+                ),
+                Err(_) => salvage(line, events),
+            },
+            _ => match serde_json::from_str::<StreamEvent>(line) {
+                Ok(event) => self.read(event, events),
+                Err(_) => salvage(line, events),
+            },
         }
     }
 
@@ -120,9 +161,9 @@ impl Turn {
             } => self.announce(subtype.as_deref(), session_id, events),
             StreamEvent::Assistant {
                 message,
-                parent_tool_use_id: Some(_),
+                parent_tool_use_id: Some(parent),
                 ..
-            } => subagent(message, events),
+            } => self.roster.delegated(&parent, calls(message), events),
             StreamEvent::Assistant {
                 message,
                 parent_tool_use_id: None,
@@ -172,8 +213,31 @@ impl Turn {
             StreamEvent::RateLimit { report, resets_at } => {
                 self.limit(report.unwrap_or_default(), resets_at, events);
             }
-            StreamEvent::User {} | StreamEvent::Unknown => {}
+            StreamEvent::User {
+                message,
+                tool_use_result,
+            } => {
+                let report = tool_use_result.as_ref().and_then(Report::from_value);
+                self.roster
+                    .returned(results(message), report.as_ref(), events);
+            }
+            StreamEvent::Unknown => {}
         }
+    }
+
+    /// A `system` line: the session's opening notice, or news of a task.
+    fn notice(&mut self, notice: Notice, events: &mut Vec<AgentEvent>) {
+        let Some(subtype) = notice.subtype.as_deref() else {
+            return;
+        };
+        if subtype == INIT_SUBTYPE {
+            self.announce(Some(INIT_SUBTYPE), notice.session_id, events);
+            return;
+        }
+        let Some(event) = TaskEvent::named(subtype) else {
+            return;
+        };
+        events.extend(self.roster.noticed(event, notice).map(AgentEvent::Subagent));
     }
 
     fn announce(
@@ -230,9 +294,9 @@ impl Turn {
             match block {
                 CliContentBlock::Text { text } => events.push(AgentEvent::Text(text)),
                 CliContentBlock::ToolUse { id, name, input } => {
-                    events.push(tool(id, name, &input));
+                    self.roster.called(call(id, name, &input), events);
                 }
-                CliContentBlock::Other => {}
+                CliContentBlock::ToolResult { .. } | CliContentBlock::Other => {}
             }
         }
         if let Some(usage) = message.usage {
@@ -386,23 +450,45 @@ fn explained(result: Option<String>, errors: Option<Vec<Value>>) -> Option<Strin
     (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
-/// A line of a subagent's own conversation, of which only the tools it
-/// calls are the turn's.
-fn subagent(message: Option<CliMessage>, events: &mut Vec<AgentEvent>) {
-    for block in message.into_iter().flat_map(|message| message.content) {
-        if let CliContentBlock::ToolUse { id, name, input } = block {
-            events.push(tool(id, name, &input));
-        }
-    }
+/// The calls a subagent's line makes: of everything in its own
+/// conversation, only what it reaches for is the turn's.
+fn calls(message: Option<CliMessage>) -> impl Iterator<Item = ToolCall> {
+    message
+        .into_iter()
+        .flat_map(|message| message.content)
+        .filter_map(|block| match block {
+            CliContentBlock::ToolUse { id, name, input } => Some(call(id, name, &input)),
+            CliContentBlock::Text { .. }
+            | CliContentBlock::ToolResult { .. }
+            | CliContentBlock::Other => None,
+        })
 }
 
-fn tool(id: String, name: String, input: &serde_json::Value) -> AgentEvent {
+/// The tool results a `user` line's message hands back: each the id of the
+/// call it answers, what the tool printed, and whether it failed.
+fn results(message: Option<CliMessage>) -> impl Iterator<Item = (String, Value, bool)> {
+    message
+        .into_iter()
+        .flat_map(|message| message.content)
+        .filter_map(|block| match block {
+            CliContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => Some((tool_use_id, content, is_error)),
+            CliContentBlock::Text { .. }
+            | CliContentBlock::ToolUse { .. }
+            | CliContentBlock::Other => None,
+        })
+}
+
+fn call(id: String, name: String, input: &Value) -> ToolCall {
     let arguments = if input.is_null() {
         NO_ARGUMENTS.to_string()
     } else {
         input.to_string()
     };
-    AgentEvent::tool(id, name, arguments)
+    ToolCall::function(id, name, arguments)
 }
 
 /// `marker`, followed by claude's own `words` when it gave any.
@@ -442,6 +528,8 @@ mod tests {
     use crate::parser::claude::LONG_CONTEXT_CREDITS_REQUIRED;
     use crate::parser::claude::rate_limit_report::OVERAGE_INCLUDED_WINDOW;
     use crate::stdout_parse_result::StdoutParseResult;
+
+    mod subagents;
 
     /// Recorded from `claude --verbose --output-format stream-json --print`.
     const SESSION: &str = r#"{"type":"system","subtype":"init","cwd":"/w","session_id":"6f1","tools":["Read","Edit"],"model":"claude-opus-4","permissionMode":"default","apiKeySource":"none"}
@@ -1236,8 +1324,8 @@ mod tests {
         );
     }
 
-    /// A subagent's words are its own conversation's. What it reaches for is
-    /// still the turn's work, shown as the main agent's calls are.
+    /// A subagent's words are its own conversation's, and what it reaches
+    /// for is a step of its run, not one of the main agent's calls.
     #[test]
     fn a_subagents_words_never_reach_the_answer() {
         let events = interpret_all(&stream(&[
@@ -1255,7 +1343,7 @@ mod tests {
         ]));
 
         assert_eq!(text(&events), ANSWER);
-        assert_eq!(tools(&events), ["Agent", "Read"]);
+        assert_eq!(tools(&events), ["Agent"]);
     }
 
     #[test]

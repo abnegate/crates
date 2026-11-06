@@ -681,6 +681,7 @@ mod tests {
 
     mod lifecycle;
     mod occupancy;
+    mod subagents;
 
     const ETXTBSY: i32 = 26;
     const PROBE: &str = "FAKE_AGENT_PROBE";
