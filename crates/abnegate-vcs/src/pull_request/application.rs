@@ -17,10 +17,12 @@ mod claims;
 mod error;
 #[cfg(test)]
 mod fixtures;
+mod github_installed_repository;
 mod id;
 mod installation_id;
 mod installation_issuer;
 mod installation_token;
+mod installed_repository;
 mod token_cache;
 
 pub use crate::pull_request::application::claims::ApplicationClaims;
@@ -29,4 +31,5 @@ pub use crate::pull_request::application::id::ApplicationId;
 pub use crate::pull_request::application::installation_id::InstallationId;
 pub use crate::pull_request::application::installation_issuer::InstallationIssuer;
 pub use crate::pull_request::application::installation_token::InstallationToken;
+pub use crate::pull_request::application::installed_repository::InstalledRepository;
 pub use crate::pull_request::application::token_cache::TokenCache;
