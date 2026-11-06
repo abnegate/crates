@@ -15,6 +15,12 @@ they are ready, moves them in and out of draft, creates repositories and
 registers their webhooks, over GitHub's REST and GraphQL APIs. Nothing here holds
 application state, so a task runner can drive it directly.
 
+A `BranchName` is a name no git command line can misread, so it refuses names
+GitHub keeps, such as `+release` or `-dash`. A branch name GitHub reports is a
+`RemoteBranchName` instead, which accepts any name `git check-ref-format` does;
+`RemoteBranchName::to_branch_name` is the one way from it onto a command line,
+and refuses what a `BranchName` refuses.
+
 ## Requirements
 
 git 2.39 or newer, the first to read a symbolic ref without following it. On an
@@ -24,9 +30,9 @@ to take `--ref-format` for `init` and `clone`.
 
 ## Features
 
-- `github`: `PullRequestService`, which opens, reads, checks, reviews and merges pull requests on GitHub or a GitHub Enterprise install, sets them to merge once they are ready and moves them in and out of draft, reads back how each one was received, and creates repositories there and registers their webhooks, over the REST and GraphQL APIs; and `WebhookSignature`, which checks that a webhook delivery was signed with the secret its webhook was registered with.
-- `github-app`: `github`, plus what authenticating as a GitHub App installation takes: `ApplicationClaims` signs the RS256 JWT that proves the caller is the App, `InstallationIssuer` trades it for an installation access token without ever following a redirect, and `TokenCache` holds each installation's token until it comes within five minutes of expiring.
-- `testing`: `RepositoryUrl::local`, `PullRequestService::standing_in_for` and, with `github-app`, `InstallationIssuer::standing_in_for`, which reach a repository on the local disk or a mock API server; only a test should enable it.
+- `github`: `PullRequestService`, which opens, reads, checks, reviews and merges pull requests on GitHub or a GitHub Enterprise install, sets them to merge once they are ready and moves them in and out of draft, reads back how each one was received, lists a repository's branches, each a `Branch` named by a `RemoteBranchName` as GitHub spells it, and creates repositories there and registers their webhooks, over the REST and GraphQL APIs; and `WebhookSignature`, which checks that a webhook delivery was signed with the secret its webhook was registered with.
+- `github-app`: `github`, plus what authenticating as a GitHub App installation takes: `ApplicationClaims` signs the RS256 JWT that proves the caller is the App, `InstallationIssuer` trades it for an installation access token without ever following a redirect, `TokenCache` holds each installation's token until it comes within five minutes of expiring, and `ApplicationService` registers an App from its manifest and lists its installations and their repositories, each an `InstalledRepository` whose default branch is a `RemoteBranchName`.
+- `testing`: `RepositoryUrl::local`, `PullRequestService::standing_in_for` and, with `github-app`, `InstallationIssuer::standing_in_for` and `ApplicationService::standing_in_for`, which reach a repository on the local disk or a mock API server; only a test should enable it.
 
 ## Usage
 

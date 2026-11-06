@@ -5,21 +5,21 @@ use thiserror::Error;
 /// message.
 const CAUSE_SEPARATOR: &str = ": ";
 
-/// What went wrong authenticating as a GitHub App, worded so that no variant
-/// can carry a credential, the private key, or the URL a request was sent to.
+/// What went wrong authenticating as a GitHub App or asking GitHub about
+/// one, worded so that no variant can carry a credential, the private key, a
+/// manifest code, or the URL a request was sent to.
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum ApplicationError {
-    /// The origin installation tokens were to be asked for is not an HTTPS
-    /// URL with nothing but a host and a path.
+    /// The GitHub App API origin is not an HTTPS URL, or a plain HTTP one
+    /// where plain HTTP was allowed, with nothing but a host and a path.
     #[error(
-        "The installation token origin is not an HTTPS URL with no query, fragment or credentials."
+        "The GitHub App API origin is not an HTTPS URL, or a plain HTTP one where that was allowed, with no query, fragment or credentials."
     )]
     InvalidOrigin,
 
-    /// The HTTP client installation tokens are asked for with could not be
-    /// built.
-    #[error("The installation token client could not be built.")]
+    /// The HTTP client GitHub App requests are sent with could not be built.
+    #[error("The GitHub App request client could not be built.")]
     Client,
 
     /// The App's private key is not an RSA key in PEM form.
@@ -30,20 +30,26 @@ pub enum ApplicationError {
     #[error("The GitHub App JWT could not be signed.")]
     Signing,
 
-    /// The installation token request did not complete, for the reason
-    /// given and each cause beneath it, with the URL it was sent to removed.
-    #[error("The installation token request failed: {0}")]
+    /// The GitHub App request did not complete, for the reason given and
+    /// each cause beneath it, with the URL it was sent to removed.
+    #[error("The GitHub App request failed: {0}")]
     Transport(String),
 
-    /// GitHub answered the installation token request with this status,
-    /// a redirect included, which is never followed.
-    #[error("GitHub returned HTTP {0} for the installation token request.")]
+    /// GitHub answered the GitHub App request with this status, a redirect
+    /// included, which is never followed.
+    #[error("GitHub returned HTTP {0} for the GitHub App request.")]
     Status(u16),
 
-    /// GitHub's answer to the installation token request could not be read.
-    /// The answer is not repeated, since it may hold the token.
-    #[error("The installation token response could not be read.")]
+    /// GitHub's answer to the GitHub App request could not be read. The
+    /// answer is not repeated, since it may hold a token, a secret or a
+    /// private key.
+    #[error("GitHub's answer to the GitHub App request could not be read.")]
     Response,
+
+    /// The manifest code is empty, `.` or `..`, so it cannot be sent: it
+    /// would name no path segment, or the one before it.
+    #[error("The GitHub App manifest code is empty or a dot segment, so it cannot be sent.")]
+    InvalidCode,
 }
 
 impl ApplicationError {
@@ -71,10 +77,22 @@ mod tests {
     fn no_variant_echoes_key_material() {
         assert_eq!(
             ApplicationError::Status(404).to_string(),
-            "GitHub returned HTTP 404 for the installation token request."
+            "GitHub returned HTTP 404 for the GitHub App request."
         );
         assert!(!ApplicationError::PrivateKey.to_string().contains("BEGIN"));
         assert!(!ApplicationError::Signing.to_string().contains("BEGIN"));
+        assert!(!ApplicationError::Response.to_string().contains("BEGIN"));
+    }
+
+    #[test]
+    fn an_invalid_code_does_not_echo_the_code() {
+        let rendered = ApplicationError::InvalidCode.to_string();
+
+        assert_eq!(
+            rendered,
+            "The GitHub App manifest code is empty or a dot segment, so it cannot be sent."
+        );
+        assert!(!rendered.contains("app-manifests"));
     }
 
     #[tokio::test]

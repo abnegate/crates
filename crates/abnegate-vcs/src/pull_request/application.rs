@@ -11,22 +11,62 @@
 //! exist, and no [`ApplicationError`] carries either, the private key, or the
 //! URL a request was sent to.
 //!
+//! [`ApplicationService`] asks GitHub about the App itself: it registers an
+//! App from its manifest with [`ApplicationService::convert_manifest`], which
+//! yields a [`RegisteredApplication`]; fetches, lists and deletes the App's
+//! installations with [`ApplicationService::fetch_installation`],
+//! [`ApplicationService::list_installations`] and
+//! [`ApplicationService::delete_installation`], each an [`Installation`]; and
+//! lists the repositories an installation reaches with
+//! [`ApplicationService::list_installation_repositories`], each an
+//! [`InstalledRepository`]. Every request but registering one carries the
+//! App's JWT or an installation's token, and none follows a redirect. The
+//! manifest code is the one plain-text value this module puts in a URL: it is
+//! refused only when empty or a dot segment, and otherwise sent
+//! percent-encoded as a single path segment.
+//!
 //! [`SecretValue`]: abnegate_secret::SecretValue
 
+mod account;
+mod account_type;
 mod claims;
 mod error;
 #[cfg(test)]
 mod fixtures;
+mod github_account;
+mod github_installation;
+mod github_installation_repositories;
+mod github_installed_repository;
+mod github_registered_application;
 mod id;
+mod installation;
 mod installation_id;
 mod installation_issuer;
 mod installation_token;
+mod installed_repository;
+mod registered_application;
+mod repository_selection;
+mod service;
+mod timestamp;
 mod token_cache;
 
+pub use crate::pull_request::application::account::Account;
+pub use crate::pull_request::application::account_type::AccountType;
 pub use crate::pull_request::application::claims::ApplicationClaims;
 pub use crate::pull_request::application::error::ApplicationError;
 pub use crate::pull_request::application::id::ApplicationId;
+pub use crate::pull_request::application::installation::Installation;
 pub use crate::pull_request::application::installation_id::InstallationId;
 pub use crate::pull_request::application::installation_issuer::InstallationIssuer;
 pub use crate::pull_request::application::installation_token::InstallationToken;
+pub use crate::pull_request::application::installed_repository::InstalledRepository;
+pub use crate::pull_request::application::registered_application::RegisteredApplication;
+pub use crate::pull_request::application::repository_selection::RepositorySelection;
+pub use crate::pull_request::application::service::ApplicationService;
 pub use crate::pull_request::application::token_cache::TokenCache;
+
+/// The REST API version every GitHub App request is asked under.
+const API_VERSION: &str = "2022-11-28";
+
+/// The header GitHub reads the REST API version a request wants from.
+const API_VERSION_HEADER: &str = "X-GitHub-Api-Version";

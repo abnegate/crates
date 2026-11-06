@@ -43,19 +43,24 @@
 //! - `github`: `pull_request`, which opens, reads, checks, reviews and merges
 //!   pull requests on GitHub or a GitHub Enterprise install, sets them to
 //!   merge once they are ready and moves them in and out of draft, reads back
-//!   how each one was received, and creates repositories there and registers their
-//!   webhooks, over the REST and GraphQL APIs; and
+//!   how each one was received, lists a repository's branches, each named by
+//!   a [`RemoteBranchName`] as GitHub spells it, and creates
+//!   repositories there and registers their webhooks, over the REST and
+//!   GraphQL APIs; and
 //!   `pull_request::WebhookSignature`, which checks that a webhook delivery was
 //!   signed with the secret its webhook was registered with.
 //! - `github-app`: `github`, plus `pull_request::ApplicationClaims`, which
 //!   signs the JWT that authenticates as a GitHub App,
 //!   `pull_request::InstallationIssuer`, which trades it for an installation
-//!   access token, and `pull_request::TokenCache`, which holds each
-//!   installation's token until it nears expiry.
+//!   access token, `pull_request::TokenCache`, which holds each
+//!   installation's token until it nears expiry, and
+//!   `pull_request::ApplicationService`, which registers an App from its
+//!   manifest and lists its installations and their repositories.
 //! - `testing`: `RepositoryUrl::local`,
 //!   `pull_request::PullRequestService::standing_in_for` and, with
-//!   `github-app`, `pull_request::InstallationIssuer::standing_in_for`, which
-//!   reach a repository on the local disk or a mock API server. Nothing a
+//!   `github-app`, `pull_request::InstallationIssuer::standing_in_for` and
+//!   `pull_request::ApplicationService::standing_in_for`, which reach a
+//!   repository on the local disk or a mock API server. Nothing a
 //!   caller configures produces any of them, so only a test should enable it.
 
 mod branch_name;
@@ -69,6 +74,7 @@ mod parse_error;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub mod pull_request;
+mod remote_branch_name;
 mod repository_url;
 pub mod resolution;
 pub mod subject;
@@ -97,6 +103,12 @@ pub use crate::object_id::ObjectId;
 pub use crate::parse_error::ParseError;
 #[cfg(feature = "github-app")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]
+pub use crate::pull_request::Account;
+#[cfg(feature = "github-app")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]
+pub use crate::pull_request::AccountType;
+#[cfg(feature = "github-app")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]
 pub use crate::pull_request::ApplicationClaims;
 #[cfg(feature = "github-app")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]
@@ -104,12 +116,18 @@ pub use crate::pull_request::ApplicationError;
 #[cfg(feature = "github-app")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]
 pub use crate::pull_request::ApplicationId;
+#[cfg(feature = "github-app")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]
+pub use crate::pull_request::ApplicationService;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::AutoMerge;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::Blob;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::Branch;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::ChangedFile;
@@ -160,6 +178,9 @@ pub use crate::pull_request::GitHubBranch;
 pub use crate::pull_request::GitHubPullRequest;
 #[cfg(feature = "github-app")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]
+pub use crate::pull_request::Installation;
+#[cfg(feature = "github-app")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]
 pub use crate::pull_request::InstallationId;
 #[cfg(feature = "github-app")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]
@@ -167,6 +188,9 @@ pub use crate::pull_request::InstallationIssuer;
 #[cfg(feature = "github-app")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]
 pub use crate::pull_request::InstallationToken;
+#[cfg(feature = "github-app")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]
+pub use crate::pull_request::InstalledRepository;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::Issue;
@@ -236,6 +260,9 @@ pub use crate::pull_request::PullRequestState;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::RateLimit;
+#[cfg(feature = "github-app")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]
+pub use crate::pull_request::RegisteredApplication;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::Release;
@@ -245,6 +272,9 @@ pub use crate::pull_request::Repository;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::RepositoryPath;
+#[cfg(feature = "github-app")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]
+pub use crate::pull_request::RepositorySelection;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::ReviewEvent;
@@ -305,6 +335,7 @@ pub use crate::pull_request::minutes_between;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::tally;
+pub use crate::remote_branch_name::RemoteBranchName;
 pub use crate::repository_url::RepositoryUrl;
 pub use crate::resolution::ConflictSide;
 pub use crate::resolution::ResolutionVerdict;

@@ -1,10 +1,10 @@
 use crate::pull_request::application::ApplicationError;
+use crate::pull_request::application::service::parsed;
+use crate::pull_request::application::timestamp::instant;
 use abnegate_secret::SecretValue;
-use chrono::DateTime;
 use serde::Deserialize;
 use std::time::Duration;
 use std::time::SystemTime;
-use std::time::UNIX_EPOCH;
 
 /// An installation access token, and when GitHub said it expires.
 #[derive(Debug, Clone)]
@@ -40,8 +40,7 @@ impl InstallationToken {
     /// Any failure is [`ApplicationError::Response`] alone, since the answer
     /// that failed to parse is the one that may hold the token.
     pub(super) fn parse(body: &[u8]) -> Result<Self, ApplicationError> {
-        let payload: Payload =
-            serde_json::from_slice(body).map_err(|_| ApplicationError::Response)?;
+        let payload: Payload = parsed(body)?;
         if payload.token.expose().is_empty() {
             return Err(ApplicationError::Response);
         }
@@ -68,24 +67,11 @@ impl InstallationToken {
     }
 }
 
-/// The instant an RFC 3339 timestamp names, or `None` when it names none or
-/// one this platform's clock cannot hold.
-fn instant(timestamp: &str) -> Option<SystemTime> {
-    let parsed = DateTime::parse_from_rfc3339(timestamp).ok()?;
-    let seconds = parsed.timestamp();
-    let fraction = Duration::from_nanos(u64::from(parsed.timestamp_subsec_nanos()));
-    let whole = Duration::from_secs(seconds.unsigned_abs());
-    let second = match seconds < 0 {
-        true => UNIX_EPOCH.checked_sub(whole),
-        false => UNIX_EPOCH.checked_add(whole),
-    }?;
-    second.checked_add(fraction)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::pull_request::application::fixtures::at;
+    use std::time::UNIX_EPOCH;
 
     /// An instant well after the Unix epoch.
     const NOW: u64 = 1_700_000_000;

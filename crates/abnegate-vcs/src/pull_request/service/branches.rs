@@ -1,7 +1,10 @@
 use super::*;
 use crate::commit_sha::CommitSha;
 use crate::parse_error::ParseError;
+use crate::pull_request::Branch;
+use crate::pull_request::Page;
 use crate::pull_request::github_commit::GitHubCommit;
+use crate::pull_request::github_repository_branch::GitHubRepositoryBranch;
 use crate::tag_name::TagName;
 
 /// What GitHub says when the ref asked to be deleted is not there.
@@ -90,6 +93,37 @@ impl PullRequestService {
         }
         Err(unexpected(status, &refusal))
     }
+
+    /// Page `page` of `repository`'s branches, in the order GitHub lists
+    /// them, at `per_page` rows a page up to GitHub's hundred.
+    ///
+    /// A row that leaves out anything GitHub sends on every branch, its name,
+    /// the commit at its tip or whether it is protected, is
+    /// [`PullRequestError::GitHubApi`], never a page without it. A name
+    /// `git check-ref-format` refuses, such as `a..b`, or a tip named by
+    /// anything but a full commit, is [`PullRequestError::Parse`] for the
+    /// whole page. A name only a command line would misread, such as
+    /// `+release` or `-dash`, is listed as GitHub spells it, a
+    /// [`crate::RemoteBranchName`] that
+    /// [`crate::RemoteBranchName::to_branch_name`] refuses.
+    pub async fn list_branches(
+        &self,
+        repository: &Repository,
+        token: &SecretValue,
+        page: NonZeroU32,
+        per_page: NonZeroU8,
+    ) -> PullRequestResult<Page<Branch>> {
+        let asked = asked(per_page);
+        let url = self.repository_endpoint(repository, &["branches"])?;
+        let rows: Vec<GitHubRepositoryBranch> = self.get(paged(url, page, asked), token).await?;
+        let read = rows.len();
+
+        let branches = rows
+            .into_iter()
+            .map(GitHubRepositoryBranch::branch)
+            .collect::<Result<_, _>>()?;
+        Ok(Page::after(branches, page, read, asked))
+    }
 }
 
 #[cfg(test)]
@@ -98,8 +132,11 @@ mod tests {
     use crate::pull_request::service::fixtures::Expected;
     use crate::pull_request::service::fixtures::commit;
     use crate::pull_request::service::fixtures::project;
+    use crate::pull_request::service::fixtures::query_is;
     use crate::pull_request::service::fixtures::stand_in;
     use crate::pull_request::service::fixtures::token;
+    use crate::remote_branch_name::RemoteBranchName;
+    use serde_json::Value;
     use serde_json::json;
     use std::mem::discriminant;
     use wiremock::Mock;
@@ -444,5 +481,314 @@ mod tests {
 
             assert!(expected(&failure), "{answer}: {failure:?}");
         }
+    }
+
+    /// Where acme/project's branches are listed.
+    const BRANCHES: &str = "/repos/acme/project/branches";
+
+    /// What GitHub sends on every branch, without which a row is unreadable.
+    const REQUIRED: &[&str] = &["name", "commit", "protected"];
+
+    /// A marker no error may repeat from an answer it refuses.
+    const SENTINEL: &str = "RAW-SENTINEL";
+
+    fn page(number: u32) -> NonZeroU32 {
+        NonZeroU32::new(number).unwrap()
+    }
+
+    fn rows(count: u8) -> NonZeroU8 {
+        NonZeroU8::new(count).unwrap()
+    }
+
+    fn tip(name: &str, digit: char, protected: bool) -> Branch {
+        Branch::new(
+            RemoteBranchName::parse(name).unwrap(),
+            commit(digit),
+            protected,
+        )
+    }
+
+    fn described(branch: &Branch) -> Value {
+        json!({
+            "name": branch.name.as_str(),
+            "commit": {
+                "sha": branch.commit.as_str(),
+                "url": format!("https://api.github.com/repos/acme/project/commits/{}", branch.commit),
+            },
+            "protected": branch.protected,
+        })
+    }
+
+    fn row(name: &str, sha: &str) -> Value {
+        json!({ "name": name, "commit": { "sha": sha }, "protected": false })
+    }
+
+    /// A page of branches padded to exactly `length` bytes with
+    /// [`SENTINEL`].
+    fn padded(length: usize) -> String {
+        let opening = format!(r#"["{SENTINEL}"#);
+        let closing = r#""]"#;
+        let padding = "x".repeat(length - opening.len() - closing.len());
+        format!("{opening}{padding}{closing}")
+    }
+
+    async fn listing(server: &MockServer, asked: &str, response: ResponseTemplate) {
+        Mock::given(method("GET"))
+            .and(path(BRANCHES))
+            .and(header("authorization", "Bearer token"))
+            .and(header("accept", ACCEPT))
+            .and(query_is(&[("per_page", asked), ("page", "2")]))
+            .respond_with(response)
+            .expect(1)
+            .mount(server)
+            .await;
+    }
+
+    async fn listed(server: &MockServer, asked: &str, listed: Vec<Value>) {
+        listing(
+            server,
+            asked,
+            ResponseTemplate::new(200).set_body_json(listed),
+        )
+        .await;
+    }
+
+    async fn list(server: &MockServer, per_page: u8) -> PullRequestResult<Page<Branch>> {
+        let service = stand_in(server).await;
+        service
+            .list_branches(&project(&service), &token(), page(2), rows(per_page))
+            .await
+    }
+
+    #[tokio::test]
+    async fn a_full_page_of_branches_is_asked_for_and_followed() {
+        let server = MockServer::start().await;
+        let branches = vec![tip("main", 'a', true), tip("develop", 'b', false)];
+        listed(&server, "2", branches.iter().map(described).collect()).await;
+
+        let page_read = list(&server, 2).await.unwrap();
+
+        assert_eq!(page_read, Page::new(branches, Some(page(3))));
+    }
+
+    #[tokio::test]
+    async fn a_short_page_of_branches_is_the_last() {
+        let server = MockServer::start().await;
+        let branches = vec![tip("main", 'a', true)];
+        listed(&server, "2", branches.iter().map(described).collect()).await;
+
+        let page_read = list(&server, 2).await.unwrap();
+
+        assert_eq!(page_read, Page::new(branches, None));
+    }
+
+    #[tokio::test]
+    async fn no_more_branches_are_asked_for_than_github_sends() {
+        let server = MockServer::start().await;
+        listed(&server, "100", Vec::new()).await;
+
+        let page_read = list(&server, u8::MAX).await.unwrap();
+
+        assert_eq!(page_read, Page::new(Vec::new(), None));
+    }
+
+    #[tokio::test]
+    async fn a_slashed_branch_name_is_read_intact() {
+        let server = MockServer::start().await;
+        let slashed = tip("feature/one", 'c', false);
+        listed(&server, "2", vec![described(&slashed)]).await;
+
+        let page_read = list(&server, 2).await.unwrap();
+
+        assert_eq!(page_read.items, [slashed]);
+        assert_eq!(page_read.items[0].name.as_str(), "feature/one");
+    }
+
+    #[tokio::test]
+    async fn a_branch_name_a_command_line_would_misread_is_listed_with_the_rest() {
+        let server = MockServer::start().await;
+        let branches = vec![
+            tip("main", 'a', true),
+            tip("+release", 'b', false),
+            tip("-dash", 'c', false),
+        ];
+        listed(&server, "3", branches.iter().map(described).collect()).await;
+
+        let page_read = list(&server, 3).await.unwrap();
+
+        assert_eq!(page_read, Page::new(branches, Some(page(3))));
+        for (branch, name) in page_read.items[1..].iter().zip(["+release", "-dash"]) {
+            assert_eq!(branch.name.as_str(), name);
+            assert_eq!(
+                branch.name.to_branch_name(),
+                Err(ParseError::BranchName(name.to_string())),
+                "{name:?} reached a command line"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_branch_name_git_refuses_fails_the_whole_page() {
+        for name in ["", "a..b", "a b", "dir/.hidden", "branch.lock"] {
+            let server = MockServer::start().await;
+            listed(
+                &server,
+                "2",
+                vec![
+                    described(&tip("main", 'a', true)),
+                    row(name, &"b".repeat(40)),
+                ],
+            )
+            .await;
+
+            let failure = list(&server, 2).await.unwrap_err();
+
+            assert!(
+                matches!(failure, PullRequestError::Parse(ParseError::BranchName(_))),
+                "{name:?}: {failure:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_branch_tip_named_by_anything_but_a_full_commit_fails_the_whole_page() {
+        for sha in ["abc1234", "", &"g".repeat(40)] {
+            let server = MockServer::start().await;
+            listed(&server, "2", vec![row("main", sha)]).await;
+
+            let failure = list(&server, 2).await.unwrap_err();
+
+            assert!(
+                matches!(failure, PullRequestError::Parse(ParseError::CommitSha(_))),
+                "{sha:?}: {failure:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_branch_row_missing_what_github_always_sends_fails_the_whole_page() {
+        for required in REQUIRED {
+            let server = MockServer::start().await;
+            let mut partial = described(&tip("develop", 'b', false));
+            partial.as_object_mut().unwrap().remove(*required);
+            listed(
+                &server,
+                "2",
+                vec![described(&tip("main", 'a', true)), partial],
+            )
+            .await;
+
+            let failure = list(&server, 2).await.unwrap_err();
+
+            assert!(
+                matches!(failure, PullRequestError::GitHubApi(ref text) if text == UNREADABLE),
+                "{required} missing: {failure:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refused_branch_listing_is_reported_as_what_it_is() {
+        let missing: Expected = |failure| matches!(failure, PullRequestError::NotFound);
+        let unauthenticated: Expected =
+            |failure| matches!(failure, PullRequestError::AuthenticationFailed);
+        for (response, expected) in [
+            (
+                ResponseTemplate::new(404).set_body_json(json!({ "message": "Not Found" })),
+                missing,
+            ),
+            (ResponseTemplate::new(401), unauthenticated),
+        ] {
+            let server = MockServer::start().await;
+            listing(&server, "2", response).await;
+
+            let failure = list(&server, 2).await.unwrap_err();
+
+            assert!(expected(&failure), "{failure:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_branch_page_past_the_answer_bound_is_an_error_and_never_a_shorter_list() {
+        let server = MockServer::start().await;
+        listing(
+            &server,
+            "2",
+            ResponseTemplate::new(200).set_body_string(padded(MAXIMUM_ANSWER_BYTES + 1)),
+        )
+        .await;
+
+        let failure = list(&server, 2).await.unwrap_err();
+
+        assert!(
+            matches!(failure, PullRequestError::GitHubApi(ref text) if text == OVERSIZED),
+            "{failure:?}"
+        );
+        assert!(!format!("{failure:?}").contains(SENTINEL), "{failure:?}");
+    }
+
+    #[tokio::test]
+    async fn a_branch_listing_redirected_to_another_origin_is_not_followed() {
+        let origin = MockServer::start().await;
+        let elsewhere = MockServer::start().await;
+        listing(
+            &origin,
+            "2",
+            ResponseTemplate::new(301)
+                .insert_header("location", format!("{}{BRANCHES}", elsewhere.uri())),
+        )
+        .await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+            .mount(&elsewhere)
+            .await;
+
+        let result = list(&origin, 2).await;
+
+        let received = elsewhere.received_requests().await.unwrap();
+        assert!(
+            received
+                .iter()
+                .all(|request| !request.headers.contains_key("authorization")),
+            "the token must never reach another origin"
+        );
+        assert!(
+            received.is_empty(),
+            "a redirect to another origin must not be followed"
+        );
+        assert!(
+            matches!(result, Err(PullRequestError::GitHubApi(_))),
+            "{result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_branch_listing_that_stalls_is_given_up_on() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!([]))
+                    .set_delay(Duration::from_secs(10)),
+            )
+            .mount(&server)
+            .await;
+        let service = PullRequestService::addressing(
+            Origin::standing_in_for("github.com", &server.uri()).unwrap(),
+            false,
+            Duration::from_millis(200),
+        )
+        .unwrap();
+        let started = std::time::Instant::now();
+
+        let failure = service
+            .list_branches(&project(&service), &token(), page(2), rows(2))
+            .await;
+
+        assert!(
+            matches!(failure, Err(PullRequestError::Http(ref error)) if error.is_timeout()),
+            "{failure:?}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 }

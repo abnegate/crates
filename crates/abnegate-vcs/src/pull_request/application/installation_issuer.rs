@@ -1,26 +1,20 @@
-use crate::pull_request::PullRequestError;
+use crate::pull_request::application::API_VERSION;
+use crate::pull_request::application::API_VERSION_HEADER;
 use crate::pull_request::application::ApplicationError;
 use crate::pull_request::application::InstallationId;
 use crate::pull_request::application::InstallationToken;
+use crate::pull_request::application::service::answered;
 use crate::pull_request::origin::Origin;
 use crate::pull_request::service::ACCEPT;
 use crate::pull_request::service::GITHUB_API_URL;
-use crate::pull_request::service::MAXIMUM_ANSWER_BYTES;
 use crate::pull_request::service::REQUEST_TIMEOUT;
 use crate::pull_request::service::client;
-use crate::pull_request::service::read_prefix;
 use abnegate_secret::SecretValue;
 use reqwest::Client;
 use reqwest::header;
 use reqwest::redirect::Policy;
 use std::time::Duration;
 use url::Url;
-
-/// The REST API version the installation token endpoint is asked under.
-const API_VERSION: &str = "2022-11-28";
-
-/// The header GitHub reads the REST API version a request wants from.
-const API_VERSION_HEADER: &str = "X-GitHub-Api-Version";
 
 /// Trades a GitHub App's JWT for an installation access token.
 ///
@@ -55,11 +49,22 @@ impl InstallationIssuer {
         Self::addressing(origin, true, REQUEST_TIMEOUT)
     }
 
+    /// Ask the origin an operator configured, as [`Self::configured`] does,
+    /// or a plain HTTP one, such as a GitHub Enterprise install on a private
+    /// network, which is then reached over plain HTTP. An HTTPS origin is
+    /// still reached over HTTPS alone. Over plain HTTP every JWT sent, and
+    /// every installation token issued, cross the network unencrypted.
+    pub fn configured_allowing_http(url: &str) -> Result<Self, ApplicationError> {
+        let origin = Origin::configured(url, true).map_err(|_| ApplicationError::InvalidOrigin)?;
+        let https_only = !origin.plain();
+        Self::addressing(origin, https_only, REQUEST_TIMEOUT)
+    }
+
     /// Ask `url`, over whatever scheme it names.
     ///
     /// No operator setting produces one: a configured origin is reached over
-    /// HTTPS. Tests use this to drive the real request path against a mock
-    /// server.
+    /// HTTPS unless plain HTTP was allowed. Tests use this to drive the real
+    /// request path against a mock server.
     #[cfg(any(test, feature = "testing"))]
     pub fn standing_in_for(url: &str) -> Result<Self, ApplicationError> {
         let origin =
@@ -87,31 +92,13 @@ impl InstallationIssuer {
         jwt: &SecretValue,
         installation: InstallationId,
     ) -> Result<InstallationToken, ApplicationError> {
-        let response = self
+        let request = self
             .client
             .post(self.endpoint(installation)?)
             .header(header::ACCEPT, ACCEPT)
             .header(API_VERSION_HEADER, API_VERSION)
-            .bearer_auth(jwt.expose())
-            .send()
-            .await
-            .map_err(ApplicationError::transport)?;
-
-        let status = response.status();
-        if !status.is_success() {
-            return Err(ApplicationError::Status(status.as_u16()));
-        }
-
-        let (body, truncated) =
-            read_prefix(response, MAXIMUM_ANSWER_BYTES)
-                .await
-                .map_err(|error| match error {
-                    PullRequestError::Http(error) => ApplicationError::transport(error),
-                    _ => ApplicationError::Response,
-                })?;
-        if truncated {
-            return Err(ApplicationError::Response);
-        }
+            .bearer_auth(jwt.expose());
+        let body = answered(request).await?;
         InstallationToken::parse(&body)
     }
 
@@ -127,10 +114,11 @@ impl InstallationIssuer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pull_request::application::fixtures::GUARD;
+    use crate::pull_request::application::fixtures::SHORT_TIMEOUT;
+    use crate::pull_request::application::fixtures::stalling;
+    use crate::pull_request::service::MAXIMUM_ANSWER_BYTES;
     use serde_json::json;
-    use tokio::io::AsyncReadExt;
-    use tokio::io::AsyncWriteExt;
-    use tokio::net::TcpListener;
     use wiremock::Mock;
     use wiremock::MockServer;
     use wiremock::ResponseTemplate;
@@ -192,6 +180,55 @@ mod tests {
                 .as_str(),
             "https://api.github.com/app/installations/67890/access_tokens"
         );
+    }
+
+    #[test]
+    fn a_plain_http_origin_names_the_installation_once_the_operator_allows_it() {
+        assert_eq!(
+            InstallationIssuer::configured_allowing_http("http://192.168.1.5/api/v3")
+                .unwrap()
+                .endpoint(installation())
+                .unwrap()
+                .as_str(),
+            "http://192.168.1.5/api/v3/app/installations/67890/access_tokens"
+        );
+    }
+
+    #[test]
+    fn allowing_plain_http_admits_no_other_scheme_or_shape() {
+        for refused in [
+            "ftp://github.example.com",
+            "http://user:token@192.168.1.5",
+            "http://192.168.1.5/?token=x",
+            "http://192.168.1.5/#x",
+        ] {
+            assert!(
+                matches!(
+                    InstallationIssuer::configured_allowing_http(refused),
+                    Err(ApplicationError::InvalidOrigin)
+                ),
+                "{refused}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_plain_http_origin_the_operator_allowed_is_reached_over_plain_http() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(TOKEN_PATH))
+            .respond_with(issued())
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let token = InstallationIssuer::configured_allowing_http(&server.uri())
+            .unwrap()
+            .issue(&jwt(), installation())
+            .await
+            .unwrap();
+
+        assert_eq!(token.secret().expose(), "ghs_installationtokenvalue");
     }
 
     #[test]
@@ -338,47 +375,12 @@ mod tests {
         assert_eq!(token.secret().expose(), "ghs_installationtokenvalue");
     }
 
-    /// The timeout the stalled issuer is given.
-    const SHORT_TIMEOUT: Duration = Duration::from_millis(200);
-
-    /// Longer than a stalled issue may take, short of the production timeout.
-    const GUARD: Duration = Duration::from_secs(5);
-
     /// The start of a token answer that promises more than it sends.
     const STALLED: &str = "HTTP/1.1 201 Created\r\ncontent-type: application/json\r\ncontent-length: 1000\r\n\r\n{\"token\":";
 
-    /// A loopback stand-in that answers with [`STALLED`] and then holds the
-    /// connection open without sending another byte.
-    async fn stalling() -> String {
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("a loopback port to listen on");
-        let address = listener
-            .local_addr()
-            .expect("the address the listener is bound to");
-        tokio::spawn(async move {
-            while let Ok((mut stream, _)) = listener.accept().await {
-                tokio::spawn(async move {
-                    let mut request = Vec::new();
-                    let mut buffer = [0; 1024];
-                    while !request.windows(4).any(|end| end == b"\r\n\r\n") {
-                        let read = stream.read(&mut buffer).await.unwrap_or_default();
-                        if read == 0 {
-                            return;
-                        }
-                        request.extend_from_slice(&buffer[..read]);
-                    }
-                    let _ = stream.write_all(STALLED.as_bytes()).await;
-                    std::future::pending::<()>().await;
-                });
-            }
-        });
-        format!("http://{address}")
-    }
-
     #[tokio::test]
     async fn an_answer_that_stops_arriving_is_given_up_at_the_timeout() {
-        let origin = Origin::standing_in_for("", &stalling().await).unwrap();
+        let origin = Origin::standing_in_for("", &stalling(STALLED).await).unwrap();
         let issuer = InstallationIssuer::addressing(origin, false, SHORT_TIMEOUT).unwrap();
 
         let issued = tokio::time::timeout(GUARD, issuer.issue(&jwt(), installation()))

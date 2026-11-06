@@ -47,7 +47,11 @@
 //! call sends, such as a GraphQL node id, a title or a body, travels in its
 //! JSON, never in its URL. What GitHub answers is held to the same types: a
 //! branch or commit this crate does not accept is
-//! [`PullRequestError::Parse`], never read as something else.
+//! [`PullRequestError::Parse`], never read as something else. A branch
+//! GitHub lists is named by a [`crate::RemoteBranchName`], which keeps names
+//! such as `+release` that a [`crate::BranchName`] refuses, so one such
+//! branch never fails a page; it reaches a git command line only through
+//! [`crate::RemoteBranchName::to_branch_name`].
 //!
 //! [`PullRequestService::fetch_diff`] and [`PullRequestService::fetch_file`]
 //! read no more of the answer than the byte limit their caller passes, and
@@ -63,13 +67,15 @@
 //! `ApplicationClaims` signs the JWT that proves the caller is the App,
 //! `InstallationIssuer` trades it for an installation access token, and
 //! `TokenCache` holds each installation's token until it comes within five
-//! minutes of expiring.
+//! minutes of expiring. `ApplicationService` registers an App from its
+//! manifest and lists its installations and the repositories they reach.
 
 #[cfg(feature = "github-app")]
 mod application;
 mod auto_merge;
 mod automation;
 mod blob;
+mod branch;
 mod changed_file;
 mod check_run;
 mod checks_outcome;
@@ -117,6 +123,7 @@ mod github_pull_request;
 mod github_pull_request_detail;
 mod github_refusal;
 mod github_release;
+mod github_repository_branch;
 mod github_repository_name;
 mod github_review;
 mod github_status_state;
@@ -192,11 +199,19 @@ mod workflow_run;
 mod workflow_run_filter;
 
 #[cfg(feature = "github-app")]
+pub use crate::pull_request::application::Account;
+#[cfg(feature = "github-app")]
+pub use crate::pull_request::application::AccountType;
+#[cfg(feature = "github-app")]
 pub use crate::pull_request::application::ApplicationClaims;
 #[cfg(feature = "github-app")]
 pub use crate::pull_request::application::ApplicationError;
 #[cfg(feature = "github-app")]
 pub use crate::pull_request::application::ApplicationId;
+#[cfg(feature = "github-app")]
+pub use crate::pull_request::application::ApplicationService;
+#[cfg(feature = "github-app")]
+pub use crate::pull_request::application::Installation;
 #[cfg(feature = "github-app")]
 pub use crate::pull_request::application::InstallationId;
 #[cfg(feature = "github-app")]
@@ -204,10 +219,17 @@ pub use crate::pull_request::application::InstallationIssuer;
 #[cfg(feature = "github-app")]
 pub use crate::pull_request::application::InstallationToken;
 #[cfg(feature = "github-app")]
+pub use crate::pull_request::application::InstalledRepository;
+#[cfg(feature = "github-app")]
+pub use crate::pull_request::application::RegisteredApplication;
+#[cfg(feature = "github-app")]
+pub use crate::pull_request::application::RepositorySelection;
+#[cfg(feature = "github-app")]
 pub use crate::pull_request::application::TokenCache;
 pub use crate::pull_request::auto_merge::AutoMerge;
 pub use crate::pull_request::automation::PullRequestAutomation;
 pub use crate::pull_request::blob::Blob;
+pub use crate::pull_request::branch::Branch;
 pub use crate::pull_request::changed_file::ChangedFile;
 pub use crate::pull_request::check_run::CheckRun;
 pub use crate::pull_request::checks_outcome::ChecksOutcome;
