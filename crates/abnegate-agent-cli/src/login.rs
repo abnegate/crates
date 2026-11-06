@@ -17,8 +17,10 @@
 //! Nothing here stores a credential. Tokens come back in plaintext behind
 //! [`SecretValue`](abnegate_secret::SecretValue), whose `Debug` and `Display`
 //! are redacted; seal them before they reach storage. Every step fails with a
-//! [`LoginError`], which never repeats a response body, anything the request
-//! carried, or a secret the CLI was given.
+//! [`LoginError`]. The HTTP client's never repeat a response body or anything
+//! the request carried. A CLI's failure comes in its own words, which may
+//! quote a server, once every secret the CLI was given and anything shaped
+//! like a credential are redacted.
 
 pub mod claude;
 mod cli;
