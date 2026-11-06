@@ -218,6 +218,31 @@ async fn a_refresh_sends_the_scope_and_keeps_a_refresh_token_it_was_not_sent_aga
 }
 
 #[tokio::test]
+async fn a_refresh_of_tokens_that_name_no_scope_asks_for_the_one_granted() {
+    let (server, client) = answering(
+        200,
+        json!({"access_token": "fake-renewed-access-token", "expires_in": GRANTED}),
+    )
+    .await;
+    let tokens = Tokens {
+        scope: String::new(),
+        ..earlier()
+    };
+
+    client.refresh(&tokens).await.expect("refresh");
+
+    assert_eq!(
+        sent(&server).await,
+        json!({
+            "grant_type": "refresh_token",
+            "refresh_token": REFRESH,
+            "client_id": CLIENT_ID,
+        }),
+        "an empty scope asks for none at all; no scope keeps the one granted"
+    );
+}
+
+#[tokio::test]
 async fn a_refresh_that_rotates_the_refresh_token_keeps_the_new_one() {
     let (_server, client) = answering(
         200,
