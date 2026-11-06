@@ -53,11 +53,11 @@ given, which `codex exec` has nobody to ask about: every call to an attached
 server's tools is approved with its `default_tools_approval_mode = "approve"`,
 unless the server is supervised (`McpServer::supervise`, or `"supervised": true`
 in a configuration document), which leaves each call to Codex's own approval
-rules as before. Claude's own tools keep
-Claude's own permission checks. Codex's do not: `codex exec` never asks for
-approval, so only its sandbox confines them, whichever one
-`CliSettings::with_sandbox`, the user's configuration or a `--sandbox` argument
-names, and `danger-full-access` confines nothing.
+rules as before. Claude's own tools keep Claude's own permission checks.
+Codex's do not: `codex exec` never asks for approval, so only its sandbox
+confines them, whichever one `CliSettings::with_sandbox`, the user's
+configuration or a `--sandbox` argument names, and `danger-full-access`
+confines nothing.
 
 ## Models and effort
 

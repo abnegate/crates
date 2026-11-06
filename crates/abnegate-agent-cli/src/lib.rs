@@ -44,9 +44,8 @@
 //! confine Codex to a [`CodexSandbox`]; a session's file can be
 //! [found](Session::locate) in one home and [carried](Session::carry) into
 //! another, so a run signed in there resumes it. A Claude or Codex run can
-//! attach [`mcp`] servers and
-//! [withhold](CliSettings::withhold_tools) the agent's own tools, leaving it
-//! only theirs. A Claude run can restrict its tools, be confined to reading
+//! attach [`mcp`] servers and [withhold](CliSettings::withhold_tools) the
+//! agent's own tools, leaving it only theirs. A Claude run can restrict its tools, be confined to reading
 //! its working directory with [`CliSettings::read_only`],
 //! [isolated](CliSettings::isolated) from every setting the host configured
 //! for it, or ask an MCP tool for each
