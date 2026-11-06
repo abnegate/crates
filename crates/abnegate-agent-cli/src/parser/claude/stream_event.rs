@@ -1,9 +1,12 @@
+use std::collections::BTreeMap;
+
 use serde::Deserialize;
 
 use crate::event::AgentEvent;
 use crate::parser::claude::cli_message::CliMessage;
 use crate::parser::claude::cli_usage::CliUsage;
 use crate::parser::claude::lenient;
+use crate::parser::claude::model_usage::ModelUsage;
 use crate::parser::claude::rate_limit_report::RateLimitReport;
 use crate::parser::claude::turn::Turn;
 
@@ -109,6 +112,11 @@ pub enum StreamEvent {
         /// absent rather than losing the whole result.
         #[serde(default, deserialize_with = "lenient")]
         api_error_status: Option<u16>,
+        /// What the run used of each model it ran on, by the model's name,
+        /// read from `modelUsage`. A value of any other shape reads as
+        /// absent rather than losing the whole result.
+        #[serde(default, rename = "modelUsage", deserialize_with = "lenient")]
+        model_usage: Option<BTreeMap<String, ModelUsage>>,
     },
     /// A throttling report. Headroom on a named window of the plan, with how
     /// much of it is spent, is a [`AgentEvent::Window`]. Anything but
@@ -144,11 +152,14 @@ impl StreamEvent {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use serde_json::json;
 
     use super::StreamEvent;
     use crate::event::AgentEvent;
     use crate::parser::claude::cli_content_block::CliContentBlock;
+    use crate::parser::claude::model_usage::ModelUsage;
 
     fn parse(line: &str) -> StreamEvent {
         serde_json::from_str(line).expect("a stream event")
@@ -372,8 +383,55 @@ mod tests {
                 api_milliseconds: None,
                 usage: None,
                 api_error_status: None,
+                model_usage: None,
             }
         );
+    }
+
+    #[test]
+    fn a_result_reports_each_models_context_window_by_name() {
+        let event = parse(
+            r#"{"type":"result","subtype":"success","modelUsage":{"claude-sonnet-4-6":{"inputTokens":9,"contextWindow":200000},"claude-fable-5-1":{"contextWindow":1000000,"maxOutputTokens":64000}}}"#,
+        );
+        let StreamEvent::Result {
+            model_usage: Some(usage),
+            ..
+        } = event
+        else {
+            panic!("unexpected event: {event:?}");
+        };
+        assert_eq!(
+            usage,
+            BTreeMap::from([
+                (
+                    "claude-fable-5-1".to_string(),
+                    ModelUsage::default().with_context_window(1_000_000)
+                ),
+                (
+                    "claude-sonnet-4-6".to_string(),
+                    ModelUsage::default().with_context_window(200_000)
+                ),
+            ])
+        );
+    }
+
+    #[test]
+    fn a_model_usage_of_another_shape_keeps_the_rest_of_the_result() {
+        for usage in [r#"[1,2]"#, r#""wide""#, r#"{"claude-sonnet-4-6":5}"#] {
+            let event = parse(&format!(
+                r#"{{"type":"result","subtype":"success","result":"done","modelUsage":{usage}}}"#
+            ));
+            let StreamEvent::Result {
+                model_usage,
+                result,
+                ..
+            } = event
+            else {
+                panic!("unexpected event: {event:?}");
+            };
+            assert_eq!(model_usage, None, "{usage}");
+            assert_eq!(result.as_deref(), Some("done"), "{usage}");
+        }
     }
 
     #[test]

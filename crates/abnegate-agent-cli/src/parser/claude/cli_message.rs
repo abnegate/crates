@@ -7,6 +7,9 @@ use crate::parser::claude::cli_usage::CliUsage;
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[non_exhaustive]
 pub struct CliMessage {
+    /// The model that wrote the message, when the event names it.
+    #[serde(default)]
+    pub model: Option<String>,
     /// The message's blocks, in order.
     #[serde(default)]
     pub content: Vec<CliContentBlock>,
@@ -39,6 +42,7 @@ mod tests {
             let message: CliMessage = serde_json::from_str(json).expect("a message");
             assert!(message.content.is_empty(), "{json}");
             assert!(message.usage.is_none(), "{json}");
+            assert!(message.model.is_none(), "{json}");
         }
     }
 
@@ -79,6 +83,16 @@ mod tests {
             }]
         );
         assert_eq!(message.usage.and_then(|usage| usage.output_tokens), Some(6));
+    }
+
+    #[test]
+    fn the_model_that_wrote_it_is_read() {
+        let message: CliMessage = serde_json::from_str(
+            r#"{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"done"}]}"#,
+        )
+        .expect("a message");
+
+        assert_eq!(message.model.as_deref(), Some("claude-sonnet-4-6"));
     }
 
     #[test]

@@ -133,6 +133,27 @@ the name Claude streams it with (`five_hour`, `seven_day`, ...) and its
 `WindowKind`, and `StdoutParseResult::windows` keeps the latest report on each.
 The window only usage credits extend is never reported as one.
 
+## Context window
+
+A run reports the context window of the model its turn ran on, and how many
+tokens of it the turn's last request filled, as `AgentEvent::Occupancy`, kept
+in `StdoutParseResult::occupancy`. Claude names each model's window in its
+result's `modelUsage`: the window is the main agent's model's, filled by input,
+cache reads, cache writes and output of its latest request, or else the widest
+window the result names, with no fill. It comes with the rest of the result,
+ahead of the answer and the event that ends the turn.
+
+Codex writes the window only to the rollout it keeps of the session, under the
+`CODEX_HOME` the agent is given, or else `.codex` under its `HOME`. Once an
+agent that named its session exits by itself, its rollout is found by the
+session in `sessions/YYYY/MM/DD`, newest day first, never through a link, and
+read from its end, 64 KiB at first and at most 4 MiB, off the runtime and for
+at most 5 seconds. When it reports no window, the window Codex publishes for
+the run's model in `models_cache.json` is taken, cut to its effective share,
+with no fill. A stream yields it last, after the event that ended the turn;
+`execute` and `complete` fold it in with the rest. A run that timed out, was
+stopped, was dropped or tripped the tripwire reads no rollout.
+
 ## Failures
 
 A failure the agent reported is its own words, then `STDERR_HEADING`, then the

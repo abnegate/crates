@@ -248,6 +248,27 @@ impl Environment {
         }
     }
 
+    /// What the child is given for `variable`, with `host` reading this
+    /// process's variables as it did when the environment was built: the
+    /// host's value counts only when the child inherits the host's whole
+    /// environment and the name is not removed from it.
+    pub(crate) fn variable(
+        &self,
+        variable: &str,
+        host: &dyn Fn(&str) -> Option<OsString>,
+    ) -> Option<OsString> {
+        if let Some(value) = self.variables.get(variable) {
+            return Some(OsString::from(value.expose()));
+        }
+        if let Some(value) = self.inherited.get(variable) {
+            return Some(value.clone());
+        }
+        if self.inherit && !self.removed.contains(&variable) {
+            return host(variable);
+        }
+        None
+    }
+
     /// What the child will see for `variable` so far, falling back to the
     /// host.
     fn lookup(&self, variable: &str, host: &dyn Fn(&str) -> Option<OsString>) -> Option<String> {

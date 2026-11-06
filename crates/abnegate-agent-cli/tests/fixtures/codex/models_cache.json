@@ -1,0 +1,13 @@
+{
+  "models": [
+    {
+      "slug": "gpt-6.1-sol",
+      "context_window": 500000,
+      "effective_context_window_percent": 95
+    },
+    {
+      "slug": "gpt-6.1-mini",
+      "context_window": 272000
+    }
+  ]
+}
