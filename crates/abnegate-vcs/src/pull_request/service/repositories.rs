@@ -30,7 +30,10 @@ impl PullRequestService {
     /// [`PullRequestError::InvalidRepositoryName`] before anything is sent; a
     /// name the account already holds is
     /// [`PullRequestError::RepositoryExists`]; an organisation the token
-    /// cannot see is [`PullRequestError::NotFound`].
+    /// cannot see is [`PullRequestError::NotFound`]. An empty token is refused
+    /// as a write is, before the account is asked about, so under
+    /// [`Self::with_anonymous_reads`] it is
+    /// [`PullRequestError::AuthenticationRequired`] with nothing sent.
     pub async fn create_repository(
         &self,
         token: &SecretValue,
@@ -43,6 +46,7 @@ impl PullRequestService {
         if !named(name) || owner.is_some_and(|owner| !named(owner)) {
             return Err(PullRequestError::InvalidRepositoryName);
         }
+        self.credential(&Method::POST, token)?;
 
         let organisation = match owner {
             Some(owner) => {

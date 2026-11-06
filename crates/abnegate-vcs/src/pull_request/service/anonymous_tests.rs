@@ -27,6 +27,15 @@ const JOB_LOG: &str = "/repos/acme/project/actions/jobs/9/logs";
 /// Where GitHub stores job 9's log, on the same origin.
 const STORED_LOG: &str = "/storage/log";
 
+/// The path GitHub names the account a token belongs to at.
+const USER: &str = "/user";
+
+/// The path a repository is created under the organisation `acme` at.
+const ORGANISATION_REPOSITORIES: &str = "/orgs/acme/repos";
+
+/// The path a repository is created under the token's own user at.
+const USER_REPOSITORIES: &str = "/user/repos";
+
 /// The path a comment on pull request 7's conversation is posted to.
 const COMMENTS: &str = "/repos/acme/project/issues/7/comments";
 
@@ -149,6 +158,36 @@ async fn an_empty_tokens_write_is_refused_unsent_under_anonymous_reads() {
     assert!(
         matches!(posted, Err(PullRequestError::AuthenticationRequired)),
         "{posted:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_empty_tokens_repository_is_refused_unsent_before_its_owner_is_looked_up() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(USER))
+        .respond_with(ResponseTemplate::new(401))
+        .expect(0)
+        .mount(&server)
+        .await;
+    for creation in [ORGANISATION_REPOSITORIES, USER_REPOSITORIES] {
+        Mock::given(method("POST"))
+            .and(path(creation))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(0)
+            .mount(&server)
+            .await;
+    }
+    untouched(&server).await;
+    let service = anonymous(&server).await;
+
+    let created = service
+        .create_repository(&empty(), Some("acme"), "project", "", true)
+        .await;
+
+    assert!(
+        matches!(created, Err(PullRequestError::AuthenticationRequired)),
+        "{created:?}"
     );
 }
 
