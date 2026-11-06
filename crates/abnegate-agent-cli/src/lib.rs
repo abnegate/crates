@@ -153,8 +153,10 @@
 //!
 //! The `login` feature adds the `login` module, which signs an agent's CLI in
 //! on someone's behalf: `login::claude` runs the PKCE sign-in
-//! `claude setup-token` runs and hands back the tokens for the caller to
-//! store as it sees fit.
+//! `claude setup-token` runs and hands back the tokens, `login::codex` runs
+//! `codex login --device-auth` and hands back the login it saved, each for
+//! the caller to store as it sees fit, and `login::Status` asks either CLI
+//! whether it is signed in.
 //!
 //! # Platform support
 //!

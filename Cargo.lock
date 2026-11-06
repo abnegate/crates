@@ -52,6 +52,7 @@ dependencies = [
  "futures",
  "getrandom 0.4.3",
  "nix",
+ "regex",
  "reqwest 0.13.5",
  "serde",
  "serde_json",

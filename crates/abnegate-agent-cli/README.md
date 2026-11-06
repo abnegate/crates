@@ -168,15 +168,37 @@ checked as it is set, refusing link-local and cloud metadata targets but not
 loopback or LAN hosts. The client goes through no proxy, follows no redirect
 and names itself `abnegate-agent-cli/<version>`.
 
+`login::codex` signs Codex in the way `codex login --device-auth` does.
+`DeviceLogin::start` runs codex with exactly the environment it is given, in
+a process group of its own with nothing on its stdin, its `CODEX_HOME` a
+private (0700) staging directory under `<root>/.login`: codex deletes any
+login in its home before it prints a code, so no existing login is touched
+until the new one is promoted. It returns once codex has printed the `Prompt`,
+the link and one-time code a person enters, whose `Debug` hides the code. The
+`Device` it hands back resolves to the `Staging` directory once codex exits
+having saved a regular-file `auth.json` there; sending on its `cancel`, or
+dropping it, stops codex, and so does the code's expiry, each terminating
+codex's whole group and killing what is left of it after a grace period.
+`Staging::promote` moves the login into a home in one rename, and `Account`
+reads whose ChatGPT login it is, its `key` telling one login from another.
+`DeviceLogin::logout` runs `codex logout` against a home, `Limits` bounds how
+long each stage may take, and `login::Status::check` asks either CLI whether
+it is signed in, labelled with its plan or how it signed in.
+
 Nothing is stored for you: `Tokens` serialise their secrets in plaintext, so
-seal them before they reach storage. A `LoginError` never repeats a response
-body or anything the request sent; a refusal is its HTTP status and the
-`Refusal` its OAuth error names.
+seal them before they reach storage, and a staged codex login is codex's own
+`auth.json`, to promote or read and keep however you keep credentials. A
+`LoginError` never repeats a response body or anything the request sent; a
+refusal is its HTTP status and the `Refusal` its OAuth error names, and a
+CLI's own words have its one-time code and anything shaped like a credential
+redacted.
 
 ## Features
 
 - `login`: the `login` module, which signs an agent's CLI in: `login::claude`
-  runs Claude's PKCE sign-in and hands back its `Tokens`.
+  runs Claude's PKCE sign-in and hands back its `Tokens`, `login::codex` runs
+  Codex's device-code sign-in and hands back the login it saved, and
+  `login::Status` asks either CLI whether it is signed in.
 
 ## Usage
 
