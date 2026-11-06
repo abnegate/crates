@@ -47,6 +47,9 @@
 //! them, in an [`AgentStream`] that ends in the error
 //! [`complete`](abnegate_llm::CompletionProvider::complete) would have
 //! returned when the run failed; `complete` is that stream read to its end.
+//! Each block of prose after the first starts with a paragraph break, so the
+//! blocks read apart when joined, and [`activity`] is the markdown line a
+//! reader can be shown for a tool the agent ran for itself.
 //! [`AgentKind::ALL`] lists the agents, and [`AgentKind::named`] finds one by
 //! its name.
 //!
@@ -150,7 +153,8 @@
 //! subagent's refusal is never the turn's: Claude hands it to the main agent,
 //! which answers without it.
 //! A turn the account's usage credits carry past the plan's window is logged
-//! once, at info, and named in [`StdoutParseResult::credits`]. A failed
+//! once, at info, with the run's working directory, and named in
+//! [`StdoutParseResult::credits`]. A failed
 //! Claude result, such as one out of turns (`error_max_turns`), fails in its
 //! words and then the `errors` it lists, a line apiece, and in its subtype
 //! only when it gave neither.
@@ -160,6 +164,7 @@
 //! Unix only, like the process-group handling it borrows from
 //! `abnegate-exec`.
 
+mod activity;
 mod agent_stream;
 mod attachments;
 mod cleanup;
@@ -177,6 +182,7 @@ pub mod log;
 pub mod mcp;
 mod outcome;
 mod overlong_error;
+mod paragraphs;
 pub mod parser;
 mod provider;
 mod question;
@@ -197,6 +203,7 @@ pub mod transcript;
 mod tripwire;
 mod verdict;
 
+pub use crate::activity::activity;
 pub use crate::agent_stream::AgentStream;
 pub use crate::attachments::Attachments;
 pub use crate::cleanup::Cleanup;

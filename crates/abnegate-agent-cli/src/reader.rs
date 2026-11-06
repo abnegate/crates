@@ -1,5 +1,7 @@
 //! Turning an agent's stdout into events while it streams.
 
+use std::path::PathBuf;
+
 use abnegate_exec::executor::OutputLimiter;
 use serde_json::json;
 use tokio::io::AsyncReadExt;
@@ -15,6 +17,7 @@ use crate::log::Journal;
 use crate::log::Record;
 use crate::log::Sink;
 use crate::overlong_error::OverlongError;
+use crate::paragraphs::Paragraphs;
 use crate::parser;
 use crate::parser::Turn;
 use crate::scrubber::Scrubber;
@@ -40,7 +43,12 @@ const BUFFER: usize = 8 * 1024;
 /// whole event that repeats them is scrubbed as one.
 ///
 /// Its lines are read through one [`Turn`], and a turn the account's usage
-/// credits carry past the plan's window is logged once, at info.
+/// credits carry past the plan's window is logged once, at info, with the
+/// run's working directory.
+///
+/// Every block of prose after the first starts with a paragraph break, which
+/// counts against the output limit like the rest of it. The final answer is
+/// left as the agent gave it.
 ///
 /// [Forwarding](Reader::forwarding) hands each event on as it is read, up to
 /// the first failure or usage limit the agent reports, which ends what is
@@ -51,6 +59,8 @@ const BUFFER: usize = 8 * 1024;
 pub(crate) struct Reader {
     agent: AgentKind,
     turn: Turn,
+    paragraphs: Paragraphs,
+    directory: Option<PathBuf>,
     lines: Lines,
     limiter: OutputLimiter,
     limit: usize,
@@ -80,6 +90,8 @@ impl Reader {
         Self {
             agent,
             turn: agent.turn(),
+            paragraphs: Paragraphs::default(),
+            directory: None,
             lines: Lines::new(line_limit),
             limiter: OutputLimiter::new(output_limit),
             limit: output_limit,
@@ -99,6 +111,13 @@ impl Reader {
     /// Hand each event on to `forward` as it is read, when given.
     pub(crate) fn forwarding(mut self, forward: Option<mpsc::UnboundedSender<AgentEvent>>) -> Self {
         self.forward = forward;
+        self
+    }
+
+    /// Name `directory` as the run's working directory in what it logs, or
+    /// this process's own when there is none.
+    pub(crate) fn in_directory(mut self, directory: Option<PathBuf>) -> Self {
+        self.directory = directory;
         self
     }
 
@@ -199,7 +218,7 @@ impl Reader {
         self.turn.interpret(&line, &mut self.events);
         let events = std::mem::take(&mut self.events);
         for event in events {
-            let event = match event {
+            let event = match self.paragraphs.separated(event) {
                 AgentEvent::Text(text) => {
                     if self.limiter.admit(text.len()).accepted < text.len() {
                         return Err(format!("{} {} bytes", crate::PROSE_EXCEEDED, self.limit));
@@ -233,7 +252,16 @@ impl Reader {
                     AgentEvent::finished(finish_reason)
                 }
                 AgentEvent::Credits(window) => {
-                    tracing::info!(agent = %self.agent, %window, "the turn runs on usage credits past the plan's window");
+                    let directory = self
+                        .directory
+                        .clone()
+                        .or_else(|| std::env::current_dir().ok());
+                    tracing::info!(
+                        agent = %self.agent,
+                        %window,
+                        directory = directory.as_deref().map(|directory| tracing::field::display(directory.display())),
+                        "the turn runs on usage credits past the plan's window"
+                    );
                     AgentEvent::Credits(window)
                 }
                 event => event,
@@ -324,7 +352,7 @@ mod tests {
             .expect("the output to be read");
         assert_eq!(
             result.text,
-            "a".repeat(WRITTEN),
+            ["a"; WRITTEN].join("\n\n"),
             "output buffered before the drain started was dropped"
         );
         assert!(result.finished, "the buffered result was dropped");
