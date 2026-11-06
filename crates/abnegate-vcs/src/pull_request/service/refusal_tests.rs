@@ -86,14 +86,14 @@ async fn a_redirect_a_read_does_not_follow_is_refused_with_its_status() {
     );
     assert_eq!(
         failure.to_string(),
-        "GitHub refused the request with status 302: Moved elsewhere"
+        "GitHub answered with status 302: Moved elsewhere"
     );
 
     let failure = reading(ResponseTemplate::new(304)).await;
     assert!(refused_with(&failure, 304, ""), "{failure:?}");
     assert_eq!(
         failure.to_string(),
-        "GitHub refused the request with status 304"
+        "GitHub answered with status 304 Not Modified"
     );
 }
 
@@ -172,7 +172,7 @@ async fn a_failure_of_github_s_own_is_refused_with_its_status_and_never_sent_aga
         assert!(refused_with(&failure, status, message), "{failure:?}");
         assert_eq!(
             failure.to_string(),
-            format!("GitHub refused the request with status {status}: {message}")
+            format!("GitHub answered with status {status}: {message}")
         );
     }
 }
@@ -189,6 +189,11 @@ async fn an_answer_without_github_s_words_is_refused_with_none_of_its_body() {
         let failure = reading(ResponseTemplate::new(502).set_body_string(body)).await;
 
         assert!(refused_with(&failure, 502, ""), "{body}: {failure:?}");
+        assert_eq!(
+            failure.to_string(),
+            "GitHub answered with status 502 Bad Gateway",
+            "{body}"
+        );
         assert!(
             !format!("{failure} {failure:?}").contains("RAW-SENTINEL"),
             "{body}: {failure:?}"
@@ -217,7 +222,7 @@ async fn an_empty_answer_is_refused_with_no_words() {
     assert!(refused_with(&failure, 503, ""), "{failure:?}");
     assert_eq!(
         failure.to_string(),
-        "GitHub refused the request with status 503"
+        "GitHub answered with status 503 Service Unavailable"
     );
 }
 

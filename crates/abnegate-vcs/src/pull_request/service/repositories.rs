@@ -488,7 +488,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(
             refused.to_string(),
-            "GitHub refused the request with status 422: \
+            "GitHub answered with status 422: \
              Repository creation failed.; name is too long (maximum is 100 characters)"
         );
         assert!(

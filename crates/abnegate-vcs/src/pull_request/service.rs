@@ -2117,12 +2117,12 @@ mod tests {
             (
                 r#"{"message":"boom","documentation_url":"RAW-SENTINEL"}"#,
                 "boom",
-                "GitHub refused the request with status 500: boom",
+                "GitHub answered with status 500: boom",
             ),
             (
                 "<html>RAW-SENTINEL</html>",
                 "",
-                "GitHub refused the request with status 500",
+                "GitHub answered with status 500 Internal Server Error",
             ),
         ] {
             let server = MockServer::start().await;
@@ -2177,7 +2177,7 @@ mod tests {
 
         assert_eq!(
             failure.to_string(),
-            "GitHub refused the request with status 422: \
+            "GitHub answered with status 422: \
              Validation Failed; No commits between main and feature"
         );
         assert!(

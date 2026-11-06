@@ -2,6 +2,7 @@ use crate::branch_name::BranchName;
 use crate::parse_error::ParseError;
 use crate::pull_request::JobLogError;
 use crate::pull_request::RateLimit;
+use reqwest::StatusCode;
 use thiserror::Error;
 
 /// What went wrong asking GitHub about, or acting on, a pull request or a
@@ -10,17 +11,20 @@ use thiserror::Error;
 #[non_exhaustive]
 pub enum PullRequestError {
     /// GitHub answered in a way no other variant names, for the reason
-    /// given: an answer this crate cannot read or that is too long to, a
-    /// write it redirected somewhere the write is not sent on to, or a refusal
-    /// its GraphQL API reported. An HTTP status no other variant names is
+    /// given: an answer this crate cannot read, or one about something other
+    /// than what was asked, such as an answer too long to read, a write it
+    /// redirected somewhere the write is not sent on to, or a refusal its
+    /// GraphQL API reported. An HTTP status no other variant names is
     /// [`PullRequestError::Refused`].
     #[error("GitHub API error: {0}")]
     GitHubApi(String),
 
-    /// GitHub answered with an HTTP status no other variant names: a redirect
-    /// that was not followed, a conflict, a refusal of what was sent that is
-    /// not a duplicate, or a failure of its own.
-    #[error("GitHub refused the request with status {status}{}", said(.message))]
+    /// GitHub answered with an HTTP status no other variant names, such as a
+    /// 3xx redirect that was not followed, a 400, a 406, a 409 outside a
+    /// merge, a 410, a 422 that is not a duplicate, or a 5xx failure of its
+    /// own. Its text names the status, then GitHub's words after a colon, or
+    /// the status's standard reason where GitHub gave none.
+    #[error("GitHub answered with status {status}{}", said(*.status, .message))]
     #[non_exhaustive]
     Refused {
         /// The HTTP status GitHub answered with.
@@ -206,11 +210,16 @@ impl PullRequestError {
 }
 
 /// What follows the status in a refusal's text: GitHub's `message` after a
-/// colon, or nothing where it said nothing.
-fn said(message: &str) -> String {
+/// colon, or where it said nothing, the standard reason for `status`, if it
+/// has one.
+fn said(status: u16, message: &str) -> String {
     match message.is_empty() {
-        true => String::new(),
         false => format!(": {message}"),
+        true => StatusCode::from_u16(status)
+            .ok()
+            .and_then(|code| code.canonical_reason())
+            .map(|reason| format!(" {reason}"))
+            .unwrap_or_default(),
     }
 }
 
@@ -240,7 +249,7 @@ mod tests {
     }
 
     #[test]
-    fn a_refusal_names_its_status_and_github_s_words_only_when_there_are_any() {
+    fn a_refusal_names_its_status_and_github_s_words_or_else_the_status_s_reason() {
         let refused = PullRequestError::refused(503, "Service Unavailable");
         assert!(
             matches!(
@@ -251,11 +260,15 @@ mod tests {
         );
         assert_eq!(
             refused.to_string(),
-            "GitHub refused the request with status 503: Service Unavailable"
+            "GitHub answered with status 503: Service Unavailable"
         );
         assert_eq!(
-            PullRequestError::refused(500, "").to_string(),
-            "GitHub refused the request with status 500"
+            PullRequestError::refused(502, "").to_string(),
+            "GitHub answered with status 502 Bad Gateway"
+        );
+        assert_eq!(
+            PullRequestError::refused(599, "").to_string(),
+            "GitHub answered with status 599"
         );
         assert!(!PullRequestError::refused(404, "").is_not_found());
     }
