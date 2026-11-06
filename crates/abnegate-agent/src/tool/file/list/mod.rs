@@ -2,6 +2,7 @@ mod parameters;
 
 use std::path::Path;
 use std::time::Duration;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use parameters::ListFilesParameters;
@@ -86,7 +87,8 @@ impl Tool for ListFilesTool {
             )));
         }
 
-        walking(OPERATION, context, move |walk, _| {
+        let deadline = Instant::now() + context.search_timeout;
+        walking(OPERATION, deadline, context, move |walk, _| {
             list(walk, &full_path, &parameters)
         })
         .await?
@@ -158,7 +160,6 @@ fn matches(name: &str, pattern: Option<&str>) -> bool {
 mod tests {
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
-    use std::time::Instant;
 
     use super::*;
 

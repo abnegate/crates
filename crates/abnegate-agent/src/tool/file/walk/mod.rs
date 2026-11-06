@@ -195,8 +195,8 @@ impl Walk {
     }
 }
 
-/// Run `work` on a walk given the context's `search_timeout`, and on a copy
-/// of the context, on the blocking pool, where reading a large tree holds a
+/// Run `work` on a walk that stops at `deadline`, and on a copy of the
+/// context, on the blocking pool, where reading a large tree holds a
 /// thread of its own rather than the async worker the caller's other tasks
 /// are waiting on.
 ///
@@ -206,12 +206,12 @@ impl Walk {
 /// a listing or a search, that did not.
 pub(super) async fn walking<Value: Send + 'static>(
     operation: &'static str,
+    deadline: Instant,
     context: &ToolContext,
     work: impl FnOnce(&mut Walk, &ToolContext) -> Value + Send + 'static,
 ) -> Result<Value, ToolError> {
     let abandoned = Arc::new(AtomicBool::new(false));
     let _abandon = Abandon(Arc::clone(&abandoned));
-    let deadline = Instant::now() + context.search_timeout;
     let context = context.clone();
     tokio::task::spawn_blocking(move || {
         let mut walk = Walk::new(deadline, abandoned, &context);
@@ -233,6 +233,11 @@ mod tests {
     use crate::test_support::PATIENCE;
 
     const OPERATION: &str = "walk";
+
+    /// A deadline no test reaches.
+    fn soon() -> Instant {
+        Instant::now() + PATIENCE
+    }
 
     /// A walk given `limit` from now that nobody abandons.
     fn walk_for(limit: Duration, context: &ToolContext) -> Walk {
@@ -311,7 +316,7 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         let context = ToolContext::default();
 
-        let walk = walking(OPERATION, &context, move |walk, _| {
+        let walk = walking(OPERATION, soon(), &context, move |walk, _| {
             while walk.exhausted().is_none() {
                 std::thread::sleep(Duration::from_millis(1));
             }
@@ -339,7 +344,7 @@ mod tests {
             }
         });
 
-        let heard = walking(OPERATION, &ToolContext::default(), move |_, _| {
+        let heard = walking(OPERATION, soon(), &ToolContext::default(), move |_, _| {
             let _ = started.send(());
             answered.recv_timeout(PATIENCE).is_ok()
         })
@@ -354,7 +359,7 @@ mod tests {
     /// where a listing and a search each used to name themselves.
     #[tokio::test]
     async fn a_walk_that_never_finishes_names_its_operation() {
-        let failed = walking("listing", &ToolContext::default(), |_, _| {
+        let failed = walking("listing", soon(), &ToolContext::default(), |_, _| {
             panic!("the walk breaks down")
         })
         .await;

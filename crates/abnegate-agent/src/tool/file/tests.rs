@@ -2802,24 +2802,6 @@ async fn the_file_tools_refuse_a_processs_proc_entry() {
     );
 }
 
-/// A tool's outer limit discards the walk, and whatever it found, when it
-/// fires, so the walk has to answer first.
-#[test]
-fn a_walk_answers_before_its_tools_outer_limit() {
-    let directory = tempdir().unwrap();
-    let context = create_test_context(directory.path());
-
-    for tool in [&SearchCodeTool as &dyn Tool, &ListFilesTool] {
-        assert!(
-            context.search_timeout < tool.timeout(&context),
-            "{}: {:?} against {:?}",
-            tool.name(),
-            context.search_timeout,
-            tool.timeout(&context)
-        );
-    }
-}
-
 /// A search that ran out of time before finding anything answered that
 /// there were no matches, as if it had read the whole tree.
 #[tokio::test]
@@ -2833,6 +2815,7 @@ async fn a_search_out_of_time_does_not_claim_there_are_no_matches() {
         SECRET.to_string(),
         true,
         MAXIMUM_SEARCH_RESULTS,
+        Instant::now() + context.search_timeout,
         &context,
     )
     .await

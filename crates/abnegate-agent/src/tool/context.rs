@@ -36,8 +36,9 @@ pub struct ToolContext {
     pub maximum_file_size: usize,
     /// How long a command runs when its call names no limit of its own.
     pub command_timeout: Duration,
-    /// How long `search_code` or `list_files` walks, or waits on `rg`, before
-    /// it reports what it found so far as stopped early. Twenty seconds by
+    /// How long `search_code` or `list_files` walks, or waits on `rg` and
+    /// any walk after it together, before it reports what it found so far as
+    /// stopped early. Twenty seconds by
     /// default. The tools' outer bound runs past it, so a search out of time
     /// still answers.
     pub search_timeout: Duration,
