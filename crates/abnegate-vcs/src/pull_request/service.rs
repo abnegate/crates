@@ -261,7 +261,9 @@ const GIT_SUFFIX: &str = ".git";
 ///
 /// A read that walks every page itself and returns a list, such as
 /// [`Self::fetch_files`] or [`Self::fetch_reviews`], takes a hundred rows a
-/// page and follows at most ten pages. A read that returns a
+/// page and follows at most ten pages. A review-thread read instead stops
+/// once it has asked for a thousand threads, however small halving left its
+/// pages. A read that returns a
 /// [`Page`](crate::pull_request::Page) reads only the page asked for, at the
 /// rows a page its caller asks for up to a hundred, and says in
 /// [`Page::next`](crate::pull_request::Page::next) which page follows. Every JSON answer,
