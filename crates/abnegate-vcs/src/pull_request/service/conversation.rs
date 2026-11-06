@@ -769,9 +769,8 @@ mod tests {
         assert!(
             matches!(
                 failure,
-                PullRequestError::GitHubApi(ref text)
-                    if text == "GitHub API returned 422 Unprocessable Entity: \
-                                Validation Failed; Body is too long (maximum is 65536 characters)"
+                PullRequestError::Refused { status: 422, ref message }
+                    if message == "Validation Failed; Body is too long (maximum is 65536 characters)"
             ),
             "{failure:?}"
         );
@@ -811,9 +810,8 @@ mod tests {
         assert!(
             matches!(
                 failure,
-                PullRequestError::GitHubApi(ref text)
-                    if text == "GitHub API returned 422 Unprocessable Entity: \
-                                Unprocessable Entity; Can not approve your own pull request"
+                PullRequestError::Refused { status: 422, ref message }
+                    if message == "Unprocessable Entity; Can not approve your own pull request"
             ),
             "{failure:?}"
         );

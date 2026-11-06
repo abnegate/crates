@@ -9,10 +9,29 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum PullRequestError {
-    /// GitHub refused the request, or answered in a way no other variant
-    /// names, for the reason given.
+    /// GitHub answered in a way no other variant names, for the reason
+    /// given: an answer this crate cannot read or that is too long to, a
+    /// write it redirected somewhere the write is not sent on to, or a refusal
+    /// its GraphQL API reported. An HTTP status no other variant names is
+    /// [`PullRequestError::Refused`].
     #[error("GitHub API error: {0}")]
     GitHubApi(String),
+
+    /// GitHub answered with an HTTP status no other variant names: a redirect
+    /// that was not followed, a conflict, a refusal of what was sent that is
+    /// not a duplicate, or a failure of its own.
+    #[error("GitHub refused the request with status {status}{}", said(.message))]
+    #[non_exhaustive]
+    Refused {
+        /// The HTTP status GitHub answered with.
+        status: u16,
+        /// GitHub's own words about it, from its answer alone and never from
+        /// the request, with anything shaped like a credential redacted, on
+        /// one line and bounded: its message and the details it listed, or,
+        /// where it gave neither, the start of its answer; empty where its
+        /// answer was empty.
+        message: String,
+    },
 
     /// GitHub did not accept the token, or a request was given an empty
     /// token without
@@ -165,6 +184,15 @@ impl PullRequestError {
         }
     }
 
+    /// GitHub answered with `status`, an HTTP status no other variant names,
+    /// saying `message` about it.
+    pub fn refused(status: u16, message: impl Into<String>) -> Self {
+        Self::Refused {
+            status,
+            message: message.into(),
+        }
+    }
+
     /// Whether what was asked for was not found, or not visible to the token:
     /// [`PullRequestError::NotFound`],
     /// [`PullRequestError::RepositoryNotFound`] or
@@ -174,6 +202,15 @@ impl PullRequestError {
             self,
             Self::NotFound | Self::RepositoryNotFound | Self::PullRequestNotFound
         )
+    }
+}
+
+/// What follows the status in a refusal's text: GitHub's `message` after a
+/// colon, or nothing where it said nothing.
+fn said(message: &str) -> String {
+    match message.is_empty() {
+        true => String::new(),
+        false => format!(": {message}"),
     }
 }
 
@@ -200,5 +237,26 @@ mod tests {
         ] {
             assert!(!other.is_not_found(), "{other:?}");
         }
+    }
+
+    #[test]
+    fn a_refusal_names_its_status_and_github_s_words_only_when_there_are_any() {
+        let refused = PullRequestError::refused(503, "Service Unavailable");
+        assert!(
+            matches!(
+                refused,
+                PullRequestError::Refused { status: 503, ref message } if message == "Service Unavailable"
+            ),
+            "{refused:?}"
+        );
+        assert_eq!(
+            refused.to_string(),
+            "GitHub refused the request with status 503: Service Unavailable"
+        );
+        assert_eq!(
+            PullRequestError::refused(500, "").to_string(),
+            "GitHub refused the request with status 500"
+        );
+        assert!(!PullRequestError::refused(404, "").is_not_found());
     }
 }

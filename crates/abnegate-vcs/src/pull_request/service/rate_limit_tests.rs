@@ -455,7 +455,7 @@ async fn only_a_rate_limit_with_a_readable_delay_is_waited_on() {
             matches!(failure, PullRequestError::RateLimited)
         }),
         (waiting(503, "0"), |failure| {
-            matches!(failure, PullRequestError::GitHubApi(_))
+            matches!(failure, PullRequestError::Refused { status: 503, .. })
         }),
     ];
     for (answer, expected) in answers {

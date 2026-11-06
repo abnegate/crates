@@ -741,8 +741,8 @@ mod tests {
         assert!(
             matches!(
                 failure,
-                PullRequestError::GitHubApi(ref text)
-                    if text == "GitHub API returned 410 Gone: Issues are disabled for this repo"
+                PullRequestError::Refused { status: 410, ref message }
+                    if message == "Issues are disabled for this repo"
             ),
             "{failure:?}"
         );
@@ -853,8 +853,8 @@ mod tests {
                 |failure| {
                     matches!(
                         failure,
-                        PullRequestError::GitHubApi(text)
-                            if text == "GitHub API returned 410 Gone: Issues are disabled for this repo"
+                        PullRequestError::Refused { status: 410, message }
+                            if message == "Issues are disabled for this repo"
                     )
                 },
             ),
@@ -873,9 +873,8 @@ mod tests {
                 |failure| {
                     matches!(
                         failure,
-                        PullRequestError::GitHubApi(text)
-                            if text == "GitHub API returned 422 Unprocessable Entity: \
-                                        Validation Failed; title is too long (maximum is 256 characters)"
+                        PullRequestError::Refused { status: 422, message }
+                            if message == "Validation Failed; title is too long (maximum is 256 characters)"
                     )
                 },
             ),

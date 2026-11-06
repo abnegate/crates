@@ -244,24 +244,24 @@ mod tests {
                     "message": "Cannot delete this protected branch",
                     "documentation_url": "RAW-SENTINEL",
                 })),
-                "GitHub API returned 422 Unprocessable Entity: Cannot delete this protected branch",
+                (422, "Cannot delete this protected branch"),
             ),
             (
-                ResponseTemplate::new(422)
-                    .set_body_string("<html>Reference does not exist RAW-SENTINEL</html>"),
-                "GitHub API returned 422 Unprocessable Entity",
+                ResponseTemplate::new(422).set_body_string("<html>Reference does not exist</html>"),
+                (422, "<html>Reference does not exist</html>"),
             ),
-            (
-                ResponseTemplate::new(500),
-                "GitHub API returned 500 Internal Server Error",
-            ),
+            (ResponseTemplate::new(500), (500, "")),
         ] {
             let server = answering(response).await;
 
             let failure = delete(&server, "task/one").await.unwrap_err();
 
             assert!(
-                matches!(failure, PullRequestError::GitHubApi(ref text) if text == expected),
+                matches!(
+                    failure,
+                    PullRequestError::Refused { status, ref message }
+                        if (status, message.as_str()) == expected
+                ),
                 "{failure:?}"
             );
             assert!(
@@ -384,12 +384,12 @@ mod tests {
     #[tokio::test]
     async fn any_other_refusal_to_resolve_is_reported_as_what_it_is() {
         let invalid: Expected = |failure| {
-            matches!(failure, PullRequestError::GitHubApi(text)
-                if text == "GitHub API returned 422 Unprocessable Entity: Validation Failed")
+            matches!(failure, PullRequestError::Refused { status: 422, message }
+                if message == "Validation Failed")
         };
         let empty: Expected = |failure| {
-            matches!(failure, PullRequestError::GitHubApi(text)
-                if text == "GitHub API returned 409 Conflict: Git Repository is empty.")
+            matches!(failure, PullRequestError::Refused { status: 409, message }
+                if message == "Git Repository is empty.")
         };
         let unauthenticated: Expected =
             |failure| matches!(failure, PullRequestError::AuthenticationFailed);
@@ -757,7 +757,10 @@ mod tests {
             "a redirect to another origin must not be followed"
         );
         assert!(
-            matches!(result, Err(PullRequestError::GitHubApi(_))),
+            matches!(
+                result,
+                Err(PullRequestError::Refused { status: 301, ref message }) if message.is_empty()
+            ),
             "{result:?}"
         );
     }

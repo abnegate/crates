@@ -410,11 +410,23 @@ mod tests {
                     "message": "Validation Failed",
                     "documentation_url": "https://docs.github.com/already exists",
                 })),
-                |refused| matches!(refused, PullRequestError::GitHubApi(_)),
+                |refused| {
+                    matches!(
+                        refused,
+                        PullRequestError::Refused { status: 422, message }
+                            if message == "Validation Failed"
+                    )
+                },
             ),
             (
                 ResponseTemplate::new(500).set_body_string("name already exists"),
-                |refused| matches!(refused, PullRequestError::GitHubApi(_)),
+                |refused| {
+                    matches!(
+                        refused,
+                        PullRequestError::Refused { status: 500, message }
+                            if message == "name already exists"
+                    )
+                },
             ),
         ];
         for (response, expected) in refusals {
@@ -476,7 +488,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(
             refused.to_string(),
-            "GitHub API error: GitHub API returned 422 Unprocessable Entity: \
+            "GitHub refused the request with status 422: \
              Repository creation failed.; name is too long (maximum is 100 characters)"
         );
         assert!(

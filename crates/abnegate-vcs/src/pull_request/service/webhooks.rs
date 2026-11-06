@@ -14,8 +14,8 @@ impl PullRequestService {
     /// The token needs admin access to the repository, or the
     /// `admin:repo_hook` scope; without it GitHub answers
     /// [`PullRequestError::NotFound`] or [`PullRequestError::Forbidden`]. A
-    /// webhook already delivering to `url` is refused by GitHub as
-    /// [`PullRequestError::GitHubApi`] rather than registered twice.
+    /// webhook already delivering to `url` is refused by GitHub with a 422, as
+    /// [`PullRequestError::Refused`], rather than registered twice.
     pub async fn create_webhook(
         &self,
         repository: &Repository,
@@ -173,7 +173,7 @@ mod tests {
                     "message": "Validation Failed",
                     "errors": [{ "message": "Hook already exists on this repository" }],
                 })),
-                PullRequestError::GitHubApi(String::new()),
+                PullRequestError::refused(422, ""),
             ),
         ] {
             let server = MockServer::start().await;

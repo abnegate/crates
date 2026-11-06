@@ -472,8 +472,8 @@ mod tests {
         assert!(
             matches!(
                 failure,
-                PullRequestError::GitHubApi(ref message)
-                    if message == "GitHub API returned 406 Not Acceptable: Sorry, the diff exceeded the maximum number of files (300)."
+                PullRequestError::Refused { status: 406, ref message }
+                    if message == "Sorry, the diff exceeded the maximum number of files (300)."
             ),
             "{failure:?}"
         );

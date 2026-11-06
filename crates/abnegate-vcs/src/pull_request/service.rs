@@ -61,6 +61,8 @@ mod pulls;
 mod rate_limit_tests;
 #[cfg(test)]
 mod redirect_tests;
+#[cfg(test)]
+mod refusal_tests;
 mod releases;
 mod repositories;
 mod threads;
@@ -104,8 +106,13 @@ const MAXIMUM_REDIRECTS: usize = 10;
 /// saying so.
 const RATE_LIMIT: &str = "rate limit";
 
-/// Most of GitHub's own words carried into [`PullRequestError::GitHubApi`].
+/// Most of GitHub's own words carried into an error.
 const MAXIMUM_ERROR_BYTES: usize = 1024;
+
+/// Most of the start of an answer that carried no words of GitHub's kept in
+/// [`PullRequestError::Refused`]: enough to tell a proxy's page or a gateway's
+/// apology apart, and no more of whatever the server chose to send.
+const MAXIMUM_EXCERPT_BYTES: usize = 200;
 
 /// What joins GitHub's words when several are carried on one line.
 const SEPARATOR: &str = "; ";
@@ -212,9 +219,10 @@ const GIT_SUFFIX: &str = ".git";
 /// body; a redirect to another origin, which would carry the token there; one
 /// whose `Location` is missing or cannot be read; one past the tenth hop; one
 /// that answers once the write's time is spent; and any redirect of a write
-/// whose body can be sent only once. [`Self::fetch_job_log`] alone follows
-/// one redirect off the origin, without the token, to where GitHub stores
-/// logs.
+/// whose body can be sent only once. A redirect a read does not follow is
+/// [`PullRequestError::Refused`] with its status. [`Self::fetch_job_log`]
+/// alone follows one redirect off the origin, without the token, to where
+/// GitHub stores logs.
 ///
 /// A request is given 30 seconds from when it is first sent to the last byte
 /// of its answer, and every hop of a redirect spends them rather than starting
@@ -243,14 +251,19 @@ const GIT_SUFFIX: &str = ".git";
 /// except that [`Self::delete_branch`] and [`Self::delete_webhook`] read a 404
 /// as already gone. Under [`Self::with_retry_after`], a 403 or 429 that says
 /// no requests are left in the window is
-/// [`PullRequestError::QuotaExhausted`] instead.
+/// [`PullRequestError::QuotaExhausted`] instead. A status none of these
+/// names, and that the method does not read for itself, such as a 409, a 422
+/// that is not a duplicate or a 5xx, is [`PullRequestError::Refused`] with
+/// that status.
 /// Outside a merge, the errors GitHub's GraphQL API reports map onto the same
 /// variants where GitHub names their kind, and a review-thread read reports
 /// [`PullRequestError::RepositoryNotFound`] or
 /// [`PullRequestError::PullRequestNotFound`] where GitHub says which of the two
 /// is missing; [`PullRequestError::is_not_found`] is `true` for either. Of a
-/// refusal's answer, an error keeps only GitHub's own message, bounded: never
-/// the raw answer, and never the token.
+/// refusal's answer, an error keeps only GitHub's own message and details,
+/// sanitised and bounded, or, where it gave neither, the first 200 bytes of
+/// the answer, sanitised the same way: never more of the raw answer, and
+/// never anything from the request, the token included.
 ///
 /// A read that walks every page itself and returns a list, such as
 /// [`Self::fetch_files`] or [`Self::fetch_reviews`], takes a hundred rows a
@@ -1110,14 +1123,10 @@ fn limits_the_rate(status: StatusCode) -> bool {
     )
 }
 
-/// A refusal no status explains, named by its status and GitHub's own words.
+/// A refusal no status explains, named by its status and GitHub's own words,
+/// which come from its answer alone and never from the request.
 fn unexpected(status: StatusCode, refusal: &GitHubRefusal) -> PullRequestError {
-    let summary = refusal.summary();
-    let returned = returned(status);
-    PullRequestError::GitHubApi(match summary.is_empty() {
-        true => returned,
-        false => format!("{returned}: {summary}"),
-    })
+    PullRequestError::refused(status.as_u16(), refusal.words())
 }
 
 /// An answer named by its status alone.
@@ -1232,6 +1241,15 @@ pub(super) fn summarised<'a>(said: impl IntoIterator<Item = &'a str>) -> String 
         line.push_str(&cleaned);
     }
     bounded(&line).to_string()
+}
+
+/// The start of an answer that carried no words of GitHub's, fit to carry in
+/// an error: read as text, sanitised and made one line as [`summarised`]
+/// makes GitHub's words, and only then cut to [`MAXIMUM_EXCERPT_BYTES`], so
+/// that a credential is redacted whole rather than cut short of being seen.
+pub(super) fn excerpted(body: &[u8]) -> String {
+    let line = cleaned(&String::from_utf8_lossy(body));
+    line[..line.floor_char_boundary(MAXIMUM_EXCERPT_BYTES)].to_string()
 }
 
 /// `words` sanitised, with every run of whitespace, control characters and
@@ -1865,9 +1883,10 @@ mod tests {
                 ),
                 |failure| matches!(failure, PullRequestError::PullRequestAlreadyExists(_)),
             ),
-            (ResponseTemplate::new(500), |failure| {
-                matches!(failure, PullRequestError::GitHubApi(_))
-            }),
+            (
+                ResponseTemplate::new(500),
+                |failure| matches!(failure, PullRequestError::Refused { status: 500, message } if message.is_empty()),
+            ),
         ];
         for (response, expected) in refusals {
             let server = MockServer::start().await;
@@ -2104,43 +2123,38 @@ mod tests {
         }
     }
 
-    /// GitHub's message is what explains a refusal; the rest of its answer is
-    /// whatever the server chose to send, and has no place in an error a log
+    /// GitHub's message is what explains a refusal; the rest of a JSON answer
+    /// is whatever the server chose to send, and has no place in an error a log
     /// keeps.
     #[tokio::test]
-    async fn an_error_names_github_s_message_and_never_its_raw_body() {
-        for (body, expected) in [
-            (
-                r#"{"message":"boom","documentation_url":"RAW-SENTINEL"}"#,
-                "GitHub API returned 500 Internal Server Error: boom",
-            ),
-            (
-                "<html>RAW-SENTINEL</html>",
-                "GitHub API returned 500 Internal Server Error",
-            ),
-        ] {
-            let server = MockServer::start().await;
-            Mock::given(method("GET"))
-                .respond_with(ResponseTemplate::new(500).set_body_string(body))
-                .mount(&server)
-                .await;
-            let service = stand_in(&server).await;
+    async fn an_error_names_github_s_message_and_never_the_rest_of_its_answer() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(500)
+                    .set_body_string(r#"{"message":"boom","documentation_url":"RAW-SENTINEL"}"#),
+            )
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
 
-            let failure = service
-                .fetch_mergeability(&seven(&service), &token())
-                .await
-                .unwrap_err();
+        let failure = service
+            .fetch_mergeability(&seven(&service), &token())
+            .await
+            .unwrap_err();
 
-            assert!(
-                matches!(failure, PullRequestError::GitHubApi(ref text) if text == expected),
-                "{failure:?}"
-            );
-            assert_eq!(failure.to_string(), format!("GitHub API error: {expected}"));
-            assert!(
-                !format!("{failure:?}").contains("RAW-SENTINEL"),
-                "{failure:?}"
-            );
-        }
+        assert!(
+            matches!(failure, PullRequestError::Refused { status: 500, ref message } if message == "boom"),
+            "{failure:?}"
+        );
+        assert_eq!(
+            failure.to_string(),
+            "GitHub refused the request with status 500: boom"
+        );
+        assert!(
+            !format!("{failure:?}").contains("RAW-SENTINEL"),
+            "{failure:?}"
+        );
 
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -2168,7 +2182,7 @@ mod tests {
 
         assert_eq!(
             failure.to_string(),
-            "GitHub API error: GitHub API returned 422 Unprocessable Entity: \
+            "GitHub refused the request with status 422: \
              Validation Failed; No commits between main and feature"
         );
         assert!(
