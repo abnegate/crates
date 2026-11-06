@@ -666,7 +666,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_page_that_names_no_pull_request_fails_the_read() {
+    async fn a_page_without_a_number_fails_the_read() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/graphql"))
@@ -805,6 +805,24 @@ mod tests {
                     }],
                 }),
                 "NotFound",
+            ),
+            (
+                json!({
+                    "data": { "repository": null },
+                    "errors": [
+                        {
+                            "type": "NOT_FOUND",
+                            "path": ["repository"],
+                            "message": "Could not resolve to a Repository with the name 'acme/project'.",
+                        },
+                        {
+                            "type": "NOT_FOUND",
+                            "path": ["repository", "pullRequest"],
+                            "message": "Could not resolve to a PullRequest with the number of 7.",
+                        },
+                    ],
+                }),
+                "PullRequestNotFound",
             ),
             (
                 json!({

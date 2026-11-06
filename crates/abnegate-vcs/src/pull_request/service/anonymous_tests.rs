@@ -13,6 +13,7 @@ use wiremock::matchers::any;
 use wiremock::matchers::header;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
+use wiremock::matchers::query_param;
 
 /// The path GitHub reads a repository's details from.
 const REPOSITORY: &str = "/repos/acme/project";
@@ -22,6 +23,12 @@ const MOVED: &str = "/repositories/1";
 
 /// The path GitHub reads job 9's log from.
 const JOB_LOG: &str = "/repos/acme/project/actions/jobs/9/logs";
+
+/// Where GitHub stores job 9's log, on the same origin.
+const STORED_LOG: &str = "/storage/log";
+
+/// The path a comment on pull request 7's conversation is posted to.
+const COMMENTS: &str = "/repos/acme/project/issues/7/comments";
 
 /// The API version the versioned tests name.
 const VERSION: &str = "2022-11-28";
@@ -146,7 +153,7 @@ async fn an_empty_tokens_write_is_refused_unsent_under_anonymous_reads() {
 }
 
 #[tokio::test]
-async fn an_empty_tokens_job_log_is_read_without_authorization_on_the_writer_client() {
+async fn an_empty_tokens_job_log_is_read_without_authorization_under_anonymous_reads() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path(JOB_LOG))
@@ -241,5 +248,93 @@ async fn an_anonymous_read_redirected_within_the_origin_carries_no_authorization
             .iter()
             .all(|request| !request.headers.contains_key(AUTHORIZATION)),
         "neither hop of an anonymous read carries authorization"
+    );
+}
+
+#[tokio::test]
+async fn a_token_under_anonymous_reads_is_still_sent_on_a_write_and_a_graphql_call() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(COMMENTS))
+        .and(header("authorization", "Bearer token"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({ "id": 42 })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(header("authorization", "Bearer token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "resolveReviewThread": { "thread": { "isResolved": true } } },
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let service = anonymous(&server).await;
+
+    let posted = service
+        .post_issue_comment(&seven(&service), &token(), "hello")
+        .await
+        .unwrap();
+    service
+        .resolve_review_thread("PRRT_1", &token())
+        .await
+        .unwrap();
+
+    assert_eq!(posted, 42);
+}
+
+#[tokio::test]
+async fn an_anonymous_job_log_redirected_to_storage_carries_no_authorization_on_either_hop() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(JOB_LOG))
+        .respond_with(ResponseTemplate::new(302).insert_header(
+            "location",
+            format!("{}{STORED_LOG}?sig=signed-secret", server.uri()).as_str(),
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(STORED_LOG))
+        .and(query_param("sig", "signed-secret"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("step one\n"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let service = anonymous(&server).await;
+    let job = NonZeroU64::new(9).unwrap();
+
+    let read = service
+        .fetch_job_log(&project(&service), &empty(), job, LIMIT)
+        .await
+        .unwrap();
+
+    assert_eq!(read, JobLog::new(b"step one\n".to_vec(), false));
+    let received = arrivals(&server).await;
+    assert_eq!(received.len(), 2);
+    assert!(
+        received
+            .iter()
+            .all(|request| !request.headers.contains_key(AUTHORIZATION)),
+        "neither the request for the log nor its download carries authorization"
+    );
+}
+
+#[tokio::test]
+async fn an_empty_tokens_job_log_without_anonymous_reads_is_refused_unsent() {
+    let server = MockServer::start().await;
+    untouched(&server).await;
+    let service = stand_in(&server).await;
+    let job = NonZeroU64::new(9).unwrap();
+
+    let read = service
+        .fetch_job_log(&project(&service), &empty(), job, LIMIT)
+        .await;
+
+    assert!(
+        matches!(read, Err(PullRequestError::AuthenticationFailed)),
+        "{read:?}"
     );
 }
