@@ -9,6 +9,7 @@ use crate::parser::claude::model_usage::ModelUsage;
 use crate::parser::claude::rate_limit_report::RateLimitReport;
 use crate::parser::claude::turn::Turn;
 use crate::parser::lenient;
+use crate::parser::lenient_entries;
 
 /// One line of `claude --output-format stream-json`.
 ///
@@ -124,9 +125,10 @@ pub enum StreamEvent {
         #[serde(default, deserialize_with = "lenient")]
         api_error_status: Option<u16>,
         /// What the run used of each model it ran on, by the model's name,
-        /// read from `modelUsage`. A value of any other shape reads as
-        /// absent rather than losing the whole result.
-        #[serde(default, rename = "modelUsage", deserialize_with = "lenient")]
+        /// read from `modelUsage`. An entry of any other shape is left out,
+        /// and a value with no entry that reads is absent, rather than
+        /// losing the rest or the whole result.
+        #[serde(default, rename = "modelUsage", deserialize_with = "lenient_entries")]
         model_usage: Option<BTreeMap<String, ModelUsage>>,
     },
     /// A throttling report. Headroom on a named window of the plan, with how

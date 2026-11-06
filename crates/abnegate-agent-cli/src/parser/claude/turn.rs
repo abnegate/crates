@@ -285,6 +285,9 @@ impl Turn {
             return;
         };
         if let Some(model) = message.model.filter(|model| !model.is_empty()) {
+            if self.model.as_ref() != Some(&model) {
+                self.used = None;
+            }
             self.model = Some(model);
         }
         if let Some(usage) = &message.usage {
@@ -1979,6 +1982,61 @@ mod tests {
                 "{usage}: {events:?}"
             );
         }
+    }
+
+    /// A fill measured on one model says nothing of another's window, so a
+    /// switch with no usage of its own leaves the new window unfilled.
+    #[test]
+    fn a_switch_of_model_without_usage_forgets_the_old_models_fill() {
+        let result = CONTEXT_WINDOW_STREAM
+            .lines()
+            .last()
+            .expect("the result line");
+        let switched = json!({
+            "type": "assistant",
+            "message": {"model": "claude-fable-5-1", "role": "assistant", "content": [{"type": "text", "text": "Switched."}]},
+            "parent_tool_use_id": null,
+            "session_id": "6f1",
+        });
+        let mut events = Vec::new();
+        let mut turn = Turn::default();
+        for line in CONTEXT_WINDOW_STREAM
+            .lines()
+            .take_while(|line| !line.contains(r#""type":"result""#))
+        {
+            turn.interpret(line, &mut events);
+        }
+        turn.interpret(&switched.to_string(), &mut events);
+        turn.interpret(result, &mut events);
+
+        assert_eq!(
+            occupancies(&events),
+            [Occupancy::reported(1_000_000, None).expect("a window")]
+        );
+    }
+
+    #[test]
+    fn an_entry_of_another_shape_leaves_the_main_models_window() {
+        let result = CONTEXT_WINDOW_STREAM
+            .lines()
+            .last()
+            .expect("the result line");
+        let mut line: Value = serde_json::from_str(result).expect("a result");
+        line["modelUsage"]["claude-fable-5-1"] = json!(5);
+        let mut events = Vec::new();
+        let mut turn = Turn::default();
+        for line in CONTEXT_WINDOW_STREAM
+            .lines()
+            .take_while(|line| !line.contains(r#""type":"result""#))
+        {
+            turn.interpret(line, &mut events);
+        }
+        turn.interpret(&line.to_string(), &mut events);
+
+        assert_eq!(
+            occupancies(&events),
+            [Occupancy::reported(200_000, Some(16_632)).expect("a window")]
+        );
     }
 
     #[test]

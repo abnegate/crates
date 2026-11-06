@@ -38,6 +38,7 @@ const PREFIX: &str = "rollout-";
 const EXTENSION: &str = ".jsonl";
 const EVENT: &str = "event_msg";
 const TOKEN_COUNT: &str = "token_count";
+const TURN_CONTEXT: &str = "turn_context";
 const PERCENT: u64 = 100;
 
 /// How much of a rollout's end is read first. Codex writes a `token_count`
@@ -114,19 +115,22 @@ impl Rollout {
         }
     }
 
+    /// The window the rollout reports, or else the one published for the
+    /// model the rollout's newest turn ran on, or for the run's model when
+    /// the rollout names none.
     fn read(&self, thread: &str) -> Option<Occupancy> {
         let sessions = self.home.join(SESSIONS);
-        let reported = fs::symlink_metadata(&sessions)
+        let (reported, ran) = fs::symlink_metadata(&sessions)
             .is_ok_and(|metadata| metadata.is_dir())
             .then_some(&sessions)
             .and_then(|sessions| locate(sessions, thread))
-            .and_then(|path| tail(&path));
+            .map_or((None, None), |path| tail(&path));
         if reported.is_some() {
             return reported;
         }
         tracing::debug!(home = %self.home.display(), thread, "no codex rollout reports this thread's window");
-        self.model
-            .as_deref()
+        ran.as_deref()
+            .or(self.model.as_deref())
             .and_then(|model| published(&self.home.join(CATALOGUE), model))
     }
 }
@@ -184,30 +188,55 @@ fn regular(path: &Path) -> Option<(File, u64)> {
     metadata.is_file().then_some((file, metadata.len()))
 }
 
-/// The last window `path` reports, read from its end alone: a tail of
-/// [`TAIL`], doubled until a report turns up, the file's start is reached, or
-/// the tail is [`LIMIT`] long.
-fn tail(path: &Path) -> Option<Occupancy> {
-    let (mut file, length) = regular(path)?;
+/// The last window `path` reports, and the model of the newest turn it
+/// read, read from its end alone: a tail of [`TAIL`], doubled until a report
+/// turns up, the file's start is reached, or the tail is [`LIMIT`] long.
+fn tail(path: &Path) -> (Option<Occupancy>, Option<String>) {
+    let mut model = None;
+    let Some((mut file, length)) = regular(path) else {
+        return (None, model);
+    };
     let mut span = TAIL;
     loop {
         let start = length.saturating_sub(span);
-        file.seek(SeekFrom::Start(start)).ok()?;
         let mut bytes = Vec::new();
-        file.by_ref().take(span).read_to_end(&mut bytes).ok()?;
+        if file.seek(SeekFrom::Start(start)).is_err()
+            || file.by_ref().take(span).read_to_end(&mut bytes).is_err()
+        {
+            return (None, model);
+        }
         let text = String::from_utf8_lossy(&bytes);
         let whole = match start {
             0 => &text[..],
             _ => text.split_once('\n').map_or("", |(_, rest)| rest),
         };
+        model = model.or_else(|| ran_on(whole));
         if let Some(reported) = last(whole) {
-            return Some(reported);
+            return (Some(reported), model);
         }
         if start == 0 || span >= LIMIT {
-            return None;
+            return (None, model);
         }
         span = (span * 2).min(LIMIT);
     }
+}
+
+/// The model the last `turn_context` in `content` names.
+fn ran_on(content: &str) -> Option<String> {
+    content
+        .lines()
+        .rev()
+        .filter(|line| line.contains(TURN_CONTEXT))
+        .find_map(|line| {
+            let line: Value = serde_json::from_str(line).ok()?;
+            if line.get("type")?.as_str()? != TURN_CONTEXT {
+                return None;
+            }
+            line.pointer("/payload/model")?
+                .as_str()
+                .filter(|model| !model.is_empty())
+                .map(str::to_string)
+        })
 }
 
 /// The window the last `token_count` in `content` with a report of its own
@@ -548,6 +577,38 @@ mod tests {
 
         assert_eq!(
             rollout(home.path()).occupancy(THREAD.to_string()).await,
+            Occupancy::reported(500_000 * 95 / 100, None)
+        );
+    }
+
+    /// A run given no model still ran on one, which the rollout's turn
+    /// names.
+    #[tokio::test]
+    async fn without_a_report_or_a_model_the_rollouts_turn_names_the_published_window() {
+        let home = TempDir::new().expect("a home");
+        let day = day(home.path(), "2026/11/05");
+        let unreported: String = ROLLOUT
+            .lines()
+            .filter(|line| !line.contains("token_count"))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        fs::write(day.join(named(THREAD)), unreported).expect("a rollout without a report");
+        fs::write(home.path().join("models_cache.json"), CATALOGUE).expect("the catalogue");
+        let unnamed = Rollout {
+            home: home.path().to_path_buf(),
+            model: None,
+        };
+        let misnamed = Rollout {
+            home: home.path().to_path_buf(),
+            model: Some("gpt-6.1-mini".to_string()),
+        };
+
+        assert_eq!(
+            unnamed.occupancy(THREAD.to_string()).await,
+            Occupancy::reported(500_000 * 95 / 100, None)
+        );
+        assert_eq!(
+            misnamed.occupancy(THREAD.to_string()).await,
             Occupancy::reported(500_000 * 95 / 100, None)
         );
     }
