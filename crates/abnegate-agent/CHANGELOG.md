@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.13](https://github.com/abnegate/crates/compare/abnegate-agent/v0.1.12...abnegate-agent/v0.1.13) - 2026-11-06
+
+### Added
+
+- *(abnegate-agent-cli)* bring the cli provider up to the host's own ([#60](https://github.com/abnegate/crates/pull/60))
+
 ## [0.1.12](https://github.com/abnegate/crates/compare/abnegate-agent/v0.1.11...abnegate-agent/v0.1.12) - 2026-11-06
 
 ### Other
