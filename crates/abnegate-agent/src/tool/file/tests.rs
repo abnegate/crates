@@ -2908,6 +2908,7 @@ async fn read_file_returns_text_without_its_invisible_formatting_characters() {
     );
 }
 
+#[cfg(target_os = "macos")]
 fn ripgrep_installed() -> bool {
     std::env::var_os("PATH").is_some_and(|path| {
         std::env::split_paths(&path).any(|directory| directory.join("rg").is_file())
