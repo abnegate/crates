@@ -374,20 +374,25 @@ any image is still the rendering alone, written to stdin byte for byte, so
 `execute_prompt` and `stream_prompt` keep delivering a slash command as one.
 
 `Image::parse` reads a base64 data URL of a PNG, JPEG, GIF or WebP image, its
-media type in any case and its base64 wrapped or unpadded, and checks the bytes
-begin as an image of one of those types does, sending them as the type they
-are; an `http` or `https` address is a link. An image on the message being
-answered that cannot be sent fails the run before the agent starts, as an
-`Undeliverable` naming the agent and the `Rejection`. One on an earlier message
+media type in any case and its base64 wrapped or unpadded, as the type its
+bytes begin as, whichever of the four it was labelled; an `http` or `https`
+address is a link, and anything else is refused with an `ImageError` saying
+why. An image on the last user message that cannot be sent fails the run
+before the agent starts, as a `ProviderError::Agent` naming the agent and the
+`ImageError`: one `Image::parse` refuses, a link for Codex, which opens images
+only from files, and one past Claude's limits below. One on an earlier message
 is noted in its place instead, so a conversation whose history holds such an
-image keeps working: a link (which may have died, and Codex cannot open), data
-that does not decode to the image it claims, one over the 10 MB of base64 an
-image may be, and, keeping the newest first, any past the 100 images or the
-request bytes `Limits::CLAUDE` allows one Claude request, its text sized as the
-JSON it is sent as. Once one image is crowded out, every older one is too.
+image keeps working: one `Image::parse` refuses, any link (which may have died
+since it was attached), and, for Claude, one over the 10 MB of base64 an image
+may be and, keeping the newest first, any past the 100 images or 127 MB one
+Claude request may carry, its text sized as the JSON it is sent as. Once one
+image is crowded out, every older one is too. Codex is held to no size or
+count. The images are decoded, encoded and saved on Tokio's blocking pool, so
+a large one does not hold up the runtime.
 
 ```rust
 use abnegate_agent_cli::Image;
+use abnegate_agent_cli::ImageError;
 use abnegate_agent_cli::Part;
 use abnegate_agent_cli::transcript;
 use abnegate_llm::Message;
@@ -407,6 +412,10 @@ assert!(matches!(
     Image::parse(PNG),
     Ok(Image::Inline { media_type: "image/png", .. })
 ));
+assert_eq!(
+    Image::parse("/api/artifacts/generated.png"),
+    Err(ImageError::Unreachable)
+);
 ```
 
 ## Sessions

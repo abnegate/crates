@@ -146,19 +146,22 @@ impl CliProvider {
     /// where it was sent, and opens the images from files it is pointed at
     /// with `--image`, which are removed when the run ends. An image on an
     /// earlier message that cannot be sent, such as a link Codex cannot open
-    /// or one past what one Claude request carries ([`Limits::CLAUDE`]), is
-    /// noted in its place instead; once one image is crowded out, every
-    /// older one is too. One on the last user message that cannot be sent
-    /// fails the run, as an [`Undeliverable`], before the agent starts.
+    /// or one past what one Claude request carries (10 MB of base64 an
+    /// image, 100 images, and 127 MB in all, its text sized as the JSON it is
+    /// sent as), is noted in its place instead; once one image is crowded
+    /// out, every older one is too. One on the last user message that cannot
+    /// be sent fails the run before the agent starts, as a
+    /// [`ProviderError::Agent`] naming the agent and the [`ImageError`] that
+    /// says why. The images are decoded, encoded and saved on the blocking
+    /// pool, off the runtime.
     ///
-    /// [`Limits::CLAUDE`]: crate::Limits::CLAUDE
-    /// [`Undeliverable`]: crate::Undeliverable
+    /// [`ImageError`]: crate::ImageError
     pub async fn execute(
         &self,
         request: CompletionRequest<'_>,
         label: &str,
     ) -> Result<Execution, ExecutionError> {
-        let input = self.input(request.messages)?;
+        let input = self.input(request.messages).await?;
         self.start(Some(request.model), input, label, None)
             .await?
             .finish()
@@ -226,7 +229,7 @@ impl CliProvider {
         &self,
         request: CompletionRequest<'_>,
     ) -> Result<AgentStream, ProviderError> {
-        let input = self.input(request.messages)?;
+        let input = self.input(request.messages).await?;
         self.stream_input(Some(request.model), input).await
     }
 
@@ -275,10 +278,12 @@ impl CliProvider {
 
     /// `messages` as this provider's agent is handed them, or the reason an
     /// image the turn was sent with cannot reach it.
-    fn input(&self, messages: &[Message]) -> Result<Input, ExecutionError> {
-        Input::conversation(self.agent, messages).map_err(|error| {
-            ExecutionError::new(ProviderError::agent(&self.name, &error.to_string()), None)
-        })
+    async fn input(&self, messages: &[Message]) -> Result<Input, ExecutionError> {
+        Input::conversation(self.agent, messages)
+            .await
+            .map_err(|error| {
+                ExecutionError::new(ProviderError::agent(&self.name, &error.to_string()), None)
+            })
     }
 
     /// Spawn the agent on `input` with the reading of its output under way,
