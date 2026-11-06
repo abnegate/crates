@@ -361,6 +361,7 @@ async fn a_body_that_can_be_sent_only_once_is_not_sent_again() {
         .sent(
             service
                 .request(Method::PUT, url, &token(), ACCEPT)
+                .unwrap()
                 .body(Body::wrap(String::from("sent once"))),
         )
         .await
@@ -454,7 +455,7 @@ async fn only_a_rate_limit_with_a_readable_delay_is_waited_on() {
             matches!(failure, PullRequestError::RateLimited)
         }),
         (waiting(503, "0"), |failure| {
-            matches!(failure, PullRequestError::GitHubApi(_))
+            matches!(failure, PullRequestError::Refused { status: 503, .. })
         }),
     ];
     for (answer, expected) in answers {

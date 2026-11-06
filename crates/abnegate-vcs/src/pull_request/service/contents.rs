@@ -36,7 +36,7 @@ impl PullRequestService {
         let url = self.repository_endpoint(repository, &["pulls", &number])?;
 
         let response = self
-            .answered(self.request(Method::GET, url, token, DIFF))
+            .answered(self.request(Method::GET, url, token, DIFF)?)
             .await?;
         excerpt(response, limit).await
     }
@@ -64,7 +64,7 @@ impl PullRequestService {
         url.query_pairs_mut().append_pair("ref", revision.as_str());
 
         let response = self
-            .answered(self.request(Method::GET, url, token, RAW))
+            .answered(self.request(Method::GET, url, token, RAW)?)
             .await?;
         if listing(response.headers()) {
             return Err(PullRequestError::GitHubApi(NOT_A_FILE.to_string()));
@@ -472,8 +472,8 @@ mod tests {
         assert!(
             matches!(
                 failure,
-                PullRequestError::GitHubApi(ref message)
-                    if message == "GitHub API returned 406 Not Acceptable: Sorry, the diff exceeded the maximum number of files (300)."
+                PullRequestError::Refused { status: 406, ref message }
+                    if message == "Sorry, the diff exceeded the maximum number of files (300)."
             ),
             "{failure:?}"
         );

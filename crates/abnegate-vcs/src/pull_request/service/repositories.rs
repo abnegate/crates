@@ -30,7 +30,10 @@ impl PullRequestService {
     /// [`PullRequestError::InvalidRepositoryName`] before anything is sent; a
     /// name the account already holds is
     /// [`PullRequestError::RepositoryExists`]; an organisation the token
-    /// cannot see is [`PullRequestError::NotFound`].
+    /// cannot see is [`PullRequestError::NotFound`]. An empty token is refused
+    /// as a write is, before the account is asked about, so under
+    /// [`Self::with_anonymous_reads`] it is
+    /// [`PullRequestError::AuthenticationRequired`] with nothing sent.
     pub async fn create_repository(
         &self,
         token: &SecretValue,
@@ -43,6 +46,7 @@ impl PullRequestService {
         if !named(name) || owner.is_some_and(|owner| !named(owner)) {
             return Err(PullRequestError::InvalidRepositoryName);
         }
+        self.credential(&Method::POST, token)?;
 
         let organisation = match owner {
             Some(owner) => {
@@ -64,7 +68,7 @@ impl PullRequestService {
 
         let response = self
             .sent(
-                self.request(Method::POST, url, token, ACCEPT)
+                self.request(Method::POST, url, token, ACCEPT)?
                     .json(&request),
             )
             .await?;
@@ -406,11 +410,23 @@ mod tests {
                     "message": "Validation Failed",
                     "documentation_url": "https://docs.github.com/already exists",
                 })),
-                |refused| matches!(refused, PullRequestError::GitHubApi(_)),
+                |refused| {
+                    matches!(
+                        refused,
+                        PullRequestError::Refused { status: 422, message }
+                            if message == "Validation Failed"
+                    )
+                },
             ),
             (
                 ResponseTemplate::new(500).set_body_string("name already exists"),
-                |refused| matches!(refused, PullRequestError::GitHubApi(_)),
+                |refused| {
+                    matches!(
+                        refused,
+                        PullRequestError::Refused { status: 500, message }
+                            if message.is_empty()
+                    )
+                },
             ),
         ];
         for (response, expected) in refusals {
@@ -472,7 +488,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(
             refused.to_string(),
-            "GitHub API error: GitHub API returned 422 Unprocessable Entity: \
+            "GitHub answered with status 422: \
              Repository creation failed.; name is too long (maximum is 100 characters)"
         );
         assert!(

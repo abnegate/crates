@@ -486,9 +486,66 @@ written is read, however far behind the run fell, and the run stops once the
 output goes quiet 3 seconds into the drain, or 10 seconds into it while a
 process outside the group keeps writing, keeping what it read.
 
+## Login
+
+With the `login` feature, `login::claude` signs Claude Code in the way
+`claude setup-token` does. `Authorization::new` draws a PKCE verifier and
+state and builds the link to open; claude.com shows the code to paste, read
+with `Code::parse`, or sends the browser to a loopback listener at
+`http://localhost:<port>/callback`, whose query `Reply::read` reads. A
+`Client` exchanges the code for `Tokens` and renews them. `Endpoints` holds
+the OAuth client and its URLs, the claude CLI's own by default; each URL is
+checked as it is set, refusing link-local and cloud metadata targets but not
+loopback or LAN hosts, and the redirect page carries no query or fragment.
+The client follows no redirect, names itself `abnegate-agent-cli/<version>`,
+and goes through no proxy unless one is given with `Client::with_proxy`,
+checked as the endpoints are; it never reads one from the environment. Build
+it once and clone it: clones share its connection pool.
+
+`login::codex` signs Codex in the way `codex login --device-auth` does.
+`DeviceLogin::start` runs codex with exactly the environment it is given, in
+a process group of its own with nothing on its stdin, its `CODEX_HOME` a
+private (0700) staging directory under `<root>/.login`: codex deletes any
+login in its home before it prints a code, so no existing login is touched
+until the new one is promoted. `root` must be writable by this user alone.
+It returns once codex has printed the `Prompt`, the link and one-time code a
+person enters, whose `Debug` hides the code; dropping the `start` future
+before then stops codex. The `Device` it hands back is opaque: `prompt`
+shows the prompt, `outcome` resolves to the `Staging` directory once codex
+exits having saved a regular-file `auth.json` there, and gives nothing up
+when a wait on it is abandoned, such as by a timeout. `cancel`, dropping the
+`Device`, and the code's expiry each stop codex, terminating its whole group
+and killing what is left of it after a grace period, and remove the staging
+directory, unless codex had already saved a login there: a stopped codex that
+exits cleanly leaving an `auth.json` that names an account resolves `outcome`
+to its `Staging` all the same. `Staging::promote` moves the login into a home
+in one rename, `codex::signed_in` says whether a home holds one, and
+`Account` reads whose ChatGPT login it is, its `key` telling one login from
+another. `DeviceLogin::logout` runs `codex logout` against a home, and
+`Limits` bounds how long each stage may take.
+
+`login::Status::check` asks either CLI whether it is signed in, labelled with
+its plan or how it signed in, and `Status::check_within` does so within a
+limit of the caller's. Every CLI is described by a `login::Cli`: its
+executable, the variables it is given, and its secrets, such as a proxy URL
+with a password, which are scrubbed from every reason a step fails with.
+`DeviceLogin` takes the same variables and secrets.
+
+Nothing is stored for you: `Tokens` serialise their secrets in plaintext, so
+seal them before they reach storage, and a staged codex login is codex's own
+`auth.json`, to promote or read and keep however you keep credentials. A
+`LoginError` from the HTTP client never repeats a response body or anything
+the request sent: a refusal is its HTTP status and the `Refusal` its OAuth
+error names. A CLI's failure is passed on in its own words, which may quote a
+server, after its one-time code, its secrets and anything shaped like a
+credential are redacted.
+
 ## Features
 
-None.
+- `login`: the `login` module, which signs an agent's CLI in: `login::claude`
+  runs Claude's PKCE sign-in and hands back its `Tokens`, `login::codex` runs
+  Codex's device-code sign-in and hands back the login it saved, and
+  `login::Status` asks either CLI whether it is signed in.
 
 ## Usage
 

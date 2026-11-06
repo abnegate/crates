@@ -12,6 +12,8 @@ use std::time::Duration;
 use tokio::process::Command;
 use tracing_subscriber::fmt::MakeWriter;
 
+#[cfg(feature = "login")]
+pub(crate) mod cli;
 mod straggler;
 
 pub(crate) use straggler::INTERRUPTED;

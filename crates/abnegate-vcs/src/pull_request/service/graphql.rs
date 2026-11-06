@@ -34,9 +34,22 @@ impl PullRequestService {
         query: &'static str,
         variables: &V,
     ) -> PullRequestResult<T> {
+        self.graphql_refusing(token, query, variables, rejection)
+            .await
+    }
+
+    /// One GraphQL call, with any error GitHub reported turned into the
+    /// refusal `refusal` names for it, whatever data came with it.
+    pub(super) async fn graphql_refusing<T: DeserializeOwned, V: Serialize + ?Sized>(
+        &self,
+        token: &SecretValue,
+        query: &'static str,
+        variables: &V,
+        refusal: fn(&[GraphQlError]) -> PullRequestError,
+    ) -> PullRequestResult<T> {
         let answer = self.answer(token, query, variables).await?;
         if !answer.errors.is_empty() {
-            return Err(rejection(&answer.errors));
+            return Err(refusal(&answer.errors));
         }
         let data = answer
             .data
@@ -57,7 +70,7 @@ impl PullRequestService {
         variables: &V,
     ) -> PullRequestResult<GraphQlResponse> {
         self.exchange(
-            self.request(Method::POST, self.origin.graphql(), token, ACCEPT)
+            self.request(Method::POST, self.origin.graphql(), token, ACCEPT)?
                 .json(&GraphQlRequest { query, variables }),
         )
         .await
@@ -315,10 +328,12 @@ mod tests {
             GraphQlError {
                 message: long.clone(),
                 kind: None,
+                path: None,
             },
             GraphQlError {
                 message: "after".to_string(),
                 kind: None,
+                path: None,
             },
         ];
 
@@ -344,6 +359,7 @@ mod tests {
         GraphQlError {
             message: message.to_string(),
             kind: None,
+            path: None,
         }
     }
 

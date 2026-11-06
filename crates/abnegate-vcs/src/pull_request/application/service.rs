@@ -44,7 +44,8 @@ mod repositories;
 /// choose: a redirect is [`ApplicationError::Status`] like any other
 /// refusal. A refusal keeps its status and nothing else, since the answer to
 /// a refused request routinely quotes what was sent. A request is given 30
-/// seconds from sending to the last byte of its answer.
+/// seconds from sending to the last byte of its answer. An empty JWT or
+/// token is [`ApplicationError::AuthenticationRequired`], never sent.
 ///
 /// An answer is read up to the 16 MiB this crate reads of any JSON answer; a
 /// longer one is [`ApplicationError::Response`], never parsed in part.
@@ -126,9 +127,18 @@ impl ApplicationService {
     }
 
     /// [`Self::request`], carrying `credential`, the App's JWT or an
-    /// installation's token, as a bearer credential.
-    fn authorized(&self, method: Method, url: Url, credential: &SecretValue) -> RequestBuilder {
-        self.request(method, url).bearer_auth(credential.expose())
+    /// installation's token, as a bearer credential. An empty `credential`
+    /// is [`ApplicationError::AuthenticationRequired`], with nothing sent.
+    fn authorized(
+        &self,
+        method: Method,
+        url: Url,
+        credential: &SecretValue,
+    ) -> Result<RequestBuilder, ApplicationError> {
+        if credential.is_empty() {
+            return Err(ApplicationError::AuthenticationRequired);
+        }
+        Ok(self.request(method, url).bearer_auth(credential.expose()))
     }
 }
 
@@ -182,10 +192,14 @@ mod tests {
     use super::*;
     use crate::pull_request::application::service::fixtures::installation;
     use crate::pull_request::application::service::fixtures::jwt;
+    use crate::pull_request::application::service::fixtures::stand_in;
     use std::collections::BTreeMap;
+    use std::num::NonZeroU8;
+    use std::num::NonZeroU32;
     use wiremock::Mock;
     use wiremock::MockServer;
     use wiremock::ResponseTemplate;
+    use wiremock::matchers::any;
     use wiremock::matchers::method;
     use wiremock::matchers::path;
 
@@ -358,6 +372,43 @@ mod tests {
 
             assert!(matches!(error, ApplicationError::Response));
             assert!(!error.to_string().contains("ghs_leaky"));
+        }
+    }
+
+    #[tokio::test]
+    async fn an_empty_credential_is_refused_unsent() {
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let service = stand_in(&server);
+        let empty = SecretValue::new("");
+        let first = NonZeroU32::MIN;
+        let per_page = NonZeroU8::MIN;
+
+        let refusals = [
+            service
+                .fetch_installation(&empty, installation())
+                .await
+                .map(drop),
+            service
+                .list_installations(&empty, first, per_page)
+                .await
+                .map(drop),
+            service.delete_installation(&empty, installation()).await,
+            service
+                .list_installation_repositories(&empty, first, per_page)
+                .await
+                .map(drop),
+        ];
+
+        for refusal in refusals {
+            assert!(
+                matches!(refusal, Err(ApplicationError::AuthenticationRequired)),
+                "{refusal:?}"
+            );
         }
     }
 }

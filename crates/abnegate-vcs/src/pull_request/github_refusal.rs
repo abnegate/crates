@@ -107,6 +107,7 @@ mod tests {
         for unspoken in [
             &b"<html>A pull request already exists</html>"[..],
             b"\"A pull request already exists\"",
+            br#"{"documentation_url":"A pull request already exists"}"#,
             b"",
         ] {
             let silent = GitHubRefusal::parse(unspoken);

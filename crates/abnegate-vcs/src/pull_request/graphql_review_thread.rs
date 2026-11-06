@@ -1,3 +1,4 @@
+use crate::pull_request::DiffSide;
 use crate::pull_request::graphql_connection::GraphQlConnection;
 use crate::pull_request::graphql_identified::GraphQlIdentified;
 use crate::pull_request::graphql_thread_comment::GraphQlThreadComment;
@@ -14,6 +15,14 @@ pub(super) struct GraphQlReviewThread {
     pub(super) path: Option<String>,
     #[serde(default)]
     pub(super) line: Option<u32>,
+    #[serde(default)]
+    pub(super) start_line: Option<u32>,
+    #[serde(default)]
+    pub(super) original_line: Option<u32>,
+    #[serde(default)]
+    pub(super) original_start_line: Option<u32>,
+    #[serde(default)]
+    pub(super) diff_side: Option<DiffSide>,
     pub(super) comments: GraphQlConnection<GraphQlThreadComment>,
 }
 

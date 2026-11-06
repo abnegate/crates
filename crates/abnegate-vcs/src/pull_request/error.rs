@@ -2,6 +2,7 @@ use crate::branch_name::BranchName;
 use crate::parse_error::ParseError;
 use crate::pull_request::JobLogError;
 use crate::pull_request::RateLimit;
+use reqwest::StatusCode;
 use thiserror::Error;
 
 /// What went wrong asking GitHub about, or acting on, a pull request or a
@@ -9,14 +10,49 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum PullRequestError {
-    /// GitHub refused the request, or answered in a way no other variant
-    /// names, for the reason given.
+    /// GitHub answered in a way no other variant names, for the reason
+    /// given: an answer this crate cannot read, or one about something other
+    /// than what was asked, such as an answer too long to read, a write it
+    /// redirected somewhere the write is not sent on to, or a refusal its
+    /// GraphQL API reported. An HTTP status no other variant names is
+    /// [`PullRequestError::Refused`].
     #[error("GitHub API error: {0}")]
     GitHubApi(String),
 
-    /// GitHub did not accept the token.
+    /// GitHub answered with an HTTP status no other variant names, such as a
+    /// 3xx redirect that was not followed, a 400, a 406, a 409 outside a
+    /// merge, a 410, a 422 that is not a duplicate, or a 5xx failure of its
+    /// own. Its text names the status, then GitHub's words after a colon, or
+    /// the status's standard reason where GitHub gave none.
+    #[error("GitHub answered with status {status}{}", said(*.status, .message))]
+    #[non_exhaustive]
+    Refused {
+        /// The HTTP status GitHub answered with.
+        status: u16,
+        /// GitHub's own words about it: the message and the details its JSON
+        /// answer listed, with anything shaped like a credential redacted, on
+        /// one line and bounded. Empty where the answer carried neither or was
+        /// not GitHub's JSON, since the raw answer never reaches an error. The
+        /// crate adds nothing from the request itself, but GitHub's words may
+        /// repeat parts of it, such as the branches a 422 found no commits
+        /// between.
+        message: String,
+    },
+
+    /// GitHub did not accept the token, or a request was given an empty
+    /// token without
+    /// [`PullRequestService::with_anonymous_reads`](crate::pull_request::PullRequestService::with_anonymous_reads)
+    /// and was refused unsent.
     #[error("Authentication failed")]
     AuthenticationFailed,
+
+    /// A request that is not a read, meaning a write or a GraphQL call, was
+    /// given an empty token under
+    /// [`PullRequestService::with_anonymous_reads`](crate::pull_request::PullRequestService::with_anonymous_reads)
+    /// and was refused unsent, because GitHub answers none of them without
+    /// one.
+    #[error("This request needs a token, and none was given")]
+    AuthenticationRequired,
 
     /// GitHub accepted the token, but it may not do this.
     #[error("The token may not do this")]
@@ -41,8 +77,34 @@ pub enum PullRequestError {
     },
 
     /// What was asked for does not exist, or the token cannot see it.
+    ///
+    /// Where GitHub names which of a repository and its pull request it could
+    /// not find, the error is [`PullRequestError::RepositoryNotFound`] or
+    /// [`PullRequestError::PullRequestNotFound`] instead;
+    /// [`PullRequestError::is_not_found`] is `true` for all three.
     #[error("Not found, or not visible to this token")]
     NotFound,
+
+    /// The repository does not exist, or the token cannot see it, as GitHub
+    /// said in answering for it.
+    ///
+    /// GitHub tells the two apart only where it names the missing part, as
+    /// its GraphQL API does; elsewhere the error is
+    /// [`PullRequestError::NotFound`], and a missing pull request is
+    /// [`PullRequestError::PullRequestNotFound`].
+    /// [`PullRequestError::is_not_found`] is `true` for all three.
+    #[error("Repository not found, or not visible to this token")]
+    RepositoryNotFound,
+
+    /// The repository was found, but has no pull request with the number
+    /// asked for, as GitHub said in answering for it.
+    ///
+    /// A repository GitHub cannot find is
+    /// [`PullRequestError::RepositoryNotFound`], and anything missing where
+    /// GitHub does not name which part is [`PullRequestError::NotFound`].
+    /// [`PullRequestError::is_not_found`] is `true` for all three.
+    #[error("The repository has no pull request with that number")]
+    PullRequestNotFound,
 
     /// A pull request is already open from the branch.
     #[error("A pull request already exists for branch: {0}")]
@@ -127,7 +189,89 @@ impl PullRequestError {
             rate_limit: Box::new(rate_limit),
         }
     }
+
+    /// GitHub answered with `status`, an HTTP status no other variant names,
+    /// saying `message` about it.
+    pub fn refused(status: u16, message: impl Into<String>) -> Self {
+        Self::Refused {
+            status,
+            message: message.into(),
+        }
+    }
+
+    /// Whether what was asked for was not found, or not visible to the token:
+    /// [`PullRequestError::NotFound`],
+    /// [`PullRequestError::RepositoryNotFound`] or
+    /// [`PullRequestError::PullRequestNotFound`].
+    pub fn is_not_found(&self) -> bool {
+        matches!(
+            self,
+            Self::NotFound | Self::RepositoryNotFound | Self::PullRequestNotFound
+        )
+    }
+}
+
+/// What follows the status in a refusal's text: GitHub's `message` after a
+/// colon, or where it said nothing, the standard reason for `status`, if it
+/// has one.
+fn said(status: u16, message: &str) -> String {
+    match message.is_empty() {
+        false => format!(": {message}"),
+        true => StatusCode::from_u16(status)
+            .ok()
+            .and_then(|code| code.canonical_reason())
+            .map(|reason| format!(" {reason}"))
+            .unwrap_or_default(),
+    }
 }
 
 /// A pull request operation, or what went wrong with it.
 pub type PullRequestResult<T> = Result<T, PullRequestError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_three_not_found_errors_are_not_found() {
+        for found in [
+            PullRequestError::NotFound,
+            PullRequestError::RepositoryNotFound,
+            PullRequestError::PullRequestNotFound,
+        ] {
+            assert!(found.is_not_found(), "{found:?}");
+        }
+        for other in [
+            PullRequestError::Forbidden,
+            PullRequestError::RateLimited,
+            PullRequestError::AuthenticationFailed,
+        ] {
+            assert!(!other.is_not_found(), "{other:?}");
+        }
+    }
+
+    #[test]
+    fn a_refusal_names_its_status_and_github_s_words_or_else_the_status_s_reason() {
+        let refused = PullRequestError::refused(503, "Service Unavailable");
+        assert!(
+            matches!(
+                refused,
+                PullRequestError::Refused { status: 503, ref message } if message == "Service Unavailable"
+            ),
+            "{refused:?}"
+        );
+        assert_eq!(
+            refused.to_string(),
+            "GitHub answered with status 503: Service Unavailable"
+        );
+        assert_eq!(
+            PullRequestError::refused(502, "").to_string(),
+            "GitHub answered with status 502 Bad Gateway"
+        );
+        assert_eq!(
+            PullRequestError::refused(599, "").to_string(),
+            "GitHub answered with status 599"
+        );
+        assert!(!PullRequestError::refused(404, "").is_not_found());
+    }
+}

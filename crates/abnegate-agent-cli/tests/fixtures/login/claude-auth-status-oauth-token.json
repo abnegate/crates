@@ -1,0 +1,8 @@
+{
+  "loggedIn": true,
+  "authMethod": "oauth_token",
+  "apiProvider": "firstParty",
+  "analyticsDisabled": false,
+  "projectsDirectory": "/tmp/tmp.lo0p8WBXni/projects",
+  "configDirectory": "/tmp/tmp.lo0p8WBXni"
+}
