@@ -7,6 +7,7 @@ use abnegate_llm::ToolCall;
 use abnegate_llm::Usage;
 use abnegate_llm::Window;
 
+use crate::occupancy::Occupancy;
 use crate::parser::claude::CliUsage;
 
 /// A normalised event, whichever agent produced it.
@@ -90,6 +91,14 @@ pub enum AgentEvent {
     /// this names, which the agent spends without asking. Reported once per
     /// turn.
     Credits(String),
+    /// The context window of the model the turn ran on, and how much of it
+    /// the turn's last request filled, as the agent reported them. Claude
+    /// reports it with the rest of its result, ahead of the
+    /// [`AgentEvent::Answer`] and the event that ends the turn. Codex writes
+    /// it only to the rollout it keeps of the session, which is read once
+    /// the agent has exited by itself, so a Codex stream yields it last,
+    /// after the event that ended the turn.
+    Occupancy(Occupancy),
 }
 
 impl AgentEvent {
@@ -129,6 +138,7 @@ mod tests {
     use abnegate_llm::WindowKind;
 
     use super::AgentEvent;
+    use crate::occupancy::Occupancy;
     use crate::parser::claude::CliUsage;
 
     #[test]
@@ -184,6 +194,7 @@ mod tests {
             AgentEvent::Tokens(CliUsage::default()),
             AgentEvent::Diagnostic("Reconnecting... 1/5".to_string()),
             AgentEvent::Credits("five_hour".to_string()),
+            AgentEvent::Occupancy(Occupancy::reported(200_000, Some(16_632)).expect("a window")),
         ] {
             assert!(!event.terminal(), "{event:?} ended the run");
         }

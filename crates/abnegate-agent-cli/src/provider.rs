@@ -43,6 +43,7 @@ use crate::log::tail_preview;
 use crate::mcp::McpAttachment;
 use crate::reader::Reader;
 use crate::reaper::Reaper;
+use crate::rollout::Rollout;
 use crate::run::Run;
 use crate::scrubber::Scrubber;
 use crate::settings::CliSettings;
@@ -175,6 +176,10 @@ impl CliProvider {
     /// its line is read. A Claude turn that succeeds yields its final answer
     /// as an [`AgentEvent::Answer`] just before the [`AgentEvent::Finished`]
     /// that ends it, after the [`AgentEvent::Text`] it streamed on the way.
+    /// A Codex agent that exits by itself, having named its session, yields
+    /// the [`AgentEvent::Occupancy`] its rollout reports last, before the
+    /// run's error when it failed; a run that timed out, was stopped, or
+    /// tripped [`CliSettings::tripwire`] reads no rollout.
     ///
     /// The agent is spawned before this returns, so settings it cannot
     /// honour and an agent that cannot be started are this call's error,
@@ -282,9 +287,17 @@ impl CliProvider {
             .map(Marker::new)
             .transpose()
             .map_err(|error| ExecutionError::new(ProviderError::config(error), None))?;
-        let environment = Environment::new(self.agent, &self.settings, mcp.as_ref(), &|name| {
-            std::env::var_os(name)
-        });
+        let host = |name: &str| std::env::var_os(name);
+        let environment = Environment::new(self.agent, &self.settings, mcp.as_ref(), &host);
+        let rollout = match self.agent {
+            AgentKind::Codex => Rollout::locate(
+                &environment,
+                &host,
+                self.settings.working_directory.as_deref(),
+                model,
+            ),
+            AgentKind::Claude => None,
+        };
         let scrubber = Scrubber::new(environment.secrets());
 
         let files = self
@@ -361,6 +374,7 @@ impl CliProvider {
             }
         });
 
+        let forward = events.clone();
         let (verdicts, settled) = mpsc::channel(2);
         let (draining, started) = watch::channel(false);
         let prose = Sink::open(files.as_ref().map(|files| files.stdout.as_path())).await;
@@ -409,6 +423,8 @@ impl CliProvider {
             diagnostics,
             settled,
             draining,
+            rollout,
+            forward,
             _mcp: mcp,
             _instructions: instructions,
         })
@@ -655,6 +671,7 @@ mod tests {
     use crate::test_support::running;
 
     mod lifecycle;
+    mod occupancy;
 
     const ETXTBSY: i32 = 26;
     const PROBE: &str = "FAKE_AGENT_PROBE";

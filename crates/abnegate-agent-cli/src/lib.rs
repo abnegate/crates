@@ -50,6 +50,16 @@
 //! [`AgentKind::ALL`] lists the agents, and [`AgentKind::named`] finds one by
 //! its name.
 //!
+//! A run reports the context window of the model its turn ran on, and how
+//! much of it the turn filled, as an [`AgentEvent::Occupancy`] kept in
+//! [`StdoutParseResult::occupancy`]. Claude names the window in its result's
+//! `modelUsage`. Codex writes it only to the rollout it keeps of the session
+//! under its `CODEX_HOME`, or `~/.codex`, as the agent's environment names
+//! them, which is read once the agent has exited by itself, never through a
+//! link and only from its end; when that reports none, the window Codex
+//! publishes for the model in its `models_cache.json` is taken, with nothing
+//! said of the fill.
+//!
 //! The agent is given the
 //! [`DEFAULT_ENVIRONMENT`](abnegate_exec::DEFAULT_ENVIRONMENT) names, the
 //! locale categories (`LC_CTYPE`, `LC_TIME` and the rest), the names
@@ -171,6 +181,7 @@ mod kind;
 mod lines;
 pub mod log;
 pub mod mcp;
+mod occupancy;
 mod outcome;
 mod overlong_error;
 pub mod parser;
@@ -178,6 +189,7 @@ mod provider;
 mod question;
 mod reader;
 mod reaper;
+mod rollout;
 mod run;
 mod scrubber;
 mod session;
@@ -215,6 +227,7 @@ pub use crate::mcp::McpConfig;
 pub use crate::mcp::McpConfigError;
 pub use crate::mcp::McpServer;
 pub use crate::mcp::McpTransport;
+pub use crate::occupancy::Occupancy;
 pub use crate::overlong_error::OverlongError;
 pub use crate::parser::Turn;
 pub use crate::parser::claude::CREDITS_REQUIRED;
@@ -223,6 +236,7 @@ pub use crate::parser::claude::CliContentBlock;
 pub use crate::parser::claude::CliMessage;
 pub use crate::parser::claude::CliUsage;
 pub use crate::parser::claude::LONG_CONTEXT_CREDITS_REQUIRED;
+pub use crate::parser::claude::ModelUsage;
 pub use crate::parser::claude::RateLimitReport;
 pub use crate::parser::claude::StreamEvent;
 pub use crate::provider::CliProvider;

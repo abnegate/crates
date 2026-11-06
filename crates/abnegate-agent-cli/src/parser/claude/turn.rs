@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use abnegate_llm::Limit;
@@ -8,10 +9,13 @@ use chrono::Utc;
 use serde_json::Value;
 
 use crate::event::AgentEvent;
+use crate::occupancy::Occupancy;
 use crate::parser::claude::CREDITS_UNCONFIRMED;
 use crate::parser::claude::cli_content_block::CliContentBlock;
 use crate::parser::claude::cli_message::CliMessage;
+use crate::parser::claude::cli_usage::CliUsage;
 use crate::parser::claude::credits_refusal::CreditsRefusal;
+use crate::parser::claude::model_usage::ModelUsage;
 use crate::parser::claude::rate_limit_report::OVERAGE_INCLUDED_WINDOW;
 use crate::parser::claude::rate_limit_report::RateLimitReport;
 use crate::parser::claude::refusal::Refusal;
@@ -64,6 +68,11 @@ const UNAUTHORIZED: u16 = 401;
 ///
 /// The session is announced once, from the first `init` notice, though
 /// claude repeats its id on other notices and on the result.
+///
+/// The result's `modelUsage` names each model's context window, and the
+/// turn's [`AgentEvent::Occupancy`] is the window of the model the main agent
+/// last wrote on, filled as far as its latest request filled it, or else the
+/// widest window the result names, with nothing said of its fill.
 #[derive(Debug, Clone, Default)]
 pub struct Turn {
     /// The latest reason claude gave for the account not spending usage
@@ -83,6 +92,10 @@ pub struct Turn {
     credited: bool,
     /// Whether the turn has announced its session.
     announced: bool,
+    /// The model the main agent last wrote on.
+    model: Option<String>,
+    /// The tokens the main agent's latest request filled.
+    used: Option<u64>,
 }
 
 impl Turn {
@@ -127,6 +140,7 @@ impl Turn {
                 api_milliseconds,
                 usage,
                 api_error_status,
+                model_usage,
                 ..
             } => {
                 events.extend(structured_output.map(AgentEvent::Structured));
@@ -147,6 +161,7 @@ impl Turn {
                     events.push(AgentEvent::Usage(Usage::from(&usage)));
                     events.push(AgentEvent::Tokens(usage));
                 }
+                events.extend(self.occupancy(model_usage).map(AgentEvent::Occupancy));
                 if failed(subtype.as_deref(), is_error) {
                     events.push(self.failure(subtype, explained(result, errors), api_error_status));
                 } else {
@@ -205,6 +220,12 @@ impl Turn {
         let Some(message) = message else {
             return;
         };
+        if let Some(model) = message.model.filter(|model| !model.is_empty()) {
+            self.model = Some(model);
+        }
+        if let Some(usage) = &message.usage {
+            self.used = Some(filled(usage));
+        }
         for block in message.content {
             match block {
                 CliContentBlock::Text { text } => events.push(AgentEvent::Text(text)),
@@ -217,6 +238,26 @@ impl Turn {
         if let Some(usage) = message.usage {
             events.push(AgentEvent::Usage(Usage::from(&usage)));
         }
+    }
+
+    /// The window of the model the main agent last wrote on, filled as far
+    /// as its latest request filled it, or else the widest window `usage`
+    /// names, with nothing said of its fill.
+    fn occupancy(&self, usage: Option<BTreeMap<String, ModelUsage>>) -> Option<Occupancy> {
+        let usage = usage?;
+        let main = self
+            .model
+            .as_deref()
+            .and_then(|model| usage.get(model))
+            .and_then(|entry| entry.context_window)
+            .and_then(|window| Occupancy::reported(window, self.used));
+        main.or_else(|| {
+            usage
+                .values()
+                .filter_map(|entry| entry.context_window)
+                .max()
+                .and_then(|window| Occupancy::reported(window, None))
+        })
     }
 
     /// What a failed result ends the turn in: the main agent's failed
@@ -311,6 +352,14 @@ fn failed(subtype: Option<&str>, is_error: bool) -> bool {
     is_error || subtype.is_some_and(|subtype| subtype.starts_with(FAILED_SUBTYPE_PREFIX))
 }
 
+/// Every token a request sent and its answer took: the share of the window
+/// the request filled.
+fn filled(usage: &CliUsage) -> u64 {
+    usage
+        .prompt_tokens()
+        .saturating_add(usage.output_tokens.unwrap_or_default())
+}
+
 /// Whether `words` say anything at all.
 fn spoken(words: &str) -> bool {
     !words.trim().is_empty()
@@ -387,6 +436,7 @@ mod tests {
     use super::THROTTLED;
     use super::Turn;
     use crate::event::AgentEvent;
+    use crate::occupancy::Occupancy;
     use crate::parser::claude::CREDITS_REQUIRED;
     use crate::parser::claude::CREDITS_UNCONFIRMED;
     use crate::parser::claude::LONG_CONTEXT_CREDITS_REQUIRED;
@@ -422,6 +472,11 @@ mod tests {
     /// A turn whose narration goes before its final answer.
     const NARRATION_THEN_RESULT_STREAM: &str =
         include_str!("../../../tests/fixtures/claude/narration-then-result.jsonl");
+
+    /// A turn on Sonnet that delegates to a subagent on Fable, whose result
+    /// names both models' context windows.
+    const CONTEXT_WINDOW_STREAM: &str =
+        include_str!("../../../tests/fixtures/claude/context-window.jsonl");
 
     const MAX_TURNS: &str = "Reached maximum number of turns (30)";
     const NARRATION: &str = "#42 returned 500 — LIVE FAIL, retrying.";
@@ -1743,5 +1798,138 @@ mod tests {
                 "{line}: {events:?}"
             );
         }
+    }
+
+    fn occupancies(events: &[AgentEvent]) -> Vec<Occupancy> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::Occupancy(occupancy) => Some(*occupancy),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_main_agents_model_names_the_window_and_its_latest_request_the_fill() {
+        let events = interpret_all(CONTEXT_WINDOW_STREAM);
+
+        assert_eq!(
+            occupancies(&events),
+            [Occupancy::reported(200_000, Some(3 + 120 + 16_500 + 9)).expect("a window")]
+        );
+        let result: StdoutParseResult = events.into_iter().collect();
+        assert_eq!(result.occupancy, Occupancy::reported(200_000, Some(16_632)));
+        assert!(result.finished);
+    }
+
+    #[test]
+    fn without_the_main_agents_lines_the_widest_window_is_reported_unfilled() {
+        let subagent_only: String = CONTEXT_WINDOW_STREAM
+            .lines()
+            .filter(|line| {
+                !(line.contains(r#""type":"assistant""#)
+                    && line.contains(r#""parent_tool_use_id":null"#))
+            })
+            .map(|line| format!("{line}\n"))
+            .collect();
+
+        let events = interpret_all(&subagent_only);
+
+        assert_eq!(
+            occupancies(&events),
+            [Occupancy::reported(1_000_000, None).expect("a window")]
+        );
+        assert!(
+            events.last().is_some_and(AgentEvent::terminal),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    fn a_main_model_the_result_does_not_name_reports_the_widest_window_unfilled() {
+        let renamed = CONTEXT_WINDOW_STREAM.replace(
+            r#""model":"claude-sonnet-4-6","content""#,
+            r#""model":"claude-sonnet-4-6[1m]","content""#,
+        );
+
+        assert_eq!(
+            occupancies(&interpret_all(&renamed)),
+            [Occupancy::reported(1_000_000, None).expect("a window")]
+        );
+    }
+
+    #[test]
+    fn a_model_usage_of_another_shape_reports_no_window_and_the_turn_still_finishes() {
+        let result = CONTEXT_WINDOW_STREAM
+            .lines()
+            .last()
+            .expect("the result line");
+        for usage in [
+            json!([1, 2]),
+            json!("wide"),
+            json!({"claude-sonnet-4-6": 5}),
+            json!({"claude-sonnet-4-6": {"contextWindow": "wide"}}),
+            json!({"claude-sonnet-4-6": {"contextWindow": 0}}),
+            json!({}),
+        ] {
+            let mut line: Value = serde_json::from_str(result).expect("a result");
+            line["modelUsage"] = usage.clone();
+            let mut events = Vec::new();
+            let mut turn = Turn::default();
+            for line in CONTEXT_WINDOW_STREAM
+                .lines()
+                .take_while(|line| !line.contains(r#""type":"result""#))
+            {
+                turn.interpret(line, &mut events);
+            }
+            turn.interpret(&line.to_string(), &mut events);
+
+            assert!(occupancies(&events).is_empty(), "{usage}: {events:?}");
+            assert!(
+                matches!(events.last(), Some(AgentEvent::Finished { .. })),
+                "{usage}: {events:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_result_without_model_usage_reports_no_window() {
+        assert!(occupancies(&interpret_all(SESSION)).is_empty());
+    }
+
+    #[test]
+    fn the_window_comes_before_the_event_that_ends_the_turn() {
+        let events = interpret_all(CONTEXT_WINDOW_STREAM);
+        let position = |wanted: fn(&AgentEvent) -> bool| {
+            events
+                .iter()
+                .position(wanted)
+                .expect("the event is reported")
+        };
+
+        let occupancy = position(|event| matches!(event, AgentEvent::Occupancy(_)));
+        let finished = position(|event| matches!(event, AgentEvent::Finished { .. }));
+        assert!(occupancy < finished, "{events:?}");
+        assert_eq!(finished, events.len() - 1, "{events:?}");
+    }
+
+    #[test]
+    fn a_failed_result_still_reports_its_window_before_the_failure() {
+        let failed = CONTEXT_WINDOW_STREAM.replace(
+            r#""subtype":"success","is_error":false"#,
+            r#""subtype":"error_during_execution","is_error":true"#,
+        );
+
+        let events = interpret_all(&failed);
+
+        assert_eq!(
+            occupancies(&events),
+            [Occupancy::reported(200_000, Some(16_632)).expect("a window")]
+        );
+        assert!(
+            matches!(events.last(), Some(AgentEvent::Failed(_))),
+            "{events:?}"
+        );
     }
 }

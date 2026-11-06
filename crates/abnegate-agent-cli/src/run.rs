@@ -17,6 +17,7 @@ use tokio::time::timeout;
 use tokio::time::timeout_at;
 
 use crate::cleanup::Cleanup;
+use crate::event::AgentEvent;
 use crate::execution::Execution;
 use crate::execution_error::ExecutionError;
 use crate::log::EXECUTION_LOG_PREVIEW_LIMIT;
@@ -27,6 +28,7 @@ use crate::log::preview;
 use crate::mcp::McpAttachment;
 use crate::outcome::Outcome;
 use crate::reaper::Reaper;
+use crate::rollout::Rollout;
 use crate::settlement::Settlement;
 use crate::stdout_parse_result::StdoutParseResult;
 use crate::verdict::Verdict;
@@ -61,6 +63,12 @@ pub(crate) struct Run {
     /// Turned true once the run stops waiting for the agent's output to
     /// close, which starts its readers' drain.
     pub(crate) draining: watch::Sender<bool>,
+    /// Where a Codex agent keeps the rollout of its session, read once it
+    /// has exited by itself for the window its turn ran in.
+    pub(crate) rollout: Option<Rollout>,
+    /// Where a stream's events go, which the window read from the rollout
+    /// follows last.
+    pub(crate) forward: Option<mpsc::UnboundedSender<AgentEvent>>,
     /// Held only so the MCP file the agent reads outlives it.
     pub(crate) _mcp: Option<McpAttachment>,
     /// Held only so the instructions file the agent reads outlives it.
@@ -78,6 +86,11 @@ impl Run {
     /// status, read while it is unreaped, included. A run that fails here
     /// still reports where its logs are, with every line read before it
     /// failed flushed to them.
+    ///
+    /// A Codex agent that exited by itself, and named its session, has the
+    /// window its turn ran in read from its rollout, folded into its stdout
+    /// and handed on last to a stream. A run that timed out, or that the run
+    /// stopped or a tripwire settled, reads nothing.
     pub(crate) async fn finish(mut self) -> Result<Execution, ExecutionError> {
         let deadline = self.deadline;
         let expiry = async move {
@@ -116,7 +129,7 @@ impl Run {
             }
         };
 
-        let stdout = match drain(&mut self.reader, self.reaper.group(), &self.draining).await {
+        let mut stdout = match drain(&mut self.reader, self.reaper.group(), &self.draining).await {
             Ok(Ok(stdout)) => stdout,
             Ok(Err(message)) | Err(message) => {
                 let _ = drain(&mut self.diagnostics, self.reaper.group(), &self.draining).await;
@@ -182,6 +195,19 @@ impl Run {
             .append(Record::Exited, json!({ "status": status.to_string() }))
             .await;
 
+        let tripped = failure.is_some() && stdout.failure.is_none();
+        if stopped.is_none()
+            && !tripped
+            && let (Some(rollout), Some(thread)) = (self.rollout.take(), stdout.session.clone())
+            && let Some(occupancy) = rollout.occupancy(thread).await
+        {
+            let event = AgentEvent::Occupancy(occupancy);
+            if let Some(forward) = &self.forward {
+                let _ = forward.send(event.clone());
+            }
+            stdout.record(event);
+        }
+
         let reported = stdout
             .failure
             .as_deref()
@@ -199,6 +225,7 @@ impl Run {
                     "has_answer": stdout.answer.is_some(),
                     "failure": reported,
                     "stopped": stopped,
+                    "occupancy": stdout.occupancy,
                 }),
             )
             .await;
