@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3](https://github.com/abnegate/crates/compare/abnegate-learn/v0.1.2...abnegate-learn/v0.1.3) - 2026-11-06
+
+### Added
+
+- *(learn)* reject ambiguous category matches with a minimum margin ([#65](https://github.com/abnegate/crates/pull/65))
+
 ## [0.1.2](https://github.com/abnegate/crates/compare/abnegate-learn/v0.1.1...abnegate-learn/v0.1.2) - 2026-11-03
 
 ### Other
