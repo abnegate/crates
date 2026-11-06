@@ -101,7 +101,6 @@ mod tests {
     use crate::pull_request::service::fixtures::stand_in;
     use crate::pull_request::service::fixtures::token;
     use serde_json::json;
-    use std::mem::discriminant;
     use wiremock::Mock;
     use wiremock::MockServer;
     use wiremock::ResponseTemplate;
@@ -173,7 +172,10 @@ mod tests {
                     "message": "Validation Failed",
                     "errors": [{ "message": "Hook already exists on this repository" }],
                 })),
-                PullRequestError::refused(422, ""),
+                PullRequestError::refused(
+                    422,
+                    "Validation Failed; Hook already exists on this repository",
+                ),
             ),
         ] {
             let server = MockServer::start().await;
@@ -195,11 +197,7 @@ mod tests {
                 .await
                 .unwrap_err();
 
-            assert_eq!(
-                discriminant(&failure),
-                discriminant(&expected),
-                "{expected:?}: {failure:?}"
-            );
+            assert_eq!(format!("{failure:?}"), format!("{expected:?}"));
             assert!(!format!("{failure:?}").contains(SIGNING), "{failure:?}");
         }
     }
