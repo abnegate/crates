@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::iter;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use abnegate_exec::EnvironmentPolicy;
 use abnegate_secret::REDACTED;
@@ -136,7 +137,8 @@ pub struct McpServer {
     /// The tools to allow without prompting, by the names the CLI gives
     /// them: the server's own name for each, with every character but
     /// letters, digits, `_` and `-` replaced by `_`. Empty allows every tool
-    /// the server offers. A launcher that starts the server itself offers a
+    /// the server offers, unless the server is
+    /// [exclusive](McpServer::exclusive). A launcher that starts the server itself offers a
     /// model only the tools this allows: see [`McpServer::allows`].
     pub tools: Vec<String>,
     /// The directory a stdio server starts in, or wherever its launcher
@@ -161,6 +163,48 @@ pub struct McpServer {
     /// of its tools is allowed.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub disabled: bool,
+    /// How long the agent waits on one call to this server's tools before
+    /// giving up on it. `None` leaves it to the agent.
+    ///
+    /// Codex is given it as the server's `tool_timeout_sec`, rounded up to
+    /// whole seconds. Claude Code has one wait for every server, so a Claude
+    /// run is given the longest of its attached servers' as
+    /// `MCP_TOOL_TIMEOUT` and `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT`, in
+    /// milliseconds, which [`CliSettings::with_variable`](crate::CliSettings::with_variable)
+    /// overrides.
+    ///
+    /// Like every option below it, it is set in code alone: it is never read
+    /// from or written to a configuration document, never part of the file
+    /// Claude Code is given, and never part of a log view of the server.
+    #[serde(skip)]
+    pub tool_timeout: Option<Duration>,
+    /// How long Codex waits for this server to start, as the server's
+    /// `startup_timeout_sec`, rounded up to whole seconds. `None` leaves it
+    /// to Codex. Claude Code has no such setting, so a Claude run ignores
+    /// it. Set in code alone, like [`tool_timeout`](McpServer::tool_timeout).
+    #[serde(skip)]
+    pub startup_timeout: Option<Duration>,
+    /// Fail a Codex run that cannot start this server, rather than run it
+    /// without, as the server's `required`. Claude Code has no such setting,
+    /// so a Claude run ignores it. Set in code alone, like
+    /// [`tool_timeout`](McpServer::tool_timeout).
+    #[serde(skip)]
+    pub required: bool,
+    /// List this server's tools to the model up front rather than behind a
+    /// tool search, as Codex's `omit_tools_from = ["deferred"]`. Claude Code
+    /// has no such setting, so a Claude run ignores it. Set in code alone,
+    /// like [`tool_timeout`](McpServer::tool_timeout).
+    #[serde(skip)]
+    pub eager: bool,
+    /// Hold the server to exactly [`tools`](McpServer::tools), even when the
+    /// list is empty: an empty list then allows none of the server's tools
+    /// rather than all of them. Codex is always given the list as the
+    /// server's `enabled_tools`, so it offers the model no other tool of the
+    /// server's, and a Claude run allows no tool of the server's without
+    /// asking that the list does not name, though the model can still see
+    /// them. Set in code alone, like [`tool_timeout`](McpServer::tool_timeout).
+    #[serde(skip)]
+    pub exclusive: bool,
 }
 
 impl<'de> Deserialize<'de> for McpServer {
@@ -278,6 +322,38 @@ impl McpServer {
         self
     }
 
+    /// The same server, waiting `timeout` on one call to its tools. See
+    /// [`McpServer::tool_timeout`].
+    pub fn with_tool_timeout(mut self, timeout: Duration) -> Self {
+        self.tool_timeout = Some(timeout);
+        self
+    }
+
+    /// The same server, given `timeout` to start. See
+    /// [`McpServer::startup_timeout`].
+    pub fn with_startup_timeout(mut self, timeout: Duration) -> Self {
+        self.startup_timeout = Some(timeout);
+        self
+    }
+
+    /// Opt in to [`McpServer::required`].
+    pub fn require(mut self) -> Self {
+        self.required = true;
+        self
+    }
+
+    /// Opt in to [`McpServer::eager`].
+    pub fn eager(mut self) -> Self {
+        self.eager = true;
+        self
+    }
+
+    /// Opt in to [`McpServer::exclusive`].
+    pub fn exclusive(mut self) -> Self {
+        self.exclusive = true;
+        self
+    }
+
     /// The same server with every `${VAR}` and `${VAR:-default}` in its
     /// command, arguments and environment values expanded through the
     /// server's own [`secrets`](McpServer::secrets) and then `lookup`, by the
@@ -368,20 +444,28 @@ impl McpServer {
     }
 
     /// Whether this server allows `tool`, as the server itself names it:
-    /// every tool when [`McpServer::tools`] is empty, and otherwise only one
-    /// whose name, as the CLI gives it, the list holds: the same tools
+    /// every tool when [`McpServer::tools`] is empty and the server is not
+    /// [exclusive](McpServer::exclusive), and otherwise only one whose name,
+    /// as the CLI gives it, the list holds: the same tools
     /// [`McpServer::allowed_tools`] allows on a CLI.
     pub fn allows(&self, tool: &str) -> bool {
         let named = cli_name(tool);
-        self.tools.is_empty() || self.tools.contains(&named)
+        self.allows_every_tool() || self.tools.contains(&named)
     }
 
-    /// The `--allowedTools` entries for this server under `name`.
+    /// The `--allowedTools` entries for this server under `name`: the whole
+    /// server when it names no tool and is not
+    /// [exclusive](McpServer::exclusive), and otherwise its
+    /// [scoped tools](McpServer::scoped_tools).
     pub fn allowed_tools(&self, name: &str) -> Vec<String> {
-        if self.tools.is_empty() {
+        if self.allows_every_tool() {
             return vec![format!("{PREFIX}{name}")];
         }
         self.scoped_tools(name)
+    }
+
+    fn allows_every_tool(&self) -> bool {
+        self.tools.is_empty() && !self.exclusive
     }
 
     /// The `--allowedTools` entries for the tools this server names, and
@@ -577,6 +661,23 @@ pub(crate) fn qualified(server: &str, tool: &str) -> String {
     format!("{PREFIX}{}{SEPARATOR}{}", cli_name(server), cli_name(tool))
 }
 
+/// The server `tool`, a name a CLI gives a server's tool as [`qualified`]
+/// spells it, belongs to, or none when it names no single server's tool. A
+/// server's name never holds `__`, so the first one ends it.
+pub(crate) fn serving(tool: &str) -> Option<&str> {
+    tool.strip_prefix(PREFIX)
+        .and_then(|rest| rest.split_once(SEPARATOR))
+        .filter(|(server, tool)| server_name(server) && valid_name(tool))
+        .map(|(server, _)| server)
+}
+
+/// Whether `permission` is an `--allowedTools` rule for MCP tools alone: one
+/// server's tool, or a whole server, as [`McpServer::allowed_tools`] writes
+/// them.
+pub(crate) fn mcp_rule(permission: &str) -> bool {
+    McpServer::scoped(permission) || permission.strip_prefix(PREFIX).is_some_and(valid_name)
+}
+
 /// Whether `name` is safe to place in an `--allowedTools` entry, which the
 /// CLI splits on commas and whitespace.
 pub(crate) fn valid_name(name: &str) -> bool {
@@ -636,6 +737,7 @@ fn masked(values: &BTreeMap<String, SecretValue>) -> Value {
 mod tests {
     use std::collections::BTreeMap;
     use std::path::PathBuf;
+    use std::time::Duration;
 
     use abnegate_exec::DEFAULT_ENVIRONMENT;
     use abnegate_secret::SecretValue;
@@ -644,7 +746,9 @@ mod tests {
     use serde_json::Value;
 
     use super::McpServer;
+    use super::mcp_rule;
     use super::qualified;
+    use super::serving;
     use crate::mcp::placeholders::Placeholders;
     use crate::mcp::placeholders::expand;
     use crate::mcp::refusal::Refusal;
@@ -1315,6 +1419,101 @@ mod tests {
         assert_eq!(server.transport, Some(McpTransport::Stdio));
         assert!(server.inherit_environment);
         assert!(server.disabled);
+
+        let server = McpServer::remote("http://127.0.0.1:9/mcp")
+            .with_tool_timeout(Duration::from_secs(1800))
+            .with_startup_timeout(Duration::from_secs(30))
+            .require()
+            .eager()
+            .exclusive();
+        assert_eq!(server.tool_timeout, Some(Duration::from_secs(1800)));
+        assert_eq!(server.startup_timeout, Some(Duration::from_secs(30)));
+        assert!(server.required);
+        assert!(server.eager);
+        assert!(server.exclusive);
+
+        let plain = McpServer::remote("http://127.0.0.1:9/mcp");
+        assert_eq!(plain.tool_timeout, None);
+        assert_eq!(plain.startup_timeout, None);
+        assert!(!plain.required && !plain.eager && !plain.exclusive);
+    }
+
+    /// The options set in code alone are never written to a document, never
+    /// read from one, and never part of the log view.
+    #[test]
+    fn the_options_set_in_code_never_reach_a_document_or_a_log() {
+        let plain = McpServer::remote("http://127.0.0.1:9/mcp").with_tools(["a"]);
+        let optioned = plain
+            .clone()
+            .with_tool_timeout(Duration::from_secs(1800))
+            .with_startup_timeout(Duration::from_secs(30))
+            .require()
+            .eager()
+            .exclusive();
+
+        assert_eq!(
+            serde_json::to_value(&optioned).expect("serialisable"),
+            serde_json::to_value(&plain).expect("serialisable")
+        );
+        assert_eq!(optioned.redacted(), plain.redacted());
+
+        let read: McpServer = serde_json::from_value(json!({
+            "url": "http://127.0.0.1:9/mcp",
+            "tool_timeout": 5,
+            "startup_timeout": 5,
+            "required": true,
+            "eager": true,
+            "exclusive": true,
+        }))
+        .expect("a server");
+        assert_eq!(read, McpServer::remote("http://127.0.0.1:9/mcp"));
+    }
+
+    /// An exclusive server allows exactly the tools it names, so naming none
+    /// allows none, where a server that is not exclusive allows them all.
+    #[test]
+    fn an_exclusive_server_allows_exactly_the_tools_it_names() {
+        let none = stdio().exclusive();
+        assert!(!none.allows("anything"));
+        assert!(none.allowed_tools("docs").is_empty());
+        assert!(none.scoped_tools("docs").is_empty());
+
+        let some = stdio().with_tools(["search"]).exclusive();
+        assert!(some.allows("search"));
+        assert!(!some.allows("delete"));
+        assert_eq!(some.allowed_tools("docs"), ["mcp__docs__search"]);
+        assert_eq!(some.scoped_tools("docs"), ["mcp__docs__search"]);
+    }
+
+    #[test]
+    fn a_qualified_tool_names_the_server_serving_it() {
+        assert_eq!(serving("mcp__host__approve_tool_call"), Some("host"));
+        assert_eq!(serving("mcp__host-2__a__b"), Some("host-2"));
+        for unserved in [
+            "mcp__host",
+            "mcp__host__",
+            "Bash",
+            "mcp____tool",
+            "mcp__a b__c",
+        ] {
+            assert_eq!(serving(unserved), None, "{unserved}");
+        }
+    }
+
+    #[test]
+    fn an_mcp_rule_names_a_server_or_one_of_its_tools_and_nothing_else() {
+        for rule in ["mcp__host", "mcp__host__read_file"] {
+            assert!(mcp_rule(rule), "{rule}");
+        }
+        for rule in [
+            "Bash",
+            "mcp__",
+            "mcp__host,Bash",
+            "mcp__host Bash",
+            "Read(./**)",
+        ] {
+            assert!(!mcp_rule(rule), "{rule}");
+        }
     }
 
     #[test]

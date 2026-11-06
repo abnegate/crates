@@ -61,6 +61,11 @@ impl<'document> Entry<'document> {
             working_directory: self.text(WORKING_DIRECTORY)?.map(PathBuf::from),
             inherit_environment: self.flag(INHERIT_ENVIRONMENT)?,
             disabled: self.flag(DISABLED)?,
+            tool_timeout: None,
+            startup_timeout: None,
+            required: false,
+            eager: false,
+            exclusive: false,
         })
     }
 

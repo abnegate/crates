@@ -30,6 +30,16 @@ impl InlineTable {
         self.with(key, format!("[{}]", items.join(", ")))
     }
 
+    /// The same table, with `key` set to the integer `value`.
+    pub(crate) fn with_integer(self, key: &str, value: u64) -> Self {
+        self.with(key, value.to_string())
+    }
+
+    /// The same table, with `key` set to the boolean `value`.
+    pub(crate) fn with_boolean(self, key: &str, value: bool) -> Self {
+        self.with(key, value.to_string())
+    }
+
     /// The same table, with `key` set to `table`.
     pub(crate) fn with_table(self, key: &str, table: InlineTable) -> Self {
         self.with(key, table.to_string())
@@ -99,6 +109,19 @@ mod tests {
         assert_eq!(
             table.to_string(),
             r#"{ "command" = "uvx", "args" = ["mcp-server", "--flag"], "env_http_headers" = { "Authorization" = "ABNEGATE_MCP_T_0" } }"#
+        );
+    }
+
+    #[test]
+    fn integers_and_booleans_are_bare() {
+        let table = InlineTable::default()
+            .with_integer("tool_timeout_sec", 1800)
+            .with_boolean("required", true)
+            .with_texts("enabled_tools", Vec::<String>::new());
+
+        assert_eq!(
+            table.to_string(),
+            r#"{ "tool_timeout_sec" = 1800, "required" = true, "enabled_tools" = [] }"#
         );
     }
 

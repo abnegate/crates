@@ -500,6 +500,7 @@ mod tests {
     use std::io::Read;
     use std::path::Path;
     use std::path::PathBuf;
+    use std::time::Duration;
 
     use abnegate_llm::Credential;
     use abnegate_secret::SecretValue;
@@ -524,6 +525,7 @@ mod tests {
     use crate::mcp::transport::McpTransport;
     use crate::settings::CliSettings;
     use crate::test_support::captured_logs;
+    use crate::test_support::untokened;
 
     fn rendered(config: &McpConfig) -> McpAttachment {
         config
@@ -1108,6 +1110,70 @@ mod tests {
         assert_eq!(
             config.allowed_tools(AgentKind::Claude),
             ["mcp__appwrite", "mcp__grafana__list_datasources"]
+        );
+    }
+
+    /// An exclusive server allows exactly the tools it names, so one naming
+    /// none allows no tool at all, where a server that is not exclusive is
+    /// allowed whole.
+    #[test]
+    fn an_exclusive_server_allows_exactly_its_tools_however_many_it_names() {
+        let config = McpConfig::default()
+            .with_server("none", appwrite().exclusive())
+            .with_server("some", appwrite().with_tools(["a", "b"]).exclusive())
+            .with_server("open", appwrite());
+
+        assert_eq!(
+            config.allowed_tools(AgentKind::Claude),
+            ["mcp__open", "mcp__some__a", "mcp__some__b"]
+        );
+        assert_eq!(
+            config.scoped_tools(AgentKind::Claude),
+            ["mcp__some__a", "mcp__some__b"]
+        );
+        assert!(config.allowed_tools(AgentKind::Codex).is_empty());
+    }
+
+    /// The options set in code alone change nothing in the file Claude Code
+    /// is given or in the log view: every byte of each is the same with and
+    /// without them, but the generated variables' token.
+    #[test]
+    fn the_claude_file_is_byte_identical_with_and_without_the_options_set_in_code() {
+        let remote = McpServer::remote("http://127.0.0.1:9/mcp")
+            .with_header("Authorization", "Bearer ${HOST_MCP_TOKEN}")
+            .with_secret("HOST_MCP_TOKEN", "host-token-marker")
+            .with_tools(["a", "b"]);
+        let configured = |optioned: bool| {
+            let options = |server: McpServer| match optioned {
+                true => server
+                    .with_tool_timeout(Duration::from_secs(1800))
+                    .with_startup_timeout(Duration::from_secs(30))
+                    .require()
+                    .eager()
+                    .exclusive(),
+                false => server,
+            };
+            McpConfig::default()
+                .with_server("host", options(remote.clone()))
+                .with_server("appwrite", options(appwrite()))
+        };
+        let file = |config: &McpConfig| {
+            let attachment = rendered(config);
+            let path = attachment.file.as_ref().expect("a rendered file").path();
+            untokened(&std::fs::read_to_string(path).expect("the file"))
+        };
+
+        let plain = configured(false);
+        let optioned = configured(true);
+
+        assert_eq!(file(&optioned), file(&plain));
+        assert_eq!(
+            optioned.redacted(AgentKind::Claude),
+            plain.redacted(AgentKind::Claude)
+        );
+        assert_eq!(
+            serde_json::to_string(&optioned).expect("serialisable"),
+            serde_json::to_string(&plain).expect("serialisable")
         );
     }
 

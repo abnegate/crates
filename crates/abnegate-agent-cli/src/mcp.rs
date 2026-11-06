@@ -92,10 +92,14 @@ pub(crate) use crate::mcp::attachment::McpAttachment;
 pub use crate::mcp::config::DEFAULT_PREFIX;
 pub use crate::mcp::config::McpConfig;
 pub use crate::mcp::config_error::McpConfigError;
+#[cfg(test)]
+pub(crate) use crate::mcp::placeholders::NAMESPACE;
 pub(crate) use crate::mcp::placeholders::expand;
 pub(crate) use crate::mcp::placeholders::references;
 pub(crate) use crate::mcp::placeholders::whole_reference;
 pub use crate::mcp::server::McpServer;
+pub(crate) use crate::mcp::server::mcp_rule;
 pub(crate) use crate::mcp::server::qualified;
+pub(crate) use crate::mcp::server::serving;
 pub(crate) use crate::mcp::template::Template;
 pub use crate::mcp::transport::McpTransport;

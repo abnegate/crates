@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use crate::mcp::inline_table::InlineTable;
 use crate::mcp::launch::Launch;
 use crate::mcp::placeholders::Placeholders;
@@ -8,6 +10,14 @@ use crate::mcp::transport::McpTransport;
 
 const CONFIG: &str = "-c";
 const SERVERS: &str = "mcp_servers";
+const ENABLED_TOOLS: &str = "enabled_tools";
+const TOOL_TIMEOUT: &str = "tool_timeout_sec";
+const STARTUP_TIMEOUT: &str = "startup_timeout_sec";
+const APPROVAL_MODE: &str = "default_tools_approval_mode";
+const APPROVE: &str = "approve";
+const REQUIRED: &str = "required";
+const OMIT_TOOLS_FROM: &str = "omit_tools_from";
+const DEFERRED: &str = "deferred";
 const SHELL: &str = "/bin/sh";
 const SHELL_SCRIPT: &str = "-c";
 const SHELL_NAME: &str = "sh";
@@ -26,6 +36,15 @@ const SHELL_NAME: &str = "sh";
 /// positional parameter, never as script text. Only that server is handed
 /// its generated variables. A remote server's header values reach Codex the
 /// same way, as generated variables its `env_http_headers` names.
+///
+/// Every call to the server's tools is approved in advance, with
+/// `default_tools_approval_mode = "approve"`: `codex exec` has nobody to ask,
+/// and a call it would otherwise stop to ask about is decided by whoever
+/// serves the tool. The server's [`tools`](McpServer::tools) become its
+/// `enabled_tools`, always when it is
+/// [exclusive](McpServer::exclusive), and its timeouts, whether it is
+/// [required](McpServer::required) and whether its tools are listed
+/// [eagerly](McpServer::eager) become keys of their own.
 pub(crate) struct CodexServer<'server> {
     server: &'server McpServer,
 }
@@ -74,14 +93,36 @@ impl<'server> CodexServer<'server> {
             },
             None => self.remote(placeholders),
         };
-        let table = match self.server.tools.is_empty() {
-            true => table,
-            false => table.with_texts("enabled_tools", &self.server.tools),
-        };
+        let table = self.settings(table);
         placeholders
             .secrets
             .extend(self.server.secrets.values().cloned());
         [CONFIG.to_string(), format!("{SERVERS}.{name}={table}")]
+    }
+
+    /// `table` with the server's tools and its settings for Codex: the tool
+    /// list, the timeouts, the approval mode, whether it is required, and
+    /// where its tools are listed.
+    fn settings(&self, table: InlineTable) -> InlineTable {
+        let server = self.server;
+        let mut table = table;
+        if server.exclusive || !server.tools.is_empty() {
+            table = table.with_texts(ENABLED_TOOLS, &server.tools);
+        }
+        if let Some(timeout) = server.tool_timeout {
+            table = table.with_integer(TOOL_TIMEOUT, seconds(timeout));
+        }
+        if let Some(timeout) = server.startup_timeout {
+            table = table.with_integer(STARTUP_TIMEOUT, seconds(timeout));
+        }
+        table = table.with_text(APPROVAL_MODE, APPROVE);
+        if server.required {
+            table = table.with_boolean(REQUIRED, true);
+        }
+        if server.eager {
+            table = table.with_texts(OMIT_TOOLS_FROM, [DEFERRED]);
+        }
+        table
     }
 
     /// How Codex starts this server, or none for a remote one: as configured
@@ -161,6 +202,12 @@ impl<'server> CodexServer<'server> {
     }
 }
 
+/// `duration` in whole seconds, rounded up so that a wait shorter than a
+/// second is never written as none at all.
+fn seconds(duration: Duration) -> u64 {
+    duration.as_secs() + u64::from(duration.subsec_nanos() > 0)
+}
+
 /// Whether `url` holds user-info or a query string, either of which can
 /// carry a credential. Read as widely as any parser could: `\` ends the
 /// authority as `/` does, and a `?` anywhere counts.
@@ -184,6 +231,7 @@ fn identifier(name: &str) -> bool {
 mod tests {
     use std::collections::BTreeMap;
     use std::process::Command;
+    use std::time::Duration;
 
     use super::CodexServer;
     use crate::mcp::McpServer;
@@ -306,7 +354,7 @@ mod tests {
 
         assert_eq!(
             arguments[1],
-            r#"mcp_servers.appwrite={ "command" = "uvx", "args" = ["mcp-server-appwrite", "--read-only"], "cwd" = "/srv/appwrite", "enabled_tools" = ["list_projects"] }"#
+            r#"mcp_servers.appwrite={ "command" = "uvx", "args" = ["mcp-server-appwrite", "--read-only"], "cwd" = "/srv/appwrite", "enabled_tools" = ["list_projects"], "default_tools_approval_mode" = "approve" }"#
         );
         assert!(placeholders.environment.is_empty());
         assert!(placeholders.templates.is_empty());
@@ -326,7 +374,7 @@ mod tests {
 
         assert_eq!(
             arguments[1],
-            r#"mcp_servers.linear={ "url" = "https://mcp.linear.app/mcp", "env_http_headers" = { "Authorization" = "ABNEGATE_MCP_TEST_0" }, "http_headers" = { "X-Empty" = "" } }"#
+            r#"mcp_servers.linear={ "url" = "https://mcp.linear.app/mcp", "env_http_headers" = { "Authorization" = "ABNEGATE_MCP_TEST_0" }, "http_headers" = { "X-Empty" = "" }, "default_tools_approval_mode" = "approve" }"#
         );
         assert_eq!(
             placeholders
@@ -334,6 +382,97 @@ mod tests {
                 .get("ABNEGATE_MCP_TEST_0")
                 .map(|value| value.expose().to_string()),
             Some(format!("Bearer {BOUND}"))
+        );
+    }
+
+    /// `codex exec` has nobody to ask, so every server's calls are approved
+    /// in advance and decided by whoever serves them, whatever else the
+    /// server sets.
+    #[test]
+    fn every_server_is_approved_in_advance() {
+        for server in [
+            McpServer::command("uvx", ["server"]),
+            McpServer::command("uvx", ["server"]).with_environment("KEY", SECRET),
+            McpServer::remote("https://mcp.example.com/mcp"),
+            McpServer::remote("https://mcp.example.com/mcp")
+                .with_tools(["a"])
+                .exclusive()
+                .require()
+                .eager(),
+        ] {
+            let mut placeholders = Placeholders::under("TEST");
+            let arguments = CodexServer::new(&server).arguments("host", &mut placeholders);
+            assert_eq!(
+                arguments[1]
+                    .matches(r#""default_tools_approval_mode" = "approve""#)
+                    .count(),
+                1,
+                "{arguments:?}"
+            );
+        }
+    }
+
+    /// Each option set in code becomes a key of its own, timeouts in whole
+    /// seconds rounded up, and none appears unless it is set.
+    #[test]
+    fn the_options_set_in_code_reach_codex_as_keys_of_their_own() {
+        let server = McpServer::remote("http://127.0.0.1:9/mcp")
+            .with_tools(["a", "b"])
+            .exclusive()
+            .with_tool_timeout(Duration::from_secs(1800))
+            .with_startup_timeout(Duration::from_millis(29_500))
+            .require()
+            .eager();
+        let mut placeholders = Placeholders::under("TEST");
+
+        let arguments = CodexServer::new(&server).arguments("host", &mut placeholders);
+
+        assert_eq!(
+            arguments[1],
+            r#"mcp_servers.host={ "url" = "http://127.0.0.1:9/mcp", "enabled_tools" = ["a", "b"], "tool_timeout_sec" = 1800, "startup_timeout_sec" = 30, "default_tools_approval_mode" = "approve", "required" = true, "omit_tools_from" = ["deferred"] }"#
+        );
+
+        let plain = McpServer::remote("http://127.0.0.1:9/mcp");
+        let arguments = CodexServer::new(&plain).arguments("host", &mut placeholders);
+        assert_eq!(
+            arguments[1],
+            r#"mcp_servers.host={ "url" = "http://127.0.0.1:9/mcp", "default_tools_approval_mode" = "approve" }"#
+        );
+    }
+
+    /// Codex offers every tool a server lists unless told otherwise, so an
+    /// exclusive server naming none is given an empty list, which lets Codex
+    /// call none of its tools.
+    #[test]
+    fn an_exclusive_server_naming_no_tool_lets_codex_call_none_of_them() {
+        let mut placeholders = Placeholders::under("TEST");
+
+        let exclusive = McpServer::remote("http://127.0.0.1:9/mcp").exclusive();
+        let arguments = CodexServer::new(&exclusive).arguments("host", &mut placeholders);
+        assert!(
+            arguments[1].contains(r#""enabled_tools" = []"#),
+            "{arguments:?}"
+        );
+
+        let open = McpServer::remote("http://127.0.0.1:9/mcp");
+        let arguments = CodexServer::new(&open).arguments("host", &mut placeholders);
+        assert!(!arguments[1].contains("enabled_tools"), "{arguments:?}");
+    }
+
+    /// A value Codex reads as TOML holds whatever text a configuration gives
+    /// it without ending its string early.
+    #[test]
+    fn the_options_reach_codex_as_toml_it_cannot_misread() {
+        let server = McpServer::remote("http://127.0.0.1:9/mcp\"\\\n\u{7f}")
+            .with_tools(["read\"file"])
+            .exclusive();
+        let mut placeholders = Placeholders::under("TEST");
+
+        let arguments = CodexServer::new(&server).arguments("host", &mut placeholders);
+
+        assert_eq!(
+            arguments[1],
+            r#"mcp_servers.host={ "url" = "http://127.0.0.1:9/mcp\"\\\n\u007F", "enabled_tools" = ["read\"file"], "default_tools_approval_mode" = "approve" }"#
         );
     }
 

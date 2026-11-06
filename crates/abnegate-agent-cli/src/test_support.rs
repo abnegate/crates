@@ -195,3 +195,23 @@ pub(crate) fn captured_logs<T>(work: impl FnOnce() -> T) -> (T, String) {
         .clone();
     (value, String::from_utf8(logged).expect("logs are UTF-8"))
 }
+
+/// `text` with the token of every generated MCP variable it names, drawn at
+/// random for every rendering, replaced by `TOKEN`, so two renderings can be
+/// compared byte for byte.
+pub(crate) fn untokened(text: &str) -> String {
+    let namespace = crate::mcp::NAMESPACE;
+    let mut result = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find(namespace) {
+        let (before, after) = rest.split_at(start + namespace.len());
+        result.push_str(before);
+        let token = after
+            .find(|character: char| !character.is_ascii_hexdigit())
+            .unwrap_or(after.len());
+        result.push_str("TOKEN");
+        rest = &after[token..];
+    }
+    result.push_str(rest);
+    result
+}
