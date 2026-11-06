@@ -22,8 +22,9 @@ pub(crate) const KEPT: usize = 64 * 1024;
 /// How much is read at a time.
 pub(crate) const READ: usize = 8 * 1024;
 
-/// How long a short-lived command such as `codex logout` may run.
-const TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a short-lived command such as `codex logout` may run, by
+/// default.
+pub(crate) const COMMAND: Duration = Duration::from_secs(30);
 
 static ESCAPE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\x1b\[[0-?]*[ -/]*[@-~]").expect("the escape pattern is a valid regex")
@@ -39,11 +40,7 @@ pub(crate) struct Output {
 }
 
 impl Output {
-    pub(crate) async fn capture(command: Command, executable: &Path) -> Result<Self, LoginError> {
-        Self::capture_within(command, executable, TIMEOUT).await
-    }
-
-    pub(crate) async fn capture_within(
+    pub(crate) async fn capture(
         command: Command,
         executable: &Path,
         limit: Duration,
@@ -140,6 +137,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::login::Cli;
     use crate::test_support::cli::ended;
     use crate::test_support::cli::environment;
     use crate::test_support::cli::fake;
@@ -155,8 +153,8 @@ mod tests {
             &format!("echo $$ > '{}'\nexec sleep 60", record.display()),
         );
 
-        let error = Output::capture_within(
-            Process::command(&cli, &["status"], &environment()),
+        let error = Output::capture(
+            Process::command(&Cli::new(&cli).with_environment(environment()), &["status"]),
             &cli,
             Duration::from_secs(1),
         )
@@ -179,8 +177,8 @@ mod tests {
             "head -c 1048576 /dev/zero | tr '\\0' 'x'\necho 'done' >&2\nexit 3",
         );
 
-        let output = Output::capture_within(
-            Process::command(&cli, &["status"], &environment()),
+        let output = Output::capture(
+            Process::command(&Cli::new(&cli).with_environment(environment()), &["status"]),
             &cli,
             Duration::from_secs(20),
         )
@@ -201,8 +199,8 @@ mod tests {
             "printf '\\033[94mLogged in using ChatGPT\\033[0m\\n' >&2",
         );
 
-        let output = Output::capture_within(
-            Process::command(&cli, &["status"], &environment()),
+        let output = Output::capture(
+            Process::command(&Cli::new(&cli).with_environment(environment()), &["status"]),
             &cli,
             Duration::from_secs(20),
         )
@@ -216,8 +214,11 @@ mod tests {
     async fn a_missing_cli_is_unavailable() {
         let missing = Path::new("/nonexistent/codex");
 
-        let error = Output::capture_within(
-            Process::command(missing, &["status"], &environment()),
+        let error = Output::capture(
+            Process::command(
+                &Cli::new(missing).with_environment(environment()),
+                &["status"],
+            ),
             missing,
             Duration::from_secs(20),
         )

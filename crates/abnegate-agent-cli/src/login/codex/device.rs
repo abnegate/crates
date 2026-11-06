@@ -1,5 +1,5 @@
+use std::panic;
 use std::path::Path;
-use std::path::PathBuf;
 use std::time::Duration;
 
 use abnegate_secret::REDACTED;
@@ -13,6 +13,7 @@ use tokio::time::sleep_until;
 use tokio::time::timeout_at;
 
 use crate::lines::Lines;
+use crate::login::Cli;
 use crate::login::LoginError;
 use crate::login::codex::DeviceLogin;
 use crate::login::codex::HOME;
@@ -20,6 +21,7 @@ use crate::login::codex::LOGIN;
 use crate::login::codex::Prompt;
 use crate::login::codex::Staging;
 use crate::login::codex::prompt::NO_LINK;
+use crate::login::codex::signed_in;
 use crate::login::output;
 use crate::login::output::READ;
 use crate::login::output::collect;
@@ -33,43 +35,94 @@ pub(crate) const LINE: usize = 4 * 1024;
 /// How much codex may print before its prompt is whole.
 const PRINTED: usize = 64 * 1024;
 
+const SPENT: &str = "a device sign-in's outcome was waited on after it resolved";
+
+/// How far ahead a deadline is set when its limit is beyond what this
+/// host's clock can count to: about 30 years, as Tokio's own timers do.
+const FAR: Duration = Duration::from_secs(86_400 * 365 * 30);
+
 /// A pending `codex login --device-auth`: the prompt it printed, and the
 /// task that sees it through.
+///
+/// It is cancelled only on purpose: by [`cancel`](Self::cancel), or by
+/// dropping it. Either stops codex, terminating its process group and
+/// killing what is left of it after a grace period, and removes the staging
+/// directory; a drop does so in the background, `cancel` before it returns.
+/// Waiting on [`outcome`](Self::outcome) cancels nothing, however the wait
+/// ends. Nothing of it can be moved out and the rest dropped by accident:
+///
+/// ```compile_fail,E0451
+/// use abnegate_agent_cli::login::codex::Device;
+///
+/// fn shown(device: Device) {
+///     let Device { prompt, .. } = device;
+///     let _ = prompt;
+/// }
+/// # let _ = shown;
+/// ```
 #[derive(Debug)]
-#[non_exhaustive]
 pub struct Device {
-    /// The link and code for a person to enter.
-    pub prompt: Prompt,
-    /// Resolves once codex has exited or been stopped. `Ok` holds the login
-    /// codex saved, for the caller to promote or keep; any other ending has
-    /// already removed the staging directory.
-    pub outcome: JoinHandle<Result<Staging, LoginError>>,
-    /// Sending on it, or dropping it, stops codex, terminating its process
-    /// group and killing what is left of it after a grace period, and
-    /// discards the attempt.
-    pub cancel: oneshot::Sender<()>,
+    prompt: Prompt,
+    outcome: Option<JoinHandle<Result<Staging, LoginError>>>,
+    cancel: Option<oneshot::Sender<()>>,
 }
 
 impl Device {
-    /// A pending sign-in showing `prompt`, seen through by `outcome` and
-    /// stopped through `cancel`.
-    pub fn new(
-        prompt: Prompt,
-        outcome: JoinHandle<Result<Staging, LoginError>>,
-        cancel: oneshot::Sender<()>,
-    ) -> Self {
-        Self {
-            prompt,
-            outcome,
-            cancel,
+    /// The link and code for a person to enter.
+    pub fn prompt(&self) -> &Prompt {
+        &self.prompt
+    }
+
+    /// Resolves once codex has exited or been stopped. `Ok` holds the login
+    /// codex saved, for the caller to promote or keep; any other ending has
+    /// already removed the staging directory.
+    ///
+    /// Cancel safe: a wait given up, such as by a timeout or another branch
+    /// of a `select!`, leaves the sign-in running, to be waited on again.
+    ///
+    /// # Errors
+    ///
+    /// [`LoginError::Failed`] in codex's own words when it refuses the
+    /// sign-in, or exits cleanly having saved no login,
+    /// [`LoginError::Expired`] when nobody entered the code before it
+    /// expired, [`LoginError::Unreadable`] when codex cannot be waited for,
+    /// and [`LoginError::Cancelled`] when the runtime stopped the sign-in.
+    /// No reason repeats the one-time code or a secret.
+    ///
+    /// # Panics
+    ///
+    /// When it is called again after it resolved, as a future polled after
+    /// it completed does, and when the task seeing the sign-in through
+    /// panicked.
+    pub async fn outcome(&mut self) -> Result<Staging, LoginError> {
+        let outcome = self.outcome.as_mut().expect(SPENT);
+        let joined = outcome.await;
+        self.outcome = None;
+        match joined {
+            Ok(result) => result,
+            Err(error) if error.is_panic() => panic::resume_unwind(error.into_panic()),
+            Err(_) => Err(LoginError::Cancelled),
+        }
+    }
+
+    /// Stops codex and discards the attempt, returning once codex and
+    /// everything it forked have been stopped and the staging directory is
+    /// gone. A login codex saved before it was stopped is discarded with it.
+    pub async fn cancel(mut self) {
+        if let Some(cancel) = self.cancel.take() {
+            let _ = cancel.send(());
+        }
+        if let Some(outcome) = self.outcome.take() {
+            let _ = outcome.await;
         }
     }
 
     pub(crate) async fn start(login: &DeviceLogin, root: &Path) -> Result<Self, LoginError> {
-        let executable = login.executable();
+        let cli = login.cli();
+        let executable = cli.executable();
         let limits = login.limits();
         let staging = Staging::create(root)?;
-        let mut command = Process::command(executable, LOGIN, login.environment());
+        let mut command = Process::command(cli, LOGIN);
         command.env(HOME, staging.path());
         let mut process = Process::spawn(command, executable)?;
         let stderr = tokio::spawn(output::read(process.stderr()));
@@ -78,7 +131,7 @@ impl Device {
             stderr.abort();
             return Err(unreadable("codex's output could not be read"));
         };
-        let deadline = Instant::now() + limits.prompt;
+        let deadline = after(limits.prompt);
 
         let prompt = match read(&mut stdout, deadline, limits.prompt).await {
             Ok(Some(prompt)) => prompt,
@@ -93,13 +146,7 @@ impl Device {
         let lifetime = (prompt.expires_at - Utc::now())
             .to_std()
             .unwrap_or(Duration::ZERO);
-        let Some(expiry) = Instant::now().checked_add(lifetime.saturating_add(limits.grace)) else {
-            process.stop().await;
-            stderr.abort();
-            return Err(unreadable(
-                "codex printed an expiry too far away to wait for",
-            ));
-        };
+        let expiry = after(lifetime.saturating_add(limits.grace));
         let (cancel, cancelled) = oneshot::channel();
         let outcome = tokio::spawn(watch(
             process,
@@ -109,10 +156,21 @@ impl Device {
             cancelled,
             expiry,
             prompt.clone(),
-            executable.to_path_buf(),
+            cli.clone(),
         ));
-        Ok(Self::new(prompt, outcome, cancel))
+        Ok(Self {
+            prompt,
+            outcome: Some(outcome),
+            cancel: Some(cancel),
+        })
     }
+}
+
+/// `limit` from now, or [`FAR`] from now when the clock cannot count that
+/// far.
+fn after(limit: Duration) -> Instant {
+    let now = Instant::now();
+    now.checked_add(limit).unwrap_or_else(|| now + FAR)
 }
 
 /// Codex's stdout, read until it holds a whole prompt. `Ok(None)` means
@@ -205,8 +263,10 @@ async fn ended(
     }
 }
 
-/// Sees a pending sign-in through: codex exits, the caller cancels, or the
-/// code expires.
+/// Sees a pending sign-in through: the caller cancels, codex exits, or the
+/// code expires, in that order when more than one has happened. A codex the
+/// expiry stops having already exited cleanly with a login saved is a
+/// sign-in like any other.
 async fn watch(
     mut process: Process,
     stdout: ChildStdout,
@@ -215,7 +275,7 @@ async fn watch(
     cancelled: oneshot::Receiver<()>,
     expiry: Instant,
     prompt: Prompt,
-    executable: PathBuf,
+    cli: Cli,
 ) -> Result<Staging, LoginError> {
     let drain = tokio::spawn(drain(stdout));
     let outcome = tokio::select! {
@@ -225,25 +285,29 @@ async fn watch(
             stderr.abort();
             Err(LoginError::Cancelled)
         }
-        () = sleep_until(expiry) => {
-            process.stop().await;
-            stderr.abort();
-            Err(LoginError::Expired { expires_at: prompt.expires_at })
-        }
         status = process.wait() => match status {
             Ok(status) if status.success() => {
                 stderr.abort();
                 staging.saved()
             }
-            Ok(status) => Err(concealed(failure(&executable, &collect(stderr).await, status), &prompt)),
+            Ok(status) => Err(concealed(failure(cli.executable(), &collect(stderr).await, status), &prompt)),
             Err(error) => {
                 stderr.abort();
                 Err(unreadable(&format!("codex could not be waited for: {error}")))
             }
         },
+        () = sleep_until(expiry) => {
+            let status = process.stop().await;
+            stderr.abort();
+            if status.is_some_and(|status| status.success()) && signed_in(staging.path()) {
+                Ok(staging)
+            } else {
+                Err(LoginError::Expired { expires_at: prompt.expires_at })
+            }
+        }
     };
     drain.abort();
-    outcome
+    outcome.map_err(|error| cli.scrubbed(error))
 }
 
 /// `error` without the prompt's one-time code, should codex have repeated it.

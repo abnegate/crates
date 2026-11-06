@@ -1,14 +1,15 @@
 use std::collections::BTreeMap;
-use std::fmt;
 use std::path::Path;
 use std::path::PathBuf;
 
+use abnegate_secret::SecretValue;
+
+use crate::login::Cli;
 use crate::login::LoginError;
 use crate::login::codex::Device;
 use crate::login::codex::HOME;
 use crate::login::codex::LOGOUT;
 use crate::login::codex::Limits;
-use crate::login::codex::saved;
 use crate::login::output::Output;
 use crate::login::process::Process;
 
@@ -17,10 +18,9 @@ use crate::login::process::Process;
 ///
 /// `Debug` names the variables in the environment and shows none of their
 /// values.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct DeviceLogin {
-    executable: PathBuf,
-    environment: BTreeMap<String, String>,
+    cli: Cli,
     limits: Limits,
 }
 
@@ -28,17 +28,26 @@ impl DeviceLogin {
     /// A sign-in run by the codex CLI at `executable`, with an empty
     /// environment and the default [`Limits`].
     pub fn new(executable: impl Into<PathBuf>) -> Self {
-        Self {
-            executable: executable.into(),
-            environment: BTreeMap::new(),
-            limits: Limits::default(),
-        }
+        Self::from(Cli::new(executable))
     }
 
-    /// This sign-in, giving codex exactly `environment` and nothing of this
-    /// process's own, apart from the `CODEX_HOME` each step sets.
+    /// This sign-in, giving codex exactly `environment`, its secrets and
+    /// nothing of this process's own, apart from the `CODEX_HOME` each step
+    /// sets. It replaces the variables given before and keeps the secrets.
     pub fn with_environment(mut self, environment: BTreeMap<String, String>) -> Self {
-        self.environment = environment;
+        self.cli = self.cli.with_environment(environment);
+        self
+    }
+
+    /// This sign-in, also giving codex `variable` set to the secret `value`,
+    /// such as an `HTTPS_PROXY` that carries a password. It wins over a
+    /// variable of the same name, and no error repeats it.
+    pub fn with_secret(
+        mut self,
+        variable: impl Into<String>,
+        value: impl Into<SecretValue>,
+    ) -> Self {
+        self.cli = self.cli.with_secret(variable, value);
         self
     }
 
@@ -59,6 +68,13 @@ impl DeviceLogin {
     /// promotes the new one. One device sign-in may run per root at a time,
     /// as each one clears what earlier attempts left there.
     ///
+    /// `root` must be writable by this user alone, as every directory above
+    /// it must be: whoever else can write to it can swap `.login` for a link
+    /// between its removal and its creation, and read the login codex saves.
+    ///
+    /// Dropping the future before it resolves stops codex, its whole group
+    /// included, and removes the staging directory.
+    ///
     /// # Errors
     ///
     /// [`LoginError::Unavailable`] when codex cannot be started,
@@ -66,43 +82,38 @@ impl DeviceLogin {
     /// [`LoginError::Unreadable`] when it prints no whole prompt within
     /// [`Limits::prompt`], and [`LoginError::Filesystem`] when the staging
     /// directory cannot be prepared. Codex is stopped and the staging
-    /// directory removed on every one.
+    /// directory removed on every one, and no reason repeats a secret.
     pub async fn start(&self, root: &Path) -> Result<Device, LoginError> {
-        Device::start(self, root).await
+        Device::start(self, root)
+            .await
+            .map_err(|error| self.cli.scrubbed(error))
     }
 
     /// Runs `codex logout` against `home`, which revokes the login upstream
-    /// and deletes it.
+    /// and deletes it, giving it [`Limits::command`] to finish.
     ///
     /// # Errors
     ///
     /// [`LoginError::Unavailable`] when codex cannot be started,
     /// [`LoginError::Failed`] in codex's own words when it refuses, and
-    /// [`LoginError::Unreadable`] when it does not finish in time.
+    /// [`LoginError::Unreadable`] when it does not finish in time. No reason
+    /// repeats a secret.
     pub async fn logout(&self, home: &Path) -> Result<(), LoginError> {
-        let mut command = Process::command(&self.executable, LOGOUT, &self.environment);
+        let executable = self.cli.executable();
+        let mut command = Process::command(&self.cli, LOGOUT);
         command.env(HOME, home);
-        let output = Output::capture(command, &self.executable).await?;
+        let output = Output::capture(command, executable, self.limits.command)
+            .await
+            .map_err(|error| self.cli.scrubbed(error))?;
         if output.status.success() {
             Ok(())
         } else {
-            Err(output.failed(&self.executable))
+            Err(self.cli.scrubbed(output.failed(executable)))
         }
     }
 
-    /// Whether `home` holds a codex login: its `auth.json` is a regular file,
-    /// not a link or a directory. Codex never checks the credentials in it
-    /// until a turn needs them.
-    pub fn signed_in(home: &Path) -> bool {
-        saved(home)
-    }
-
-    pub(crate) fn executable(&self) -> &Path {
-        &self.executable
-    }
-
-    pub(crate) fn environment(&self) -> &BTreeMap<String, String> {
-        &self.environment
+    pub(crate) fn cli(&self) -> &Cli {
+        &self.cli
     }
 
     pub(crate) fn limits(&self) -> Limits {
@@ -110,14 +121,13 @@ impl DeviceLogin {
     }
 }
 
-impl fmt::Debug for DeviceLogin {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("DeviceLogin")
-            .field("executable", &self.executable)
-            .field("environment", &self.environment.keys().collect::<Vec<_>>())
-            .field("limits", &self.limits)
-            .finish()
+/// A sign-in run by `cli`, with the default [`Limits`].
+impl From<Cli> for DeviceLogin {
+    fn from(cli: Cli) -> Self {
+        Self {
+            cli,
+            limits: Limits::default(),
+        }
     }
 }
 
@@ -127,14 +137,18 @@ mod tests {
 
     #[test]
     fn debug_names_the_environment_without_its_values() {
-        let login = DeviceLogin::new("/usr/local/bin/codex").with_environment(BTreeMap::from([(
-            "HTTPS_PROXY".to_string(),
-            "http://user:hunter2@proxy.example:8080".to_string(),
-        )]));
+        let login = DeviceLogin::new("/usr/local/bin/codex")
+            .with_environment(BTreeMap::from([(
+                "NO_PROXY".to_string(),
+                "internal.example".to_string(),
+            )]))
+            .with_secret("HTTPS_PROXY", "http://user:hunter2@proxy.example:8080");
 
         let rendered = format!("{login:?}");
 
         assert!(rendered.contains("HTTPS_PROXY"), "{rendered}");
+        assert!(rendered.contains("NO_PROXY"), "{rendered}");
         assert!(!rendered.contains("hunter2"), "{rendered}");
+        assert!(!rendered.contains("internal.example"), "{rendered}");
     }
 }

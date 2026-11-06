@@ -1,11 +1,13 @@
-use std::collections::BTreeMap;
 use std::path::Path;
+use std::time::Duration;
 
 use serde_json::Value;
 
 use crate::kind::AgentKind;
+use crate::login::Cli;
 use crate::login::LoginError;
 use crate::login::claude::Plan;
+use crate::login::output::COMMAND;
 use crate::login::output::Output;
 use crate::login::process::Process;
 
@@ -49,10 +51,10 @@ impl Status {
         self
     }
 
-    /// Asks `agent`'s CLI at `executable` whether it is signed in.
-    /// `environment` is the CLI's whole environment, so it decides which
-    /// home the CLI reads; the CLI runs in its own process group with
-    /// nothing on its stdin, and is stopped if it does not answer in time.
+    /// Asks `agent`'s CLI whether it is signed in, giving it 30 seconds to
+    /// answer. The environment `cli` is given decides which home the CLI
+    /// reads; the CLI runs in its own process group with nothing on its
+    /// stdin, and is stopped if it does not answer in time.
     ///
     /// # Errors
     ///
@@ -60,25 +62,36 @@ impl Status {
     /// [`LoginError::Failed`] in its own words when it fails for any reason
     /// other than being signed out, such as a corrupt login, and
     /// [`LoginError::Unreadable`] when it prints a status this cannot read or
-    /// does not finish in time.
-    pub async fn check(
+    /// does not finish in time. No reason repeats a secret `cli` is given.
+    pub async fn check(agent: AgentKind, cli: &Cli) -> Result<Self, LoginError> {
+        Self::check_within(agent, cli, COMMAND).await
+    }
+
+    /// Asks `agent`'s CLI whether it is signed in, as [`Status::check`]
+    /// does, giving it `limit` to answer.
+    ///
+    /// # Errors
+    ///
+    /// As [`Status::check`].
+    pub async fn check_within(
         agent: AgentKind,
-        executable: &Path,
-        environment: &BTreeMap<String, String>,
+        cli: &Cli,
+        limit: Duration,
     ) -> Result<Self, LoginError> {
         let arguments = match agent {
             AgentKind::Claude => CLAUDE,
             AgentKind::Codex => CODEX,
         };
-        let output = Output::capture(
-            Process::command(executable, arguments, environment),
-            executable,
-        )
-        .await?;
-        match agent {
-            AgentKind::Claude => claude(&output, executable),
-            AgentKind::Codex => codex(&output, executable),
-        }
+        let executable = cli.executable();
+        let status =
+            match Output::capture(Process::command(cli, arguments), executable, limit).await {
+                Ok(output) => match agent {
+                    AgentKind::Claude => claude(&output, executable),
+                    AgentKind::Codex => codex(&output, executable),
+                },
+                Err(error) => Err(error),
+            };
+        status.map_err(|error| cli.scrubbed(error))
     }
 }
 
@@ -160,9 +173,11 @@ mod tests {
 
     use super::*;
     use crate::test_support::cli::capture;
+    use crate::test_support::cli::ended;
     use crate::test_support::cli::environment;
     use crate::test_support::cli::fake;
     use crate::test_support::cli::fixture;
+    use crate::test_support::cli::process;
     use crate::test_support::cli::recorded;
 
     const CLAUDE_SIGNED_IN: &[u8] = fixture!("claude-auth-status-signed-in.json");
@@ -328,9 +343,12 @@ mod tests {
             let mut given = environment();
             given.insert("HOST_STATUS_TEST".to_string(), "kept".to_string());
 
-            let status = Status::check(agent, &executable, &given)
-                .await
-                .expect("the CLI's status");
+            let status = Status::check(
+                agent,
+                &Cli::new(&executable).with_environment(given.clone()),
+            )
+            .await
+            .expect("the CLI's status");
 
             assert_eq!(status, expected);
             assert!(
@@ -342,9 +360,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_secret_reaches_the_cli_and_never_its_failure() {
+        const KEY: &str = "correct-horse-battery";
+        for (agent, arguments) in [
+            (AgentKind::Claude, "auth status"),
+            (AgentKind::Codex, "login status"),
+        ] {
+            let directory = TempDir::new().expect("a temporary directory");
+            let record = directory.path().join("environment");
+            let executable = fake(
+                &directory,
+                arguments,
+                &format!(
+                    "env > '{}'\necho \"Error: the relay refused $HOST_RELAY_KEY\" >&2\nexit 2",
+                    record.display()
+                ),
+            );
+            let cli = Cli::new(&executable)
+                .with_environment(environment())
+                .with_secret("HOST_RELAY_KEY", KEY);
+
+            let error = Status::check(agent, &cli).await.expect_err("a failure");
+
+            assert_eq!(
+                recorded(&record).get("HOST_RELAY_KEY").map(String::as_str),
+                Some(KEY)
+            );
+            let shown = format!("{error} {error:?}");
+            assert!(!shown.contains(KEY), "{shown}");
+            assert!(
+                matches!(&error, LoginError::Failed { reason, .. } if reason == "Error: the relay refused [REDACTED]"),
+                "{error:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_cli_that_does_not_answer_within_the_limit_is_stopped() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let record = directory.path().join("process");
+        let executable = fake(
+            &directory,
+            "login status",
+            &format!("echo $$ > '{}'\nexec sleep 60", record.display()),
+        );
+        let cli = Cli::new(&executable).with_environment(environment());
+
+        let error = Status::check_within(AgentKind::Codex, &cli, Duration::from_secs(1))
+            .await
+            .expect_err("no answer");
+
+        assert!(
+            matches!(&error, LoginError::Unreadable { reason, .. } if reason.contains("did not finish within 1s")),
+            "{error:?}"
+        );
+        assert!(ended(process(&record)), "the CLI was left running");
+    }
+
+    #[tokio::test]
     async fn a_missing_cli_is_unavailable() {
         for agent in AgentKind::ALL {
-            let error = Status::check(*agent, Path::new(MISSING), &environment())
+            let error = Status::check(*agent, &Cli::new(MISSING).with_environment(environment()))
                 .await
                 .expect_err("a missing CLI");
 

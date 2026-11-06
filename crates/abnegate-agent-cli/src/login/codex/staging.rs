@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use crate::login::LoginError;
 use crate::login::codex::Account;
 use crate::login::codex::CREDENTIALS;
-use crate::login::codex::saved;
+use crate::login::codex::signed_in;
 
 /// The directory under a root that device sign-ins stage in.
 pub(crate) const DIRECTORY: &str = ".login";
@@ -66,7 +66,7 @@ impl Staging {
 
     /// This directory, once codex has saved a login in it.
     pub(crate) fn saved(self) -> Result<Self, LoginError> {
-        if saved(&self.path) {
+        if signed_in(&self.path) {
             Ok(self)
         } else {
             Err(LoginError::Failed {
@@ -77,6 +77,12 @@ impl Staging {
 
     /// Moves the login codex saved into `into`, a login's home on the same
     /// filesystem, over any login already there, in one rename.
+    ///
+    /// # Errors
+    ///
+    /// [`LoginError::Filesystem`] when the login cannot be moved, such as
+    /// when `into` does not exist, is on another filesystem, or holds a
+    /// directory where the login goes.
     pub fn promote(&self, into: &Path) -> Result<(), LoginError> {
         let credentials = into.join(CREDENTIALS);
         fs::rename(self.path.join(CREDENTIALS), &credentials)
@@ -196,7 +202,7 @@ mod tests {
             fs::read(home.join(CREDENTIALS)).expect("the promoted login"),
             b"new"
         );
-        assert!(!saved(staging.path()));
+        assert!(!signed_in(staging.path()));
     }
 
     #[test]

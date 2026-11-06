@@ -10,21 +10,24 @@
 //! and hands back the link and one-time code it prints, then the login it
 //! saved, for the caller to promote into a home or keep however it keeps
 //! credentials. [`Status::check`] asks either CLI whether it is signed in.
-//! Every CLI runs with exactly the environment it is given, in a process
-//! group of its own that is stopped with it.
+//! Every CLI runs with exactly the environment it is given, its variables
+//! and its secrets, as a [`Cli`] describes it, in a process group of its own
+//! that is stopped with it.
 //!
 //! Nothing here stores a credential. Tokens come back in plaintext behind
 //! [`SecretValue`](abnegate_secret::SecretValue), whose `Debug` and `Display`
 //! are redacted; seal them before they reach storage. Every step fails with a
-//! [`LoginError`], which never repeats a response body or anything the
-//! request carried.
+//! [`LoginError`], which never repeats a response body, anything the request
+//! carried, or a secret the CLI was given.
 
 pub mod claude;
+mod cli;
 pub mod codex;
 mod login_error;
 mod output;
 mod process;
 mod status;
 
+pub use crate::login::cli::Cli;
 pub use crate::login::login_error::LoginError;
 pub use crate::login::status::Status;

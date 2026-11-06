@@ -9,7 +9,7 @@ use std::time::Duration;
 use chrono::TimeDelta;
 use chrono::Utc;
 use tempfile::TempDir;
-use tokio::task::JoinHandle;
+use tokio::time::sleep;
 use tokio::time::timeout;
 
 use crate::login::LoginError;
@@ -22,6 +22,7 @@ use crate::login::codex::Limits;
 use crate::login::codex::Staging;
 use crate::login::codex::device::LINE;
 use crate::login::codex::prompt::NO_LINK;
+use crate::login::codex::signed_in;
 use crate::login::codex::staging::DIRECTORY;
 use crate::test_support::cli::EXCHANGE_FAILED;
 use crate::test_support::cli::EXCHANGE_FAILED_PROMPT;
@@ -97,11 +98,16 @@ fn given_home(record: &Path) -> PathBuf {
     PathBuf::from(fs::read_to_string(record).expect("the home codex was given"))
 }
 
-async fn finish(outcome: JoinHandle<Result<Staging, LoginError>>) -> Result<Staging, LoginError> {
-    timeout(WAIT, outcome)
+async fn finish(device: &mut Device) -> Result<Staging, LoginError> {
+    timeout(WAIT, device.outcome())
         .await
         .expect("the sign-in to finish")
-        .expect("the sign-in task not to panic")
+}
+
+async fn cancel(device: Device) {
+    timeout(WAIT, device.cancel())
+        .await
+        .expect("the sign-in to be cancelled");
 }
 
 #[tokio::test]
@@ -122,19 +128,19 @@ async fn a_device_login_returns_the_link_and_code_codex_printed() {
         .expect("a prompt");
     let after = Utc::now();
 
+    let prompt = device.prompt();
     assert_eq!(
-        device.prompt.verification_url,
+        prompt.verification_url,
         "https://auth.openai.com/codex/device"
     );
-    assert_eq!(device.prompt.user_code, "ABCD-EFGHI");
+    assert_eq!(prompt.user_code, "ABCD-EFGHI");
     assert!(
-        device.prompt.expires_at >= before + TimeDelta::minutes(15)
-            && device.prompt.expires_at <= after + TimeDelta::minutes(15),
+        prompt.expires_at >= before + TimeDelta::minutes(15)
+            && prompt.expires_at <= after + TimeDelta::minutes(15),
         "the code's expiry is not 15 minutes from when it was printed: {}",
-        device.prompt.expires_at
+        prompt.expires_at
     );
-    drop(device.cancel);
-    let _ = finish(device.outcome).await;
+    cancel(device).await;
 }
 
 #[tokio::test]
@@ -183,16 +189,13 @@ async fn a_completed_login_is_staged_until_it_is_promoted_into_its_home() {
         ),
     );
 
-    let Device {
-        prompt,
-        outcome,
-        cancel,
-    } = login(&codex, hosted(&root))
+    let mut device = login(&codex, hosted(&root))
         .start(&root)
         .await
         .expect("a prompt");
-    let staged = finish(outcome).await.expect("a saved login");
-    drop(cancel);
+    let staged = finish(&mut device).await.expect("a saved login");
+    let prompt = device.prompt().clone();
+    drop(device);
 
     assert_eq!(prompt.user_code, "FXTR-9Z9Z9");
     assert_eq!(
@@ -206,7 +209,7 @@ async fn a_completed_login_is_staged_until_it_is_promoted_into_its_home() {
         Some(ACCOUNT.to_string())
     );
     assert!(
-        !DeviceLogin::signed_in(&home),
+        !signed_in(&home),
         "the login reached a home before it was promoted"
     );
     staged.promote(&home).expect("the login promoted");
@@ -221,11 +224,8 @@ async fn a_completed_login_is_staged_until_it_is_promoted_into_its_home() {
         .mode();
     assert_eq!(mode & 0o777, 0o600);
     assert!(!staging(&root).exists(), "the staging directory was left");
-    assert!(DeviceLogin::signed_in(&home));
-    assert!(
-        !DeviceLogin::signed_in(&root),
-        "the login landed in the root"
-    );
+    assert!(signed_in(&home));
+    assert!(!signed_in(&root), "the login landed in the root");
 }
 
 #[tokio::test]
@@ -282,10 +282,12 @@ async fn a_cancelled_relogin_stops_codex_and_leaves_the_existing_login_in_place(
         .await
         .expect("a prompt");
     let mode = fs::metadata(given_home(&record)).map(|metadata| metadata.permissions().mode());
-    device.cancel.send(()).expect("the sign-in to be running");
-    let result = finish(device.outcome).await;
+    cancel(device).await;
 
-    assert!(matches!(result, Err(LoginError::Cancelled)), "{result:?}");
+    assert!(
+        !staging(&root).exists(),
+        "cancel returned before the staging directory was removed"
+    );
     assert!(ended(process(&leader)), "codex was left running");
     assert!(
         ended(process(&forked)),
@@ -304,33 +306,261 @@ async fn a_cancelled_relogin_stops_codex_and_leaves_the_existing_login_in_place(
     assert!(!staging(&root).exists(), "the staging directory was left");
 }
 
+/// A fake codex that records its own pid in `leader` and a child's in
+/// `forked`, then prints `prompt`, if any, and waits.
+fn lingering(directory: &TempDir, prompt: Option<&str>) -> (PathBuf, PathBuf, PathBuf) {
+    let leader = directory.path().join("leader");
+    let forked = directory.path().join("forked");
+    let printed = prompt.map_or_else(String::new, |prompt| format!("cat '{prompt}'\n"));
+    let codex = fake(
+        directory,
+        &arguments(),
+        &format!(
+            "echo $$ > '{}.tmp' && mv '{0}.tmp' '{0}'\nsleep 60 >/dev/null 2>&1 &\necho $! > '{}.tmp' && mv '{1}.tmp' '{1}'\n{printed}exec sleep 60",
+            leader.display(),
+            forked.display()
+        ),
+    );
+    (codex, leader, forked)
+}
+
+async fn removed(path: &Path) -> bool {
+    timeout(WAIT, async {
+        while path.exists() {
+            sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .is_ok()
+}
+
 #[tokio::test]
-async fn dropping_the_cancel_handle_stops_codex() {
+async fn dropping_the_device_stops_codex_and_what_it_forked() {
     let directory = TempDir::new().expect("a temporary directory");
     let root = root(&directory);
     let prompt = capture(&directory, "prompt", PROMPT);
+    let (codex, leader, forked) = lingering(&directory, Some(&prompt));
+
+    let device = login(&codex, environment())
+        .start(&root)
+        .await
+        .expect("a prompt");
+    drop(device);
+
+    assert!(
+        removed(&staging(&root)).await,
+        "the staging directory was left"
+    );
+    assert!(ended(process(&leader)), "codex was left running");
+    assert!(
+        ended(process(&forked)),
+        "a process codex forked was left running"
+    );
+}
+
+#[tokio::test]
+async fn aborting_the_task_that_waits_on_a_device_stops_codex() {
+    let directory = TempDir::new().expect("a temporary directory");
+    let root = root(&directory);
+    let prompt = capture(&directory, "prompt", PROMPT);
+    let (codex, leader, forked) = lingering(&directory, Some(&prompt));
+    let login = login(&codex, environment());
+    let (started, prompted) = tokio::sync::oneshot::channel();
+    let staged = root.clone();
+
+    let waiting = tokio::spawn(async move {
+        let mut device = login.start(&staged).await.expect("a prompt");
+        let _ = started.send(());
+        device.outcome().await
+    });
+    timeout(WAIT, prompted)
+        .await
+        .expect("the prompt in time")
+        .expect("the task to reach its prompt");
+    waiting.abort();
+    let aborted = waiting.await;
+
+    assert!(
+        aborted
+            .as_ref()
+            .is_err_and(tokio::task::JoinError::is_cancelled),
+        "{aborted:?}"
+    );
+    assert!(
+        removed(&staging(&root)).await,
+        "the staging directory was left"
+    );
+    assert!(ended(process(&leader)), "codex was left running");
+    assert!(
+        ended(process(&forked)),
+        "a process codex forked was left running"
+    );
+}
+
+#[tokio::test]
+async fn dropping_the_start_before_codex_prints_its_prompt_stops_codex() {
+    let directory = TempDir::new().expect("a temporary directory");
+    let root = root(&directory);
+    let (codex, leader, forked) = lingering(&directory, None);
+    let login = login(&codex, environment());
+
+    let mut started = Box::pin(login.start(&root));
+    let forking = async {
+        while !forked.exists() {
+            sleep(Duration::from_millis(20)).await;
+        }
+    };
+    tokio::select! {
+        result = &mut started => panic!("codex printed no prompt, yet the start ended: {result:?}"),
+        () = forking => {}
+    }
+    assert!(staging(&root).exists(), "codex runs in a staging directory");
+    drop(started);
+
+    assert!(
+        !staging(&root).exists(),
+        "dropping the start left the staging directory"
+    );
+    assert!(ended(process(&leader)), "codex was left running");
+    assert!(
+        ended(process(&forked)),
+        "a process codex forked was left running"
+    );
+}
+
+#[tokio::test]
+async fn a_wait_given_up_leaves_the_sign_in_running() {
+    let directory = TempDir::new().expect("a temporary directory");
+    let root = root(&directory);
+    let prompt = capture(&directory, "prompt", SUCCESS_PROMPT);
+    let written = capture(&directory, "auth.json", WRITTEN.as_bytes());
+    let go = directory.path().join("go");
+    let codex = fake(
+        &directory,
+        &arguments(),
+        &format!(
+            "cat '{prompt}'\nwhile [ ! -e '{}' ]; do sleep 0.05; done\ncp '{written}' \"$CODEX_HOME/auth.json\"\nexit 0",
+            go.display()
+        ),
+    );
+    let mut device = login(&codex, environment())
+        .start(&root)
+        .await
+        .expect("a prompt");
+
+    let early = timeout(Duration::from_millis(300), device.outcome()).await;
+    assert!(
+        early.is_err(),
+        "the sign-in finished before anyone entered its code"
+    );
+    assert!(
+        staging(&root).exists(),
+        "a timed-out wait cancelled the sign-in"
+    );
+    fs::write(&go, b"").expect("the code entered");
+    let staged = finish(&mut device).await.expect("a saved login");
+
+    assert_eq!(
+        staged.account().map(|account| account.id),
+        Some(ACCOUNT.to_string())
+    );
+}
+
+#[tokio::test]
+async fn limits_past_what_the_clock_can_count_are_waited_out() {
+    let directory = TempDir::new().expect("a temporary directory");
+    let root = root(&directory);
+    let prompt = capture(&directory, "prompt", PROMPT);
+    let codex = fake(
+        &directory,
+        &arguments(),
+        &format!("cat '{prompt}'\nexec sleep 60"),
+    );
+    let limits = Limits::default()
+        .with_prompt(Duration::MAX)
+        .with_grace(Duration::MAX);
+
+    let device = login(&codex, environment())
+        .with_limits(limits)
+        .start(&root)
+        .await
+        .expect("a prompt, and no overflow");
+
+    assert_eq!(device.prompt().user_code, "ABCD-EFGHI");
+    cancel(device).await;
+    assert!(!staging(&root).exists(), "the staging directory was left");
+}
+
+/// Run on a current-thread runtime, the task watching the sign-in is first
+/// polled only once the test yields, after codex has exited with its login
+/// saved and its code has expired: the login is kept.
+#[tokio::test]
+async fn a_login_saved_as_its_code_expires_is_kept() {
+    let directory = TempDir::new().expect("a temporary directory");
+    let root = root(&directory);
+    let expiring = String::from_utf8_lossy(SUCCESS_PROMPT)
+        .replace("expires in 15 minutes", "expires in 0 minutes");
+    assert_ne!(
+        expiring.as_bytes(),
+        SUCCESS_PROMPT,
+        "the fixture's expiry moved"
+    );
+    let prompt = capture(&directory, "prompt", expiring.as_bytes());
+    let written = capture(&directory, "auth.json", WRITTEN.as_bytes());
     let leader = directory.path().join("leader");
     let codex = fake(
         &directory,
         &arguments(),
         &format!(
-            "echo $$ > '{}'\ncat '{prompt}'\nexec sleep 60",
+            "echo $$ > '{}'\ncp '{written}' \"$CODEX_HOME/auth.json\"\ncat '{prompt}'\nexit 0",
             leader.display()
         ),
     );
+    let limits = Limits::default().with_grace(Duration::ZERO);
 
-    let Device {
-        outcome, cancel, ..
-    } = login(&codex, environment())
+    let mut device = login(&codex, environment())
+        .with_limits(limits)
         .start(&root)
         .await
         .expect("a prompt");
-    drop(cancel);
-    let result = finish(outcome).await;
+    assert!(ended(process(&leader)), "codex did not exit");
+    std::thread::sleep(Duration::from_millis(20));
+    let result = finish(&mut device).await;
 
-    assert!(matches!(result, Err(LoginError::Cancelled)), "{result:?}");
-    assert!(ended(process(&leader)), "codex was left running");
-    assert!(!staging(&root).exists(), "the staging directory was left");
+    assert!(result.is_ok(), "{result:?}");
+}
+
+#[tokio::test]
+async fn a_failure_never_repeats_a_secret_codex_was_given() {
+    const KEY: &str = "correct-horse-battery";
+    const REFUSAL: &str = "echo \"Error: the relay refused $HOST_RELAY_KEY\" >&2\nexit 1";
+    let secret = |codex: &Path| login(codex, environment()).with_secret("HOST_RELAY_KEY", KEY);
+    let prompted = TempDir::new().expect("a temporary directory");
+    let root = root(&prompted);
+    let prompt = capture(&prompted, "prompt", PROMPT);
+    let late = fake(
+        &prompted,
+        &arguments(),
+        &format!("cat '{prompt}'\n{REFUSAL}"),
+    );
+    let refused = TempDir::new().expect("a temporary directory");
+    let early = fake(&refused, &arguments(), REFUSAL);
+    let unconfigured = TempDir::new().expect("a temporary directory");
+    let logout = fake(&unconfigured, "logout", REFUSAL);
+
+    let mut device = secret(&late).start(&root).await.expect("a prompt");
+    let after_prompt = finish(&mut device).await.expect_err("a failure");
+    let before_prompt = secret(&early).start(&root).await.expect_err("a failure");
+    let logout = secret(&logout).logout(&root).await.expect_err("a failure");
+
+    for error in [after_prompt, before_prompt, logout] {
+        let shown = format!("{error} {error:?}");
+        assert!(!shown.contains(KEY), "{shown}");
+        assert!(
+            matches!(&error, LoginError::Failed { reason, .. } if reason == "Error: the relay refused [REDACTED]"),
+            "{error:?}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -354,17 +584,13 @@ async fn a_code_nobody_enters_expires_and_codex_is_stopped() {
     );
     let limits = Limits::default().with_grace(Duration::from_millis(200));
 
-    let Device {
-        prompt,
-        outcome,
-        cancel,
-    } = login(&codex, hosted(&root))
+    let mut device = login(&codex, hosted(&root))
         .with_limits(limits)
         .start(&root)
         .await
         .expect("a prompt");
-    let result = finish(outcome).await;
-    drop(cancel);
+    let result = finish(&mut device).await;
+    let prompt = device.prompt().clone();
 
     assert!(
         matches!(&result, Err(LoginError::Expired { expires_at, .. }) if *expires_at == prompt.expires_at),
@@ -399,14 +625,11 @@ async fn a_login_that_fails_after_its_prompt_reports_codexs_own_words() {
             &format!("cat '{prompt}'\ncat '{stderr}' >&2\nexit 1"),
         );
 
-        let Device {
-            outcome, cancel, ..
-        } = login(&codex, environment())
+        let mut device = login(&codex, environment())
             .start(&root)
             .await
             .expect("a prompt");
-        let result = finish(outcome).await;
-        drop(cancel);
+        let result = finish(&mut device).await;
 
         assert!(
             matches!(&result, Err(LoginError::Failed { reason, .. }) if *reason == text(failure)),
@@ -428,14 +651,11 @@ async fn a_failure_that_repeats_the_code_never_echoes_it() {
         &format!("cat '{prompt}'\necho 'Error: code ABCD-EFGHI was refused' >&2\nexit 1"),
     );
 
-    let Device {
-        outcome, cancel, ..
-    } = login(&codex, environment())
+    let mut device = login(&codex, environment())
         .start(&root)
         .await
         .expect("a prompt");
-    let result = finish(outcome).await;
-    drop(cancel);
+    let result = finish(&mut device).await;
 
     let Err(error) = result else {
         panic!("a failed sign-in reported success");
@@ -460,14 +680,11 @@ async fn a_clean_exit_that_saved_nothing_never_promotes_a_stale_login() {
         &format!("cat '{prompt}'\ncat '{stderr}' >&2\nexit 0"),
     );
 
-    let Device {
-        outcome, cancel, ..
-    } = login(&codex, environment())
+    let mut device = login(&codex, environment())
         .start(&root)
         .await
         .expect("a prompt");
-    let result = finish(outcome).await;
-    drop(cancel);
+    let result = finish(&mut device).await;
 
     assert!(
         matches!(result, Err(LoginError::Failed { .. })),
@@ -639,6 +856,31 @@ async fn a_logout_codex_refuses_reports_codexs_own_words() {
 }
 
 #[tokio::test]
+async fn a_logout_that_outlasts_its_limit_is_stopped() {
+    let directory = TempDir::new().expect("a temporary directory");
+    let home = root(&directory);
+    let leader = directory.path().join("leader");
+    let codex = fake(
+        &directory,
+        "logout",
+        &format!("echo $$ > '{}'\nexec sleep 60", leader.display()),
+    );
+    let limits = Limits::default().with_command(Duration::from_secs(1));
+
+    let error = login(&codex, environment())
+        .with_limits(limits)
+        .logout(&home)
+        .await
+        .expect_err("a logout that never finishes");
+
+    assert!(
+        matches!(&error, LoginError::Unreadable { reason, .. } if reason.contains("did not finish within 1s")),
+        "{error:?}"
+    );
+    assert!(ended(process(&leader)), "codex was left running");
+}
+
+#[tokio::test]
 async fn logout_without_codex_is_unavailable() {
     let directory = TempDir::new().expect("a temporary directory");
     let home = root(&directory);
@@ -655,18 +897,18 @@ async fn logout_without_codex_is_unavailable() {
 fn only_a_regular_auth_file_is_a_login() {
     let directory = TempDir::new().expect("a temporary directory");
     let home = root(&directory);
-    assert!(!DeviceLogin::signed_in(&home), "an empty home");
+    assert!(!signed_in(&home), "an empty home");
 
     fs::create_dir(home.join(CREDENTIALS)).expect("a directory in its place");
-    assert!(!DeviceLogin::signed_in(&home), "a directory");
+    assert!(!signed_in(&home), "a directory");
     fs::remove_dir(home.join(CREDENTIALS)).expect("the directory removed");
 
     let elsewhere = directory.path().join("elsewhere.json");
     fs::write(&elsewhere, EXISTING).expect("a login elsewhere");
     symlink(elsewhere, home.join(CREDENTIALS)).expect("a link in its place");
-    assert!(!DeviceLogin::signed_in(&home), "a symbolic link");
+    assert!(!signed_in(&home), "a symbolic link");
     fs::remove_file(home.join(CREDENTIALS)).expect("the link removed");
 
     fs::write(home.join(CREDENTIALS), EXISTING).expect("a login");
-    assert!(DeviceLogin::signed_in(&home), "a regular file");
+    assert!(signed_in(&home), "a regular file");
 }

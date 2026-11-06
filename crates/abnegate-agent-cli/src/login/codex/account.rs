@@ -1,13 +1,15 @@
-use std::fs;
+use std::fs::OpenOptions;
+use std::io::Read as _;
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::Path;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use nix::fcntl::OFlag;
 use serde_json::Value;
 
 use crate::login::codex::CREDENTIALS;
 use crate::login::codex::Plan;
-use crate::login::codex::saved;
 
 const TOKENS: &str = "tokens";
 const ID_TOKEN: &str = "id_token";
@@ -17,6 +19,7 @@ const AUTH_CLAIM: &str = "https://api.openai.com/auth";
 const PROFILE_CLAIM: &str = "https://api.openai.com/profile";
 const ACCOUNT_CLAIM: &str = "chatgpt_account_id";
 const PLAN_CLAIM: &str = "chatgpt_plan_type";
+const LIMIT: u64 = 64 * 1024;
 
 /// Whose ChatGPT login codex saved, read from its `auth.json` and the id
 /// token in it.
@@ -58,15 +61,23 @@ impl Account {
     }
 
     /// The account of the login in `home`, when its `auth.json` is a regular
-    /// file that names a ChatGPT account.
+    /// file of at most 64 KiB that names a ChatGPT account. A link in its
+    /// place is never followed, and a FIFO is never waited on.
     pub fn read(home: &Path) -> Option<Self> {
-        if !saved(home) {
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags((OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK).bits())
+            .open(home.join(CREDENTIALS))
+            .ok()?;
+        if !file.metadata().ok()?.is_file() {
             return None;
         }
-        fs::read_to_string(home.join(CREDENTIALS))
-            .ok()
-            .as_deref()
-            .and_then(Self::parse)
+        let mut auth = String::new();
+        file.take(LIMIT + 1).read_to_string(&mut auth).ok()?;
+        if auth.len() as u64 > LIMIT {
+            return None;
+        }
+        Self::parse(&auth)
     }
 
     /// The account of the login in `auth`, the text of codex's `auth.json`,
@@ -213,6 +224,38 @@ mod tests {
         {
             assert_eq!(Account::parse(&saved), None, "case {case}");
         }
+    }
+
+    #[test]
+    fn only_a_regular_auth_json_within_the_limit_is_read() {
+        let directory = tempfile::TempDir::new().expect("a temporary directory");
+        let home = directory.path();
+        let saved = auth(&json!({ "id_token": "fixture", "account_id": ACCOUNT }));
+        let path = home.join(CREDENTIALS);
+
+        std::fs::write(&path, &saved).expect("a login");
+        assert_eq!(Account::read(home), Some(Account::new(ACCOUNT)));
+
+        let padded = format!(
+            "{saved}{}",
+            " ".repeat(usize::try_from(LIMIT).expect("small"))
+        );
+        assert!(
+            Account::parse(&padded).is_some(),
+            "the padding is still JSON"
+        );
+        std::fs::write(&path, padded).expect("an oversized login");
+        assert_eq!(Account::read(home), None, "an oversized auth.json was read");
+
+        std::fs::remove_file(&path).expect("the login removed");
+        let elsewhere = directory.path().join("elsewhere.json");
+        std::fs::write(&elsewhere, &saved).expect("a login elsewhere");
+        std::os::unix::fs::symlink(&elsewhere, &path).expect("a link in its place");
+        assert_eq!(Account::read(home), None, "a link was followed");
+
+        std::fs::remove_file(&path).expect("the link removed");
+        nix::unistd::mkfifo(&path, nix::sys::stat::Mode::S_IRWXU).expect("a FIFO in its place");
+        assert_eq!(Account::read(home), None, "a FIFO was read");
     }
 
     #[test]

@@ -19,7 +19,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
-login = ["dep:abnegate-http", "dep:base64", "dep:regex", "dep:reqwest", "dep:sha2", "chrono/serde"]
+login = ["dep:abnegate-http", "dep:base64", "dep:nix", "dep:regex", "dep:reqwest", "dep:sha2", "chrono/serde"]
 
 [dependencies]
 abnegate-exec = { path = "../abnegate-exec", version = "0.1.11" }
@@ -33,6 +33,7 @@ chrono = { workspace = true }
 dirs = { workspace = true }
 futures = { workspace = true }
 getrandom = { workspace = true, features = ["std"] }
+nix = { workspace = true, features = ["fs"], optional = true }
 regex = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true, features = ["json"] }
 serde = { workspace = true, features = ["derive"] }

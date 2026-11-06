@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::io;
 use std::path::Path;
 use std::process::ExitStatus;
@@ -12,6 +11,7 @@ use tokio::process::ChildStdout;
 use tokio::process::Command;
 use tokio::time::timeout;
 
+use crate::login::Cli;
 use crate::login::LoginError;
 
 /// A sign-in CLI in a process group of its own, so that stopping it stops
@@ -26,18 +26,15 @@ pub(crate) struct Process {
 }
 
 impl Process {
-    /// `executable` run with `arguments` and exactly `environment`, with
-    /// nothing on its stdin, its output piped, in a process group of its own.
-    pub(crate) fn command(
-        executable: &Path,
-        arguments: &[&str],
-        environment: &BTreeMap<String, String>,
-    ) -> Command {
-        let mut command = Command::new(executable);
+    /// `cli` run with `arguments` and exactly the environment it is given,
+    /// with nothing on its stdin, its output piped, in a process group of its
+    /// own.
+    pub(crate) fn command(cli: &Cli, arguments: &[&str]) -> Command {
+        let mut command = Command::new(cli.executable());
         command
             .args(arguments)
             .env_clear()
-            .envs(environment)
+            .envs(cli.variables())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -94,10 +91,11 @@ impl Process {
     }
 
     /// Asks the whole group to exit, kills whatever is still running once
-    /// the CLI has exited or the grace period is up, and reaps the CLI.
-    pub(crate) async fn stop(&mut self) {
+    /// the CLI has exited or the grace period is up, and reaps the CLI,
+    /// returning the status it exited with, unless it was reaped before.
+    pub(crate) async fn stop(&mut self) -> Option<ExitStatus> {
         if self.reaped {
-            return;
+            return None;
         }
         match self.group.clone() {
             Some(group) => {
@@ -114,7 +112,7 @@ impl Process {
                 let _ = self.child.start_kill();
             }
         }
-        let _ = self.reap().await;
+        self.reap().await.ok()
     }
 
     async fn reap(&mut self) -> io::Result<ExitStatus> {

@@ -4,34 +4,29 @@
 //! `CODEX_HOME`.
 //!
 //! [`DeviceLogin::start`] runs it in a private [`Staging`] directory and
-//! returns the [`Prompt`] to show once codex has printed it. The [`Device`]
-//! it hands back resolves to the staging directory once codex has saved a
-//! login there, or is cancelled through it. [`Staging::promote`] moves the
-//! login into its home, and [`Account`] reads whose login it is. Nothing is
-//! stored for the caller: it may as well read the staged `auth.json` and
-//! keep it however it keeps credentials.
+//! returns the [`Device`] once codex has printed its [`Prompt`]. Its
+//! [`outcome`](Device::outcome) resolves to the staging directory once codex
+//! has saved a login there; [`cancel`](Device::cancel), or dropping it,
+//! stops codex. [`Staging::promote`] moves the login into its home, and
+//! [`Account`] reads whose login it is. Nothing is stored for the caller: it
+//! may as well read the staged `auth.json` and keep it however it keeps
+//! credentials.
 //!
 //! ```no_run
 //! use std::collections::BTreeMap;
 //! use std::path::Path;
 //!
 //! use abnegate_agent_cli::login::LoginError;
-//! use abnegate_agent_cli::login::codex::Device;
 //! use abnegate_agent_cli::login::codex::DeviceLogin;
 //!
 //! async fn sign_in(root: &Path, home: &Path) -> Result<(), LoginError> {
 //!     let environment = BTreeMap::from([("PATH".to_string(), "/usr/bin:/bin".to_string())]);
 //!     let login = DeviceLogin::new("codex").with_environment(environment);
-//!     let Device {
-//!         prompt,
-//!         outcome,
-//!         cancel,
-//!         ..
-//!     } = login.start(root).await?;
+//!     let mut device = login.start(root).await?;
+//!     let prompt = device.prompt();
 //!     println!("Open {} and enter {}", prompt.verification_url, prompt.user_code);
 //!
-//!     let staging = outcome.await.map_err(|_| LoginError::Cancelled)??;
-//!     drop(cancel);
+//!     let staging = device.outcome().await?;
 //!     if let Some(account) = staging.account() {
 //!         println!("Signed in to ChatGPT account {}", account.id);
 //!     }
@@ -69,7 +64,9 @@ pub(crate) const HOME: &str = "CODEX_HOME";
 const LOGIN: &[&str] = &["login", "--device-auth"];
 const LOGOUT: &[&str] = &["logout"];
 
-/// Whether `home` holds a login: its `auth.json` is a regular file.
-fn saved(home: &Path) -> bool {
+/// Whether `home` holds a codex login: its `auth.json` is a regular file,
+/// not a link or a directory. Codex never checks the credentials in it until
+/// a turn needs them.
+pub fn signed_in(home: &Path) -> bool {
     fs::symlink_metadata(home.join(CREDENTIALS)).is_ok_and(|metadata| metadata.is_file())
 }
