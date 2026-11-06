@@ -171,6 +171,22 @@ fn a_reported_window_is_a_runtime_limit_with_nothing_else_declared() {
 }
 
 #[test]
+fn a_reported_window_of_zero_is_an_unknown_capacity() {
+    let reported = Capacity::reported("qwen3:8b", 0);
+    assert_eq!(reported.identity, "qwen3:8b");
+    assert_eq!(reported.limit, None, "a zero window is no window");
+    assert_eq!(reported.source, Source::Unknown);
+    assert!(reported.ollama.is_none());
+    assert!(
+        reported
+            .reason
+            .as_deref()
+            .is_some_and(|reason| !reason.is_empty()),
+        "an unknown capacity says why: {reported:?}"
+    );
+}
+
+#[test]
 fn an_unknown_capacity_says_why() {
     let unknown = Capacity::unknown("auto", "the runtime reported no window");
     assert_eq!(unknown.identity, "auto");

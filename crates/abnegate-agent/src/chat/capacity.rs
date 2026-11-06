@@ -5,6 +5,10 @@ use super::Source;
 /// Why an endpoint with no configured context has no known capacity.
 const UNDISCLOSED: &str = "The endpoint publishes no deployment metadata.";
 
+/// Why a deployment whose server reported a window of zero has no known
+/// capacity.
+const UNREPORTED: &str = "The deployment's server reported no context window.";
+
 /// Why an endpoint's configured context is used as its capacity.
 const ASSUMED: &str =
     "The endpoint publishes no deployment metadata, so the configured context is assumed.";
@@ -63,7 +67,13 @@ impl Capacity {
     /// The window reported for `identity` by whatever serves it, an inference
     /// runtime or a coding agent, with nothing else declared: no Ollama
     /// override, no reasoning, undeclared vision and no reason given.
+    ///
+    /// A reported window of zero is no window, so the capacity is unknown and
+    /// says why.
     pub fn reported(identity: impl Into<String>, limit: u64) -> Self {
+        if limit == 0 {
+            return Self::unknown(identity, UNREPORTED);
+        }
         Self::new(identity, Some(limit), Source::Runtime)
     }
 
