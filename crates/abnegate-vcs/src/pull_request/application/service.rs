@@ -23,6 +23,7 @@ use url::Url;
 #[cfg(test)]
 mod fixtures;
 mod installations;
+mod repositories;
 
 /// Asks GitHub's REST API about a GitHub App: the App a manifest registers,
 /// the installations it has, and the repositories each installation reaches.

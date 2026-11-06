@@ -11,6 +11,12 @@ pub(super) fn jwt() -> SecretValue {
     SecretValue::new("header.payload.signature")
 }
 
+/// An installation's token, shaped like one GitHub issues, to see where it
+/// travels.
+pub(super) fn token() -> SecretValue {
+    SecretValue::new("ghs_installationtokenvalue")
+}
+
 /// The installation these tests ask about.
 pub(super) fn installation() -> InstallationId {
     InstallationId::new(67890)
