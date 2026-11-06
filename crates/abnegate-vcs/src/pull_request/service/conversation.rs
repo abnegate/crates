@@ -168,13 +168,16 @@ impl PullRequestService {
     ///
     /// A comment GitHub cannot find is [`PullRequestError::NotFound`], and so
     /// is one GitHub places on another pull request, in another repository,
-    /// on another host, or on no pull request at all: the pull request it is
-    /// placed on has to be addressed at this service's own origin, as
-    /// `reference`'s is. A repository that has been renamed or
-    /// transferred since `reference` was named is answered for under its new
-    /// name, so its comments are [`PullRequestError::NotFound`] too until
-    /// `reference` names it as it is now. An answer about a comment other than
-    /// `comment` is [`PullRequestError::GitHubApi`].
+    /// or on no pull request at all: the address of the pull request it is
+    /// placed on has to end in `repos`, `reference`'s owner and name, `pulls`
+    /// and its number. The host, and whatever comes before those segments, is
+    /// deliberately not compared, because the token never goes there and an
+    /// Enterprise server may know itself by another name than the one it is
+    /// reached at. A repository that has been renamed or transferred since
+    /// `reference` was named is answered for under its new name, so its
+    /// comments are [`PullRequestError::NotFound`] too until `reference` names
+    /// it as it is now. An answer about a comment other than `comment` is
+    /// [`PullRequestError::GitHubApi`].
     pub async fn fetch_review_comment(
         &self,
         reference: &PullRequestReference,
@@ -192,26 +195,11 @@ impl PullRequestService {
         if !answer
             .pull_request_url
             .as_deref()
-            .is_some_and(|url| self.addresses(url, reference))
+            .is_some_and(|url| addresses(url, reference))
         {
             return Err(PullRequestError::NotFound);
         }
         Ok(ReviewComment::from(answer))
-    }
-
-    /// Whether `url`, GitHub's REST address of a pull request, is where this
-    /// service addresses the pull request `reference` names: on its origin's
-    /// scheme, host and port, under its origin's path, and compared without
-    /// regard to case, as GitHub compares an owner and a name.
-    fn addresses(&self, url: &str, reference: &PullRequestReference) -> bool {
-        let Ok(url) = Url::parse(url) else {
-            return false;
-        };
-        let number = reference.number().to_string();
-        let Ok(own) = self.repository_endpoint(reference.repository(), &["pulls", &number]) else {
-            return false;
-        };
-        self.origin.holds(&url) && url.path().eq_ignore_ascii_case(own.path())
     }
 
     /// Answer the review comment GitHub identifies as `comment`, in its own
@@ -241,6 +229,30 @@ impl PullRequestService {
         .await?;
         Ok(())
     }
+}
+
+/// Whether `url`, GitHub's REST address of a pull request, ends in the path
+/// segments of the pull request `reference` names: `repos`, its owner and
+/// name compared without regard to case, as GitHub compares them, `pulls`,
+/// and its number exactly.
+fn addresses(url: &str, reference: &PullRequestReference) -> bool {
+    let Ok(url) = Url::parse(url) else {
+        return false;
+    };
+    let Some(mut segments) = url.path_segments() else {
+        return false;
+    };
+    let repository = reference.repository();
+    let number = reference.number().to_string();
+    segments.next_back() == Some(number.as_str())
+        && segments.next_back() == Some("pulls")
+        && segments
+            .next_back()
+            .is_some_and(|name| name.eq_ignore_ascii_case(repository.name()))
+        && segments
+            .next_back()
+            .is_some_and(|owner| owner.eq_ignore_ascii_case(repository.owner()))
+        && segments.next_back() == Some("repos")
 }
 
 /// A review as GitHub returned it, held to an identifier and to a commit this
@@ -975,10 +987,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_review_comment_on_another_host_is_not_found() {
-        let elsewhere: [fn(&str) -> String; 5] = [
+    async fn a_review_comment_belongs_to_its_pull_request_on_any_host_scheme_port_or_prefix() {
+        let elsewhere: [fn(&str) -> String; 6] = [
             |_| "https://api.github.com".to_string(),
             |_| "https://ghe.example/api/v3".to_string(),
+            |_| "http://10.0.0.5:8443/proxy/github".to_string(),
             |origin| origin.replacen("http://", "https://", 1),
             |origin| origin.replacen("127.0.0.1", "localhost", 1),
             |origin| {
@@ -989,17 +1002,14 @@ mod tests {
         ];
         for host in elsewhere {
             let mut placed_at = String::new();
-            let failure = read_answered_with(|origin| {
+            let comment = read_answered_with(|origin| {
                 placed_at = host(origin);
                 found(placed(&placed_at, PULL_REQUEST_PATH))
             })
             .await
-            .unwrap_err();
+            .unwrap_or_else(|failure| panic!("{placed_at}: {failure:?}"));
 
-            assert!(
-                matches!(failure, PullRequestError::NotFound),
-                "{placed_at}: {failure:?}"
-            );
+            assert_eq!(comment, remarked(), "{placed_at}");
         }
     }
 
@@ -1050,7 +1060,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn only_the_pull_request_s_own_address_on_this_origin_belongs() {
+    async fn only_the_pull_request_s_own_path_segments_belong() {
         let server = MockServer::start().await;
         let service = stand_in(&server).await;
         let reference = seven(&service);
@@ -1059,23 +1069,48 @@ mod tests {
         for stranger in [
             "",
             "not an address",
+            "/repos/acme/project/pulls/7",
             "https://github.com/acme/project/pull/7",
-            "https://api.github.com/repos/acme/project/pulls/7",
         ] {
-            assert!(!service.addresses(stranger, &reference), "{stranger}");
+            assert!(!addresses(stranger, &reference), "{stranger}");
         }
         for stranger in [
             "/repos/acme/project/pulls/7/",
             "/repos/acme/project/pulls/7/files",
             "/repos/acme/project/pulls/07",
+            "/repos/acme/project/pulls/70",
+            "/repos/acme/project/pulls/17",
             "/repos/acme/project/issues/7",
             "/acme/project/pulls/7",
             "/repos/acme/project-two/pulls/7",
-            "/api/v3/repos/acme/project/pulls/7",
+            "/repos/acme/project/PULLS/7",
+            "/REPOS/acme/project/pulls/7",
+            "/Repos/acme/project/Pulls/7",
         ] {
             let stranger = format!("{origin}{stranger}");
-            assert!(!service.addresses(&stranger, &reference), "{stranger}");
+            assert!(!addresses(&stranger, &reference), "{stranger}");
         }
-        assert!(service.addresses(&format!("{origin}{PULL_REQUEST_PATH}"), &reference));
+        for home in [
+            format!("{origin}{PULL_REQUEST_PATH}"),
+            format!("{origin}/repos/ACME/PROJECT/pulls/7"),
+            format!("{origin}/api/v3{PULL_REQUEST_PATH}"),
+            format!("https://api.github.com{PULL_REQUEST_PATH}?per_page=1#top"),
+        ] {
+            assert!(addresses(&home, &reference), "{home}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_review_comment_whose_repos_or_pulls_segment_is_upper_cased_is_not_found() {
+        for elsewhere in ["/REPOS/acme/project/pulls/7", "/repos/acme/project/PULLS/7"] {
+            let failure = read_answered_with(|origin| found(placed(origin, elsewhere)))
+                .await
+                .unwrap_err();
+
+            assert!(
+                matches!(failure, PullRequestError::NotFound),
+                "{elsewhere}: {failure:?}"
+            );
+        }
     }
 }
