@@ -32,6 +32,7 @@
 mod advisor;
 mod archive;
 mod category;
+mod category_match;
 mod class;
 mod cluster;
 mod config;
@@ -54,6 +55,7 @@ mod verdict;
 pub use crate::advisor::Advisor;
 pub use crate::archive::Archive;
 pub use crate::category::Category;
+pub use crate::category_match::CategoryMatch;
 pub use crate::class::ErrorClass;
 pub use crate::cluster::Cluster;
 pub use crate::config::Config;
