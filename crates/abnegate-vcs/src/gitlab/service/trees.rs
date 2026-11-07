@@ -7,13 +7,6 @@ use crate::tree_entry::TreeEntry;
 use reqwest::header::LINK;
 use std::collections::HashSet;
 
-/// The ref git reads as the checked-out commit, which a ref's rules refuse
-/// as a name but which names a commit all the same.
-const HEAD: &str = "HEAD";
-
-/// The shorthand git reads as `HEAD`, refused so that it is never sent.
-const HEAD_SHORTHAND: &str = "@";
-
 /// The query parameter naming the branch, tag or commit a tree is read at.
 const REFERENCE: &str = "ref";
 
@@ -64,7 +57,7 @@ impl GitLabService {
         reference: &str,
         path: Option<&str>,
     ) -> GitLabResult<Vec<TreeEntry>> {
-        if !names_reference(reference) {
+        if !TagName::accepts_reference(reference) {
             return Err(ParseError::BranchName(reference.to_string()).into());
         }
         let mut url = self.project_endpoint(project, &["repository", "tree"]);
@@ -103,12 +96,6 @@ impl GitLabService {
         }
         Ok(entries)
     }
-}
-
-/// Whether `reference` may be sent as the ref a tree is read at: `HEAD`, or
-/// any name git accepts for a ref but `@`.
-fn names_reference(reference: &str) -> bool {
-    reference == HEAD || (reference != HEAD_SHORTHAND && !TagName::refuses(reference))
 }
 
 /// The page `response`'s `Link` header names as the next, resolved against

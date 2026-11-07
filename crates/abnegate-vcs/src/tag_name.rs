@@ -7,7 +7,7 @@ const HEAD: &str = "HEAD";
 
 /// Git's shorthand for `HEAD`, a revision expression rather than a name,
 /// though git accepts it as a tag.
-#[cfg(feature = "github")]
+#[cfg(any(feature = "github", feature = "gitlab"))]
 const CURRENT: &str = "@";
 
 /// A tag name git accepts: one `git check-ref-format` accepts under
@@ -41,7 +41,7 @@ impl TagName {
     /// Whether `value` may be sent as a ref: `HEAD`, the tip of the default
     /// branch, or a name git accepts as a tag other than `@`, git's
     /// shorthand for `HEAD`.
-    #[cfg(feature = "github")]
+    #[cfg(any(feature = "github", feature = "gitlab"))]
     pub(crate) fn accepts_reference(value: &str) -> bool {
         value == HEAD || (value != CURRENT && !Self::refuses(value))
     }
@@ -108,7 +108,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "github")]
+    #[cfg(any(feature = "github", feature = "gitlab"))]
     #[test]
     fn a_reference_is_head_or_a_tag_name_other_than_its_shorthand() {
         for (value, accepted) in [
