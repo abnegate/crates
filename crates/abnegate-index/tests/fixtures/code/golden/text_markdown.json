@@ -1,0 +1,62 @@
+[
+  {
+    "end_offset": 95,
+    "index": 0,
+    "start_offset": 0,
+    "text": "# Widgets guide\n\n## Installing\n\nRun `npm install widgets` and import the components you need.\n\n"
+  },
+  {
+    "end_offset": 159,
+    "index": 1,
+    "start_offset": 71,
+    "text": "e components you need.\n\n```js\nimport { CartBadge } from 'widgets';\n```\n\n## Configuring\n\n"
+  },
+  {
+    "end_offset": 159,
+    "index": 2,
+    "start_offset": 135,
+    "text": "';\n```\n\n## Configuring\n\n"
+  },
+  {
+    "end_offset": 243,
+    "index": 3,
+    "start_offset": 159,
+    "text": "Create `widgets.config.json` next to your package manifest. Every key is optional:\n\n"
+  },
+  {
+    "end_offset": 243,
+    "index": 4,
+    "start_offset": 219,
+    "text": "Every key is optional:\n\n"
+  },
+  {
+    "end_offset": 324,
+    "index": 5,
+    "start_offset": 243,
+    "text": "- `retries`: how many times a request is retried.\n- `verbose`: log every request."
+  },
+  {
+    "end_offset": 384,
+    "index": 6,
+    "start_offset": 300,
+    "text": "ose`: log every request.\n- `outputDirectory`: where builds go.\n\n## Troubleshooting\n\n"
+  },
+  {
+    "end_offset": 384,
+    "index": 7,
+    "start_offset": 360,
+    "text": "o.\n\n## Troubleshooting\n\n"
+  },
+  {
+    "end_offset": 465,
+    "index": 8,
+    "start_offset": 384,
+    "text": "If the badge never updates, check that `count` is a number. Strings are ignored.\n"
+  },
+  {
+    "end_offset": 465,
+    "index": 9,
+    "start_offset": 441,
+    "text": "r. Strings are ignored.\n"
+  }
+]

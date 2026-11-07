@@ -1,0 +1,427 @@
+[
+  {
+    "chunk_type": "FileHeader",
+    "end_offset": 60,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 0,
+    "metadata": {
+      "content_hash": "fc76fba16472396c",
+      "end_byte": 60,
+      "is_generated": false,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/native/buffer.c@main",
+      "start_byte": 0,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 0,
+    "text": "path: github://acme/widgets/native/buffer.c@main\nkind: file_header\n\n#include <stdlib.h>\n\n#include <string.h>\n\n#include \"buffer.h\"\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 159,
+    "identifiers": {
+      "defined_symbol": "buffer",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 1,
+    "metadata": {
+      "content_hash": "95bacb328af495fb",
+      "end_byte": 159,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/native/buffer.c@main",
+      "start_byte": 86,
+      "symbol": "buffer",
+      "visibility": "Private"
+    },
+    "start_offset": 86,
+    "text": "File: github://acme/widgets/native/buffer.c@main\npath: github://acme/widgets/native/buffer.c@main\nLanguage: c\nsymbol: buffer\nSymbol: buffer\nkind: Other\nSignature: struct buffer\n\n// Imports:\n#include <stdlib.h>\n\n#include <string.h>\n\n#include \"buffer.h\"\n\nstruct buffer {\n    char *data;\n    size_t length;\n    size_t capacity;\n}\n\n// Identifiers:\n// symbol: buffer\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 534,
+    "identifiers": {
+      "defined_symbol": "buffer_grow",
+      "key_strings": [],
+      "parameters": [
+        "struct",
+        "buffer",
+        "size_t",
+        "needed"
+      ],
+      "referenced_functions": [
+        "buffer_grow",
+        "realloc"
+      ],
+      "referenced_types": [
+        "GROWTH_FACTOR",
+        "NULL"
+      ]
+    },
+    "index": 2,
+    "metadata": {
+      "content_hash": "ecd4676d686961d7",
+      "end_byte": 534,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/native/buffer.c@main",
+      "start_byte": 162,
+      "symbol": "buffer_grow",
+      "visibility": "Private"
+    },
+    "start_offset": 162,
+    "text": "File: github://acme/widgets/native/buffer.c@main\npath: github://acme/widgets/native/buffer.c@main\nLanguage: c\nsymbol: buffer_grow\nSymbol: buffer_grow\nkind: Other\nSignature: static int buffer_grow(struct buffer *buffer, size_t needed)\n\n// Imports:\n#include <stdlib.h>\n\n#include <string.h>\n\n#include \"buffer.h\"\n\nstatic int buffer_grow(struct buffer *buffer, size_t needed) {\n    size_t capacity = buffer->capacity ? buffer->capacity : 16;\n    while (capacity < needed) {\n        capacity *= GROWTH_FACTOR;\n    }\n    char *data = realloc(buffer->data, capacity);\n    if (data == NULL) {\n        return -1;\n    }\n    buffer->data = data;\n    buffer->capacity = capacity;\n    return 0;\n}\n\n// Identifiers:\n// symbol: buffer_grow\n// params: struct, buffer, size_t, needed\n// types: GROWTH_FACTOR, NULL\n// calls: buffer_grow, realloc\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 534,
+    "identifiers": {
+      "defined_symbol": "buffer_grow",
+      "key_strings": [],
+      "parameters": [
+        "struct",
+        "buffer",
+        "size_t",
+        "needed"
+      ],
+      "referenced_functions": [
+        "buffer_grow",
+        "realloc"
+      ],
+      "referenced_types": [
+        "GROWTH_FACTOR",
+        "NULL"
+      ]
+    },
+    "index": 3,
+    "metadata": {
+      "content_hash": "7385465375311444",
+      "end_byte": 534,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/native/buffer.c@main",
+      "start_byte": 162,
+      "symbol": "buffer_grow",
+      "visibility": "Private"
+    },
+    "start_offset": 162,
+    "text": "File: github://acme/widgets/native/buffer.c@main\npath: github://acme/widgets/native/buffer.c@main\nLanguage: c\nsymbol: buffer_grow\nSymbol: buffer_grow\nkind: Other\nSignature: static int buffer_grow(struct buffer *buffer, size_t needed)\n [skeleton]\nstatic int buffer_grow(struct buffer *buffer, size_t needed)\n\n// Key identifiers:\n// defined: buffer_grow\n// params: struct, buffer, size_t, needed\n// types: GROWTH_FACTOR, NULL\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 198,
+    "identifiers": {
+      "defined_symbol": "buffer",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 4,
+    "metadata": {
+      "content_hash": "eb43d0a8da896ede",
+      "end_byte": 198,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "buffer_grow"
+      ],
+      "path": "github://acme/widgets/native/buffer.c@main",
+      "start_byte": 185,
+      "symbol": "buffer",
+      "visibility": "Private"
+    },
+    "start_offset": 185,
+    "text": "File: github://acme/widgets/native/buffer.c@main\npath: github://acme/widgets/native/buffer.c@main\nLanguage: c\nsymbol: buffer_grow.buffer\nSymbol: buffer_grow.buffer\nkind: Other\nParent: buffer_grow\nparents: buffer_grow\nSignature: struct buffer\n\n// Imports:\n#include <stdlib.h>\n\n#include <string.h>\n\n#include \"buffer.h\"\n\nstruct buffer\n\n// Identifiers:\n// symbol: buffer\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 616,
+    "identifiers": {
+      "defined_symbol": "*buffer_new(void)",
+      "key_strings": [],
+      "parameters": [
+        "void"
+      ],
+      "referenced_functions": [
+        "buffer_new",
+        "calloc",
+        "sizeof"
+      ],
+      "referenced_types": []
+    },
+    "index": 5,
+    "metadata": {
+      "content_hash": "eb24868d19cd69ea",
+      "end_byte": 616,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/native/buffer.c@main",
+      "start_byte": 536,
+      "symbol": "*buffer_new(void)",
+      "visibility": "Private"
+    },
+    "start_offset": 536,
+    "text": "File: github://acme/widgets/native/buffer.c@main\npath: github://acme/widgets/native/buffer.c@main\nLanguage: c\nsymbol: *buffer_new(void)\nSymbol: *buffer_new(void)\nkind: Other\nSignature: struct buffer *buffer_new(void)\n\n// Imports:\n#include <stdlib.h>\n\n#include <string.h>\n\n#include \"buffer.h\"\n\nstruct buffer *buffer_new(void) {\n    return calloc(1, sizeof(struct buffer));\n}\n\n// Identifiers:\n// symbol: *buffer_new(void)\n// params: void\n// calls: buffer_new, calloc, sizeof\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 938,
+    "identifiers": {
+      "defined_symbol": "buffer_append",
+      "key_strings": [],
+      "parameters": [
+        "struct",
+        "buffer",
+        "const",
+        "char",
+        "bytes",
+        "size_t",
+        "length"
+      ],
+      "referenced_functions": [
+        "buffer_append",
+        "buffer_grow",
+        "memcpy"
+      ],
+      "referenced_types": []
+    },
+    "index": 6,
+    "metadata": {
+      "content_hash": "0bd1ae047d6dccd0",
+      "end_byte": 938,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/native/buffer.c@main",
+      "start_byte": 618,
+      "symbol": "buffer_append",
+      "visibility": "Private"
+    },
+    "start_offset": 618,
+    "text": "File: github://acme/widgets/native/buffer.c@main\npath: github://acme/widgets/native/buffer.c@main\nLanguage: c\nsymbol: buffer_append\nSymbol: buffer_append\nkind: Other\nSignature: int buffer_append(struct buffer *buffer, const char *bytes, size_t length)\n\n// Imports:\n#include <stdlib.h>\n\n#include <string.h>\n\n#include \"buffer.h\"\n\nint buffer_append(struct buffer *buffer, const char *bytes, size_t length) {\n    if (buffer->length + length > buffer->capacity &&\n        buffer_grow(buffer, buffer->length + length) != 0) {\n        return -1;\n    }\n    memcpy(buffer->data + buffer->length, bytes, length);\n    buffer->length += length;\n    return 0;\n}\n\n// Identifiers:\n// symbol: buffer_append\n// params: struct, buffer, const, char, bytes, size_t, length\n// calls: buffer_append, buffer_grow, memcpy\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 938,
+    "identifiers": {
+      "defined_symbol": "buffer_append",
+      "key_strings": [],
+      "parameters": [
+        "struct",
+        "buffer",
+        "const",
+        "char",
+        "bytes",
+        "size_t",
+        "length"
+      ],
+      "referenced_functions": [
+        "buffer_append",
+        "buffer_grow",
+        "memcpy"
+      ],
+      "referenced_types": []
+    },
+    "index": 7,
+    "metadata": {
+      "content_hash": "dcd9fac80ad27a7e",
+      "end_byte": 938,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/native/buffer.c@main",
+      "start_byte": 618,
+      "symbol": "buffer_append",
+      "visibility": "Private"
+    },
+    "start_offset": 618,
+    "text": "File: github://acme/widgets/native/buffer.c@main\npath: github://acme/widgets/native/buffer.c@main\nLanguage: c\nsymbol: buffer_append\nSymbol: buffer_append\nkind: Other\nSignature: int buffer_append(struct buffer *buffer, const char *bytes, size_t length)\n [skeleton]\nint buffer_append(struct buffer *buffer, const char *bytes, size_t length)\n\n// Key identifiers:\n// defined: buffer_append\n// params: struct, buffer, const, char, bytes, size_t, length\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 649,
+    "identifiers": {
+      "defined_symbol": "buffer",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 8,
+    "metadata": {
+      "content_hash": "58ba80034d9f7e29",
+      "end_byte": 649,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "buffer_append"
+      ],
+      "path": "github://acme/widgets/native/buffer.c@main",
+      "start_byte": 636,
+      "symbol": "buffer",
+      "visibility": "Private"
+    },
+    "start_offset": 636,
+    "text": "File: github://acme/widgets/native/buffer.c@main\npath: github://acme/widgets/native/buffer.c@main\nLanguage: c\nsymbol: buffer_append.buffer\nSymbol: buffer_append.buffer\nkind: Other\nParent: buffer_append\nparents: buffer_append\nSignature: struct buffer\n\n// Imports:\n#include <stdlib.h>\n\n#include <string.h>\n\n#include \"buffer.h\"\n\nstruct buffer\n\n// Identifiers:\n// symbol: buffer\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1073,
+    "identifiers": {
+      "defined_symbol": "buffer_free",
+      "key_strings": [],
+      "parameters": [
+        "struct",
+        "buffer"
+      ],
+      "referenced_functions": [
+        "buffer_free",
+        "free"
+      ],
+      "referenced_types": [
+        "NULL"
+      ]
+    },
+    "index": 9,
+    "metadata": {
+      "content_hash": "486f22be0efc33cf",
+      "end_byte": 1073,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/native/buffer.c@main",
+      "start_byte": 940,
+      "symbol": "buffer_free",
+      "visibility": "Private"
+    },
+    "start_offset": 940,
+    "text": "File: github://acme/widgets/native/buffer.c@main\npath: github://acme/widgets/native/buffer.c@main\nLanguage: c\nsymbol: buffer_free\nSymbol: buffer_free\nkind: Other\nSignature: void buffer_free(struct buffer *buffer)\n\n// Imports:\n#include <stdlib.h>\n\n#include <string.h>\n\n#include \"buffer.h\"\n\nvoid buffer_free(struct buffer *buffer) {\n    if (buffer == NULL) {\n        return;\n    }\n    free(buffer->data);\n    free(buffer);\n}\n\n// Identifiers:\n// symbol: buffer_free\n// params: struct, buffer\n// types: NULL\n// calls: buffer_free, free\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 1073,
+    "identifiers": {
+      "defined_symbol": "buffer_free",
+      "key_strings": [],
+      "parameters": [
+        "struct",
+        "buffer"
+      ],
+      "referenced_functions": [
+        "buffer_free",
+        "free"
+      ],
+      "referenced_types": [
+        "NULL"
+      ]
+    },
+    "index": 10,
+    "metadata": {
+      "content_hash": "ae8bd459aac0be10",
+      "end_byte": 1073,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/native/buffer.c@main",
+      "start_byte": 940,
+      "symbol": "buffer_free",
+      "visibility": "Private"
+    },
+    "start_offset": 940,
+    "text": "File: github://acme/widgets/native/buffer.c@main\npath: github://acme/widgets/native/buffer.c@main\nLanguage: c\nsymbol: buffer_free\nSymbol: buffer_free\nkind: Other\nSignature: void buffer_free(struct buffer *buffer)\n [skeleton]\nvoid buffer_free(struct buffer *buffer)\n\n// Key identifiers:\n// defined: buffer_free\n// params: struct, buffer\n// types: NULL\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 970,
+    "identifiers": {
+      "defined_symbol": "buffer",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 11,
+    "metadata": {
+      "content_hash": "0408c8585de29433",
+      "end_byte": 970,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "buffer_free"
+      ],
+      "path": "github://acme/widgets/native/buffer.c@main",
+      "start_byte": 957,
+      "symbol": "buffer",
+      "visibility": "Private"
+    },
+    "start_offset": 957,
+    "text": "File: github://acme/widgets/native/buffer.c@main\npath: github://acme/widgets/native/buffer.c@main\nLanguage: c\nsymbol: buffer_free.buffer\nSymbol: buffer_free.buffer\nkind: Other\nParent: buffer_free\nparents: buffer_free\nSignature: struct buffer\n\n// Imports:\n#include <stdlib.h>\n\n#include <string.h>\n\n#include \"buffer.h\"\n\nstruct buffer\n\n// Identifiers:\n// symbol: buffer\n"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 86,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 12,
+    "metadata": {
+      "content_hash": "55a0dd91c8d95002",
+      "end_byte": 86,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/native/buffer.c@main",
+      "start_byte": 61,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 61,
+    "text": "File: github://acme/widgets/native/buffer.c@main\npath: github://acme/widgets/native/buffer.c@main\nLanguage: c\nkind: top_level\n\n#define GROWTH_FACTOR 2\n"
+  }
+]

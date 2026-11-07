@@ -1,0 +1,504 @@
+[
+  {
+    "chunk_type": "FileHeader",
+    "end_offset": 74,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 0,
+    "metadata": {
+      "content_hash": "d745ca8be1115b64",
+      "end_byte": 74,
+      "is_generated": false,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/config/load.mjs@main",
+      "start_byte": 0,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 0,
+    "text": "path: github://acme/widgets/src/config/load.mjs@main\nkind: file_header\n\nimport { readFile } from 'node:fs/promises';\nimport path from 'node:path';"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 125,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [
+        "widgets.config.json"
+      ],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": [
+        "CONFIG_NAME"
+      ]
+    },
+    "index": 1,
+    "metadata": {
+      "content_hash": "e79c1b658c87838b",
+      "end_byte": 125,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/config/load.mjs@main",
+      "start_byte": 76,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 76,
+    "text": "File: github://acme/widgets/src/config/load.mjs@main\npath: github://acme/widgets/src/config/load.mjs@main\nLanguage: javascript\nkind: Other\nSignature: export const CONFIG_NAME = 'widgets.config.json';\n\n// Imports:\nimport { readFile } from 'node:fs/promises';\nimport path from 'node:path';\n\nexport const CONFIG_NAME = 'widgets.config.json';\n\n// Identifiers:\n// types: CONFIG_NAME\n// keys: widgets.config.json\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 341,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [
+        "directory"
+      ],
+      "referenced_functions": [
+        "loadConfig",
+        "join",
+        "readFile",
+        "parse",
+        "defaults"
+      ],
+      "referenced_types": [
+        "CONFIG_NAME",
+        "JSON"
+      ]
+    },
+    "index": 2,
+    "metadata": {
+      "content_hash": "1b668383feb8366d",
+      "end_byte": 341,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/config/load.mjs@main",
+      "start_byte": 127,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 127,
+    "text": "File: github://acme/widgets/src/config/load.mjs@main\npath: github://acme/widgets/src/config/load.mjs@main\nLanguage: javascript\nkind: Other\nSignature: export async function loadConfig(directory)\n\n// Imports:\nimport { readFile } from 'node:fs/promises';\nimport path from 'node:path';\n\nexport async function loadConfig(directory) {\n  const file = path.join(directory, CONFIG_NAME);\n  const raw = await readFile(file, 'utf8');\n  const parsed = JSON.parse(raw);\n  return { ...defaults(), ...parsed };\n}\n\n// Identifiers:\n// params: directory\n// types: CONFIG_NAME, JSON\n// calls: loadConfig, join, readFile, parse, defaults\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 341,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [
+        "directory"
+      ],
+      "referenced_functions": [
+        "loadConfig",
+        "join",
+        "readFile",
+        "parse",
+        "defaults"
+      ],
+      "referenced_types": [
+        "CONFIG_NAME",
+        "JSON"
+      ]
+    },
+    "index": 3,
+    "metadata": {
+      "content_hash": "977e3d93e494e3e1",
+      "end_byte": 341,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/config/load.mjs@main",
+      "start_byte": 127,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 127,
+    "text": "File: github://acme/widgets/src/config/load.mjs@main\npath: github://acme/widgets/src/config/load.mjs@main\nLanguage: javascript\nkind: Other\nSignature: export async function loadConfig(directory)\n [skeleton]\nexport async function loadConfig(directory)\n\n// Key identifiers:\n// params: directory\n// types: CONFIG_NAME, JSON\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 341,
+    "identifiers": {
+      "defined_symbol": "loadConfig",
+      "key_strings": [],
+      "parameters": [
+        "directory"
+      ],
+      "referenced_functions": [
+        "loadConfig",
+        "join",
+        "readFile",
+        "parse",
+        "defaults"
+      ],
+      "referenced_types": [
+        "CONFIG_NAME",
+        "JSON"
+      ]
+    },
+    "index": 4,
+    "metadata": {
+      "content_hash": "28b6f24088dd04b0",
+      "end_byte": 341,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/config/load.mjs@main",
+      "start_byte": 134,
+      "symbol": "loadConfig",
+      "visibility": "Private"
+    },
+    "start_offset": 134,
+    "text": "File: github://acme/widgets/src/config/load.mjs@main\npath: github://acme/widgets/src/config/load.mjs@main\nLanguage: javascript\nsymbol: loadConfig\nSymbol: loadConfig\nkind: Function\nSignature: async function loadConfig(directory)\n\n// Imports:\nimport { readFile } from 'node:fs/promises';\nimport path from 'node:path';\n\nasync function loadConfig(directory) {\n  const file = path.join(directory, CONFIG_NAME);\n  const raw = await readFile(file, 'utf8');\n  const parsed = JSON.parse(raw);\n  return { ...defaults(), ...parsed };\n}\n\n// Identifiers:\n// symbol: loadConfig\n// params: directory\n// types: CONFIG_NAME, JSON\n// calls: loadConfig, join, readFile, parse, defaults\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 341,
+    "identifiers": {
+      "defined_symbol": "loadConfig",
+      "key_strings": [],
+      "parameters": [
+        "directory"
+      ],
+      "referenced_functions": [
+        "loadConfig",
+        "join",
+        "readFile",
+        "parse",
+        "defaults"
+      ],
+      "referenced_types": [
+        "CONFIG_NAME",
+        "JSON"
+      ]
+    },
+    "index": 5,
+    "metadata": {
+      "content_hash": "4861f4766aeed1e1",
+      "end_byte": 341,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/config/load.mjs@main",
+      "start_byte": 134,
+      "symbol": "loadConfig",
+      "visibility": "Private"
+    },
+    "start_offset": 134,
+    "text": "File: github://acme/widgets/src/config/load.mjs@main\npath: github://acme/widgets/src/config/load.mjs@main\nLanguage: javascript\nsymbol: loadConfig\nSymbol: loadConfig\nkind: Function\nSignature: async function loadConfig(directory)\n [skeleton]\nasync function loadConfig(directory)\n\n// Key identifiers:\n// defined: loadConfig\n// params: directory\n// types: CONFIG_NAME, JSON\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 300,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [
+        "directory",
+        "CONFIG_NAME",
+        "file",
+        "utf8",
+        "raw"
+      ],
+      "referenced_functions": [],
+      "referenced_types": [
+        "CONFIG_NAME",
+        "JSON"
+      ]
+    },
+    "index": 6,
+    "metadata": {
+      "content_hash": "671fb2a89bfebf2d",
+      "end_byte": 300,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "loadConfig"
+      ],
+      "path": "github://acme/widgets/src/config/load.mjs@main",
+      "start_byte": 175,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 175,
+    "text": "const file = path.join(directory, CONFIG_NAME);\n\nconst raw = await readFile(file, 'utf8');\n\nconst parsed = JSON.parse(raw);"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 432,
+    "identifiers": {
+      "defined_symbol": "defaults",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "defaults"
+      ],
+      "referenced_types": []
+    },
+    "index": 7,
+    "metadata": {
+      "content_hash": "824816fe86fc2eea",
+      "end_byte": 432,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/config/load.mjs@main",
+      "start_byte": 343,
+      "symbol": "defaults",
+      "visibility": "Private"
+    },
+    "start_offset": 343,
+    "text": "File: github://acme/widgets/src/config/load.mjs@main\npath: github://acme/widgets/src/config/load.mjs@main\nLanguage: javascript\nsymbol: defaults\nSymbol: defaults\nkind: Function\nSignature: function defaults()\n\n// Imports:\nimport { readFile } from 'node:fs/promises';\nimport path from 'node:path';\n\nfunction defaults() {\n  return { retries: 3, verbose: false, outputDirectory: 'dist' };\n}\n\n// Identifiers:\n// symbol: defaults\n// calls: defaults\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 432,
+    "identifiers": {
+      "defined_symbol": "defaults",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "defaults"
+      ],
+      "referenced_types": []
+    },
+    "index": 8,
+    "metadata": {
+      "content_hash": "a1b43f1730a81fd2",
+      "end_byte": 432,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/config/load.mjs@main",
+      "start_byte": 343,
+      "symbol": "defaults",
+      "visibility": "Private"
+    },
+    "start_offset": 343,
+    "text": "File: github://acme/widgets/src/config/load.mjs@main\npath: github://acme/widgets/src/config/load.mjs@main\nLanguage: javascript\nsymbol: defaults\nSymbol: defaults\nkind: Function\nSignature: function defaults()\n [skeleton]\nfunction defaults()\n\n// Key identifiers:\n// defined: defaults\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 654,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [
+        "base",
+        "override"
+      ],
+      "referenced_functions": [
+        "mergeConfigs",
+        "entries"
+      ],
+      "referenced_types": [
+        "Object"
+      ]
+    },
+    "index": 9,
+    "metadata": {
+      "content_hash": "089275130f863dd8",
+      "end_byte": 654,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/config/load.mjs@main",
+      "start_byte": 434,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 434,
+    "text": "File: github://acme/widgets/src/config/load.mjs@main\npath: github://acme/widgets/src/config/load.mjs@main\nLanguage: javascript\nkind: Other\nSignature: export function mergeConfigs(base, override)\n\n// Imports:\nimport { readFile } from 'node:fs/promises';\nimport path from 'node:path';\n\nexport function mergeConfigs(base, override) {\n  const merged = { ...base };\n  for (const [key, value] of Object.entries(override)) {\n    if (value !== undefined) {\n      merged[key] = value;\n    }\n  }\n  return merged;\n}\n\n// Identifiers:\n// params: base, override\n// types: Object\n// calls: mergeConfigs, entries\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 654,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [
+        "base",
+        "override"
+      ],
+      "referenced_functions": [
+        "mergeConfigs",
+        "entries"
+      ],
+      "referenced_types": [
+        "Object"
+      ]
+    },
+    "index": 10,
+    "metadata": {
+      "content_hash": "9ab79582979cb5d7",
+      "end_byte": 654,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/config/load.mjs@main",
+      "start_byte": 434,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 434,
+    "text": "File: github://acme/widgets/src/config/load.mjs@main\npath: github://acme/widgets/src/config/load.mjs@main\nLanguage: javascript\nkind: Other\nSignature: export function mergeConfigs(base, override)\n [skeleton]\nexport function mergeConfigs(base, override)\n\n// Key identifiers:\n// params: base, override\n// types: Object\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 654,
+    "identifiers": {
+      "defined_symbol": "mergeConfigs",
+      "key_strings": [],
+      "parameters": [
+        "base",
+        "override"
+      ],
+      "referenced_functions": [
+        "mergeConfigs",
+        "entries"
+      ],
+      "referenced_types": [
+        "Object"
+      ]
+    },
+    "index": 11,
+    "metadata": {
+      "content_hash": "4a44dfe45921a131",
+      "end_byte": 654,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/config/load.mjs@main",
+      "start_byte": 441,
+      "symbol": "mergeConfigs",
+      "visibility": "Private"
+    },
+    "start_offset": 441,
+    "text": "File: github://acme/widgets/src/config/load.mjs@main\npath: github://acme/widgets/src/config/load.mjs@main\nLanguage: javascript\nsymbol: mergeConfigs\nSymbol: mergeConfigs\nkind: Function\nSignature: function mergeConfigs(base, override)\n\n// Imports:\nimport { readFile } from 'node:fs/promises';\nimport path from 'node:path';\n\nfunction mergeConfigs(base, override) {\n  const merged = { ...base };\n  for (const [key, value] of Object.entries(override)) {\n    if (value !== undefined) {\n      merged[key] = value;\n    }\n  }\n  return merged;\n}\n\n// Identifiers:\n// symbol: mergeConfigs\n// params: base, override\n// types: Object\n// calls: mergeConfigs, entries\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 654,
+    "identifiers": {
+      "defined_symbol": "mergeConfigs",
+      "key_strings": [],
+      "parameters": [
+        "base",
+        "override"
+      ],
+      "referenced_functions": [
+        "mergeConfigs",
+        "entries"
+      ],
+      "referenced_types": [
+        "Object"
+      ]
+    },
+    "index": 12,
+    "metadata": {
+      "content_hash": "ae2ab2b783a691c9",
+      "end_byte": 654,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/config/load.mjs@main",
+      "start_byte": 441,
+      "symbol": "mergeConfigs",
+      "visibility": "Private"
+    },
+    "start_offset": 441,
+    "text": "File: github://acme/widgets/src/config/load.mjs@main\npath: github://acme/widgets/src/config/load.mjs@main\nLanguage: javascript\nsymbol: mergeConfigs\nSymbol: mergeConfigs\nkind: Function\nSignature: function mergeConfigs(base, override)\n [skeleton]\nfunction mergeConfigs(base, override)\n\n// Key identifiers:\n// defined: mergeConfigs\n// params: base, override\n// types: Object\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 510,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 13,
+    "metadata": {
+      "content_hash": "1a0945dace53aa5d",
+      "end_byte": 510,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "mergeConfigs"
+      ],
+      "path": "github://acme/widgets/src/config/load.mjs@main",
+      "start_byte": 483,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 483,
+    "text": "File: github://acme/widgets/src/config/load.mjs@main\npath: github://acme/widgets/src/config/load.mjs@main\nLanguage: javascript\nkind: Other\nParent: mergeConfigs\nparents: mergeConfigs\nSignature: const merged =\n\n// Imports:\nimport { readFile } from 'node:fs/promises';\nimport path from 'node:path';\n\nconst merged = { ...base };"
+  },
+  {
+    "chunk_type": "ApiSurface",
+    "end_offset": 654,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 14,
+    "metadata": {
+      "content_hash": "e94bdfac51787e8d",
+      "end_byte": 654,
+      "is_generated": false,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/config/load.mjs@main",
+      "start_byte": 76,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 76,
+    "text": "path: github://acme/widgets/src/config/load.mjs@main\nkind: api_surface\n\n// Public API:\n\nexport const CONFIG_NAME = 'widgets.config.json';\n\nexport async function loadConfig(directory)\n\nexport function mergeConfigs(base, override)\n\n"
+  }
+]

@@ -1,0 +1,83 @@
+[
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 2037,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 0,
+    "metadata": {
+      "content_hash": "ad0595f7fe22a5a9",
+      "end_byte": 2037,
+      "is_generated": true,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/static/tables.js@main",
+      "start_byte": 0,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 0,
+    "text": "File: github://acme/widgets/static/tables.js@main\npath: github://acme/widgets/static/tables.js@main\nconst k00=[0,1,2,3,4,5,6,7,8,9,10,11,12,13];\nconst k01=[7,8,9,10,11,12,13,14,15,16,17,18,19,20];\nconst k02=[14,15,16,17,18,19,20,21,22,23,24,25,26,27];\nconst k03=[21,22,23,24,25,26,27,28,29,30,31,32,33,34];\nconst k04=[28,29,30,31,32,33,34,35,36,37,38,39,40,41];\nconst k05=[35,36,37,38,39,40,41,42,43,44,45,46,47,48];\nconst k06=[42,43,44,45,46,47,48,49,50,51,52,53,54,55];\nconst k07=[49,50,51,52,53,54,55,56,57,58,59,60,61,62];\nconst k08=[56,57,58,59,60,61,62,63,64,65,66,67,68,69];\nconst k09=[63,64,65,66,67,68,69,70,71,72,73,74,75,76];\nconst k10=[70,71,72,73,74,75,76,77,78,79,80,81,82,83];\nconst k11=[77,78,79,80,81,82,83,84,85,86,87,88,89,90];\nconst k12=[84,85,86,87,88,89,90,91,92,93,94,95,96,0];\nconst k13=[91,92,93,94,95,96,0,1,2,3,4,5,6,7];\nconst k14=[1,2,3,4,5,6,7,8,9,10,11,12,13,14];\nconst k15=[8,9,10,11,12,13,14,15,16,17,18,19,20,21];\nconst k16=[15,16,17,18,19,20,21,22,23,24,25,26,27,28];\nconst k17=[22,23,24,25,26,27,28,29,30,31,32,33,34,35];\nconst k18=[29,30,31,32,33,34,35,36,37,38,39,40,41,42];\nconst k19=[36,37,38,39,40,41,42,43,44,45,46,47,48,49];\nconst k20=[43,44,45,46,47,48,49,50,51,52,53,54,55,56];\nconst k21=[50,51,52,53,54,55,56,57,58,59,60,61,62,63];\nconst k22=[57,58,59,60,61,62,63,64,65,66,67,68,69,70];\nconst k23=[64,65,66,67,68,69,70,71,72,73,74,75,76,77];\nconst k24=[71,72,73,74,75,76,77,78,79,80,81,82,83,84];\nconst k25=[78,79,80,81,82,83,84,85,86,87,88,89,90,91];\nconst k26=[85,86,87,88,89,90,91,92,93,94,95,96,0,1];\nconst k27=[92,93,94,95,96,0,1,2,3,4,5,6,7,8];\nconst k28=[2,3,4,5,6,7,8,9,10,11,12,13,14,15];\nconst k29=[9,10,11,12,13,14,15,16,17,18,19,20,21,22];\nconst k30=[16,17,18,19,20,21,22,23,24,25,26,27,28,29];\nconst k31=[23,24,25,26,27,28,29,30,31,32,33,34,35,36];\nconst k32=[30,31,32,33,34,35,36,37,38,39,40,41,42,43];\nconst k33=[37,38,39,40,41,42,43,44,45,46,47,48,49,50];\nconst k34=[44,45,46,47,48,49,50,51,52,53,54,55,56,57];\nconst k35=[51,52,53,54,55,56,57,58,59,60,61,62,63,64];\nconst k36=[58,59,60,61,62,63,64,65,66,67,68,69,70,71];\nconst k37=[65,66,67,68,69,70,71,72,73,74,75,76,77,78];\n"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 2147,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 1,
+    "metadata": {
+      "content_hash": "10c34fe0ca92a0f5",
+      "end_byte": 2147,
+      "is_generated": true,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/static/tables.js@main",
+      "start_byte": 1833,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 1833,
+    "text": "File: github://acme/widgets/static/tables.js@main\npath: github://acme/widgets/static/tables.js@main\n,46,47,48,49,50,51,52,53,54,55,56,57];\nconst k35=[51,52,53,54,55,56,57,58,59,60,61,62,63,64];\nconst k36=[58,59,60,61,62,63,64,65,66,67,68,69,70,71];\nconst k37=[65,66,67,68,69,70,71,72,73,74,75,76,77,78];\nconst k38=[72,73,74,75,76,77,78,79,80,81,82,83,84,85];\nconst k39=[79,80,81,82,83,84,85,86,87,88,89,90,91,92];\n"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 2147,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 2,
+    "metadata": {
+      "content_hash": "a373b1b7fd6e6a7c",
+      "end_byte": 2147,
+      "is_generated": true,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/static/tables.js@main",
+      "start_byte": 1943,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 1943,
+    "text": "File: github://acme/widgets/static/tables.js@main\npath: github://acme/widgets/static/tables.js@main\n,60,61,62,63,64,65,66,67,68,69,70,71];\nconst k37=[65,66,67,68,69,70,71,72,73,74,75,76,77,78];\nconst k38=[72,73,74,75,76,77,78,79,80,81,82,83,84,85];\nconst k39=[79,80,81,82,83,84,85,86,87,88,89,90,91,92];\n"
+  }
+]

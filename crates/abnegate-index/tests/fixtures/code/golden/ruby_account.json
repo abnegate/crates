@@ -1,0 +1,605 @@
+[
+  {
+    "chunk_type": "FileHeader",
+    "end_offset": 0,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 0,
+    "metadata": {
+      "content_hash": "4e7e2fcd03557327",
+      "end_byte": 0,
+      "is_generated": false,
+      "is_test": false,
+      "kind": null,
+      "module": "module Billing\n  # An account that can be charged and refunded.\n  class Account\n    attr_reader :balance, :owner\n\n    MINIMUM_CHARGE = 50\n\n    def initialize(owner, balance = 0)\n      @owner = owner\n      @balance = balance\n      @history = []\n    end\n\n    def charge(amount)\n      raise ArgumentError, 'amount too small' if amount < MINIMUM_CHARGE\n\n      @balance -= amount\n      @history << { type: :charge, amount: amount }\n      @balance\n    end\n\n    def refund(amount)\n      @balance += amount\n      @history << { type: :refund, amount: amount }\n      @balance\n    end\n\n    def to_json(*args)\n      { owner: owner, balance: balance }.to_json(*args)\n    end\n\n    private\n\n    def audit_trail\n      @history.map { |entry| \"#{entry[:type]}:#{entry[:amount]}\" }\n    end\n  end\n\n  def self.open(owner)\n    Account.new(owner)\n  end\nend",
+      "parents": [],
+      "path": "github://acme/widgets/lib/billing/account.rb@main",
+      "start_byte": 0,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 0,
+    "text": "path: github://acme/widgets/lib/billing/account.rb@main\nkind: file_header\n\nmodule Billing\n  # An account that can be charged and refunded.\n  class Account\n    attr_reader :balance, :owner\n\n    MINIMUM_CHARGE = 50\n\n    def initialize(owner, balance = 0)\n      @owner = owner\n      @balance = balance\n      @history = []\n    end\n\n    def charge(amount)\n      raise ArgumentError, 'amount too small' if amount < MINIMUM_CHARGE\n\n      @balance -= amount\n      @history << { type: :charge, amount: amount }\n      @balance\n    end\n\n    def refund(amount)\n      @balance += amount\n      @history << { type: :refund, amount: amount }\n      @balance\n    end\n\n    def to_json(*args)\n      { owner: owner, balance: balance }.to_json(*args)\n    end\n\n    private\n\n    def audit_trail\n      @history.map { |entry| \"#{entry[:type]}:#{entry[:amount]}\" }\n    end\n  end\n\n  def self.open(owner)\n    Account.new(owner)\n  end\nend\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 875,
+    "identifiers": {
+      "defined_symbol": "Billing",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "initialize",
+        "charge",
+        "refund",
+        "to_json",
+        "open",
+        "new"
+      ],
+      "referenced_types": [
+        "Billing",
+        "An",
+        "Account",
+        "MINIMUM_CHARGE",
+        "ArgumentError"
+      ]
+    },
+    "index": 1,
+    "metadata": {
+      "content_hash": "da92a3192e10f0c4",
+      "end_byte": 875,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Module",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/lib/billing/account.rb@main",
+      "start_byte": 42,
+      "symbol": "Billing",
+      "visibility": "Private"
+    },
+    "start_offset": 42,
+    "text": "File: github://acme/widgets/lib/billing/account.rb@main\npath: github://acme/widgets/lib/billing/account.rb@main\nLanguage: ruby\nsymbol: Billing\nSymbol: Billing\nkind: Module\nSignature: module Billing\n\nmodule Billing\n  # An account that can be charged and refunded.\n  class Account\n    attr_reader :balance, :owner\n\n    MINIMUM_CHARGE = 50\n\n    def initialize(owner, balance = 0)\n      @owner = owner\n      @balance = balance\n      @history = []\n    end\n\n    def charge(amount)\n      raise ArgumentError, 'amount too small' if amount < MINIMUM_CHARGE\n\n      @balance -= amount\n      @history << { type: :charge, amount: amount }\n      @balance\n    end\n\n    def refund(amount)\n      @balance += amount\n      @history << { type: :refund, amount: amount }\n      @balance\n    end\n\n    def to_json(*args)\n      { owner: owner, balance: balance }.to_json(*args)\n    end\n\n    private\n\n    def audit_trail\n      @history.map { |entry| \"#{entry[:type]}:#{entry[:amount]}\" }\n    end\n  end\n\n  def self.open(owner)\n    Account.new(owner)\n  end\nend\n\n// Identifiers:\n// symbol: Billing\n// types: Billing, An, Account, MINIMUM_CHARGE, ArgumentError\n// calls: initialize, charge, refund, to_json, open, new\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 48,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 2,
+    "metadata": {
+      "content_hash": "f9fa17d57c940a73",
+      "end_byte": 48,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Module",
+      "module": null,
+      "parents": [
+        "Billing"
+      ],
+      "path": "github://acme/widgets/lib/billing/account.rb@main",
+      "start_byte": 42,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 42,
+    "text": "File: github://acme/widgets/lib/billing/account.rb@main\npath: github://acme/widgets/lib/billing/account.rb@main\nLanguage: ruby\nkind: Module\nParent: Billing\nparents: Billing\nSignature: module\n\nmodule"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 818,
+    "identifiers": {
+      "defined_symbol": "Account",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "initialize",
+        "charge",
+        "refund",
+        "to_json"
+      ],
+      "referenced_types": [
+        "Account",
+        "MINIMUM_CHARGE",
+        "ArgumentError"
+      ]
+    },
+    "index": 3,
+    "metadata": {
+      "content_hash": "a8304e2b4d77f5ac",
+      "end_byte": 818,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Class",
+      "module": null,
+      "parents": [
+        "Billing"
+      ],
+      "path": "github://acme/widgets/lib/billing/account.rb@main",
+      "start_byte": 108,
+      "symbol": "Account",
+      "visibility": "Private"
+    },
+    "start_offset": 108,
+    "text": "File: github://acme/widgets/lib/billing/account.rb@main\npath: github://acme/widgets/lib/billing/account.rb@main\nLanguage: ruby\nsymbol: Billing.Account\nSymbol: Billing.Account\nkind: Class\nParent: Billing\nparents: Billing\nSignature: class Account\n\nclass Account\n    attr_reader :balance, :owner\n\n    MINIMUM_CHARGE = 50\n\n    def initialize(owner, balance = 0)\n      @owner = owner\n      @balance = balance\n      @history = []\n    end\n\n    def charge(amount)\n      raise ArgumentError, 'amount too small' if amount < MINIMUM_CHARGE\n\n      @balance -= amount\n      @history << { type: :charge, amount: amount }\n      @balance\n    end\n\n    def refund(amount)\n      @balance += amount\n      @history << { type: :refund, amount: amount }\n      @balance\n    end\n\n    def to_json(*args)\n      { owner: owner, balance: balance }.to_json(*args)\n    end\n\n    private\n\n    def audit_trail\n      @history.map { |entry| \"#{entry[:type]}:#{entry[:amount]}\" }\n    end\n  end\n\n// Identifiers:\n// symbol: Account\n// types: Account, MINIMUM_CHARGE, ArgumentError\n// calls: initialize, charge, refund, to_json\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 113,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 4,
+    "metadata": {
+      "content_hash": "9e7eb3e790b16ae4",
+      "end_byte": 113,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Class",
+      "module": null,
+      "parents": [
+        "Billing",
+        "Account"
+      ],
+      "path": "github://acme/widgets/lib/billing/account.rb@main",
+      "start_byte": 108,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 108,
+    "text": "File: github://acme/widgets/lib/billing/account.rb@main\npath: github://acme/widgets/lib/billing/account.rb@main\nLanguage: ruby\nkind: Class\nParent: Billing.Account\nparents: Billing.Account\nSignature: class\n\nclass"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 293,
+    "identifiers": {
+      "defined_symbol": "initialize",
+      "key_strings": [],
+      "parameters": [
+        "owner",
+        "balance"
+      ],
+      "referenced_functions": [
+        "initialize"
+      ],
+      "referenced_types": []
+    },
+    "index": 5,
+    "metadata": {
+      "content_hash": "ea4a80ecdb9b4b5d",
+      "end_byte": 293,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Billing",
+        "Account"
+      ],
+      "path": "github://acme/widgets/lib/billing/account.rb@main",
+      "start_byte": 185,
+      "symbol": "initialize",
+      "visibility": "Private"
+    },
+    "start_offset": 185,
+    "text": "File: github://acme/widgets/lib/billing/account.rb@main\npath: github://acme/widgets/lib/billing/account.rb@main\nLanguage: ruby\nsymbol: Billing.Account.initialize\nSymbol: Billing.Account.initialize\nkind: Method\nParent: Billing.Account\nparents: Billing.Account\nSignature: def initialize(owner, balance = 0)\n\ndef initialize(owner, balance = 0)\n      @owner = owner\n      @balance = balance\n      @history = []\n    end\n\n// Identifiers:\n// symbol: initialize\n// params: owner, balance\n// calls: initialize\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 293,
+    "identifiers": {
+      "defined_symbol": "initialize",
+      "key_strings": [],
+      "parameters": [
+        "owner",
+        "balance"
+      ],
+      "referenced_functions": [
+        "initialize"
+      ],
+      "referenced_types": []
+    },
+    "index": 6,
+    "metadata": {
+      "content_hash": "7e7b83939976efa5",
+      "end_byte": 293,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Billing",
+        "Account"
+      ],
+      "path": "github://acme/widgets/lib/billing/account.rb@main",
+      "start_byte": 185,
+      "symbol": "initialize",
+      "visibility": "Private"
+    },
+    "start_offset": 185,
+    "text": "File: github://acme/widgets/lib/billing/account.rb@main\npath: github://acme/widgets/lib/billing/account.rb@main\nLanguage: ruby\nsymbol: Billing.Account.initialize\nSymbol: Billing.Account.initialize\nkind: Method\nParent: Billing.Account\nparents: Billing.Account\nSignature: def initialize(owner, balance = 0)\n [skeleton]\ndef initialize(owner, balance = 0)\n\n// Key identifiers:\n// defined: initialize\n// params: owner, balance\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 491,
+    "identifiers": {
+      "defined_symbol": "charge",
+      "key_strings": [],
+      "parameters": [
+        "amount"
+      ],
+      "referenced_functions": [
+        "charge"
+      ],
+      "referenced_types": [
+        "ArgumentError",
+        "MINIMUM_CHARGE"
+      ]
+    },
+    "index": 7,
+    "metadata": {
+      "content_hash": "6f98a3bb0d2d03b0",
+      "end_byte": 491,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Billing",
+        "Account"
+      ],
+      "path": "github://acme/widgets/lib/billing/account.rb@main",
+      "start_byte": 299,
+      "symbol": "charge",
+      "visibility": "Private"
+    },
+    "start_offset": 299,
+    "text": "File: github://acme/widgets/lib/billing/account.rb@main\npath: github://acme/widgets/lib/billing/account.rb@main\nLanguage: ruby\nsymbol: Billing.Account.charge\nSymbol: Billing.Account.charge\nkind: Method\nParent: Billing.Account\nparents: Billing.Account\nSignature: def charge(amount)\n\ndef charge(amount)\n      raise ArgumentError, 'amount too small' if amount < MINIMUM_CHARGE\n\n      @balance -= amount\n      @history << { type: :charge, amount: amount }\n      @balance\n    end\n\n// Identifiers:\n// symbol: charge\n// params: amount\n// types: ArgumentError, MINIMUM_CHARGE\n// calls: charge\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 491,
+    "identifiers": {
+      "defined_symbol": "charge",
+      "key_strings": [],
+      "parameters": [
+        "amount"
+      ],
+      "referenced_functions": [
+        "charge"
+      ],
+      "referenced_types": [
+        "ArgumentError",
+        "MINIMUM_CHARGE"
+      ]
+    },
+    "index": 8,
+    "metadata": {
+      "content_hash": "2cd0dc3d8fb564b3",
+      "end_byte": 491,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Billing",
+        "Account"
+      ],
+      "path": "github://acme/widgets/lib/billing/account.rb@main",
+      "start_byte": 299,
+      "symbol": "charge",
+      "visibility": "Private"
+    },
+    "start_offset": 299,
+    "text": "File: github://acme/widgets/lib/billing/account.rb@main\npath: github://acme/widgets/lib/billing/account.rb@main\nLanguage: ruby\nsymbol: Billing.Account.charge\nSymbol: Billing.Account.charge\nkind: Method\nParent: Billing.Account\nparents: Billing.Account\nSignature: def charge(amount)\n [skeleton]\ndef charge(amount)\n\n// Key identifiers:\n// defined: charge\n// params: amount\n// types: ArgumentError, MINIMUM_CHARGE\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 615,
+    "identifiers": {
+      "defined_symbol": "refund",
+      "key_strings": [],
+      "parameters": [
+        "amount"
+      ],
+      "referenced_functions": [
+        "refund"
+      ],
+      "referenced_types": []
+    },
+    "index": 9,
+    "metadata": {
+      "content_hash": "335a7f94a01b12ce",
+      "end_byte": 615,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Billing",
+        "Account"
+      ],
+      "path": "github://acme/widgets/lib/billing/account.rb@main",
+      "start_byte": 497,
+      "symbol": "refund",
+      "visibility": "Private"
+    },
+    "start_offset": 497,
+    "text": "File: github://acme/widgets/lib/billing/account.rb@main\npath: github://acme/widgets/lib/billing/account.rb@main\nLanguage: ruby\nsymbol: Billing.Account.refund\nSymbol: Billing.Account.refund\nkind: Method\nParent: Billing.Account\nparents: Billing.Account\nSignature: def refund(amount)\n\ndef refund(amount)\n      @balance += amount\n      @history << { type: :refund, amount: amount }\n      @balance\n    end\n\n// Identifiers:\n// symbol: refund\n// params: amount\n// calls: refund\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 615,
+    "identifiers": {
+      "defined_symbol": "refund",
+      "key_strings": [],
+      "parameters": [
+        "amount"
+      ],
+      "referenced_functions": [
+        "refund"
+      ],
+      "referenced_types": []
+    },
+    "index": 10,
+    "metadata": {
+      "content_hash": "894c0d28b74281df",
+      "end_byte": 615,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Billing",
+        "Account"
+      ],
+      "path": "github://acme/widgets/lib/billing/account.rb@main",
+      "start_byte": 497,
+      "symbol": "refund",
+      "visibility": "Private"
+    },
+    "start_offset": 497,
+    "text": "File: github://acme/widgets/lib/billing/account.rb@main\npath: github://acme/widgets/lib/billing/account.rb@main\nLanguage: ruby\nsymbol: Billing.Account.refund\nSymbol: Billing.Account.refund\nkind: Method\nParent: Billing.Account\nparents: Billing.Account\nSignature: def refund(amount)\n [skeleton]\ndef refund(amount)\n\n// Key identifiers:\n// defined: refund\n// params: amount\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 703,
+    "identifiers": {
+      "defined_symbol": "to_json",
+      "key_strings": [],
+      "parameters": [
+        "args"
+      ],
+      "referenced_functions": [
+        "to_json"
+      ],
+      "referenced_types": []
+    },
+    "index": 11,
+    "metadata": {
+      "content_hash": "faf800ed90ed9cc9",
+      "end_byte": 703,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Billing",
+        "Account"
+      ],
+      "path": "github://acme/widgets/lib/billing/account.rb@main",
+      "start_byte": 621,
+      "symbol": "to_json",
+      "visibility": "Private"
+    },
+    "start_offset": 621,
+    "text": "File: github://acme/widgets/lib/billing/account.rb@main\npath: github://acme/widgets/lib/billing/account.rb@main\nLanguage: ruby\nsymbol: Billing.Account.to_json\nSymbol: Billing.Account.to_json\nkind: Method\nParent: Billing.Account\nparents: Billing.Account\nSignature: def to_json(*args)\n\ndef to_json(*args)\n      { owner: owner, balance: balance }.to_json(*args)\n    end\n\n// Identifiers:\n// symbol: to_json\n// params: args\n// calls: to_json\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 703,
+    "identifiers": {
+      "defined_symbol": "to_json",
+      "key_strings": [],
+      "parameters": [
+        "args"
+      ],
+      "referenced_functions": [
+        "to_json"
+      ],
+      "referenced_types": []
+    },
+    "index": 12,
+    "metadata": {
+      "content_hash": "fc21aba2e6348c72",
+      "end_byte": 703,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Billing",
+        "Account"
+      ],
+      "path": "github://acme/widgets/lib/billing/account.rb@main",
+      "start_byte": 621,
+      "symbol": "to_json",
+      "visibility": "Private"
+    },
+    "start_offset": 621,
+    "text": "File: github://acme/widgets/lib/billing/account.rb@main\npath: github://acme/widgets/lib/billing/account.rb@main\nLanguage: ruby\nsymbol: Billing.Account.to_json\nSymbol: Billing.Account.to_json\nkind: Method\nParent: Billing.Account\nparents: Billing.Account\nSignature: def to_json(*args)\n [skeleton]\ndef to_json(*args)\n\n// Key identifiers:\n// defined: to_json\n// params: args\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 812,
+    "identifiers": {
+      "defined_symbol": "audit_trail",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 13,
+    "metadata": {
+      "content_hash": "8f3cc62f96200dd4",
+      "end_byte": 812,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Billing",
+        "Account"
+      ],
+      "path": "github://acme/widgets/lib/billing/account.rb@main",
+      "start_byte": 722,
+      "symbol": "audit_trail",
+      "visibility": "Private"
+    },
+    "start_offset": 722,
+    "text": "File: github://acme/widgets/lib/billing/account.rb@main\npath: github://acme/widgets/lib/billing/account.rb@main\nLanguage: ruby\nsymbol: Billing.Account.audit_trail\nSymbol: Billing.Account.audit_trail\nkind: Method\nParent: Billing.Account\nparents: Billing.Account\nSignature: def audit_trail\n\ndef audit_trail\n      @history.map { |entry| \"#{entry[:type]}:#{entry[:amount]}\" }\n    end\n\n// Identifiers:\n// symbol: audit_trail\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 812,
+    "identifiers": {
+      "defined_symbol": "audit_trail",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 14,
+    "metadata": {
+      "content_hash": "e4a0cc2aa7e5e0ee",
+      "end_byte": 812,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Billing",
+        "Account"
+      ],
+      "path": "github://acme/widgets/lib/billing/account.rb@main",
+      "start_byte": 722,
+      "symbol": "audit_trail",
+      "visibility": "Private"
+    },
+    "start_offset": 722,
+    "text": "File: github://acme/widgets/lib/billing/account.rb@main\npath: github://acme/widgets/lib/billing/account.rb@main\nLanguage: ruby\nsymbol: Billing.Account.audit_trail\nSymbol: Billing.Account.audit_trail\nkind: Method\nParent: Billing.Account\nparents: Billing.Account\nSignature: def audit_trail\n [skeleton]\ndef audit_trail\n\n// Key identifiers:\n// defined: audit_trail\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 871,
+    "identifiers": {
+      "defined_symbol": "open",
+      "key_strings": [],
+      "parameters": [
+        "owner"
+      ],
+      "referenced_functions": [
+        "open",
+        "new"
+      ],
+      "referenced_types": [
+        "Account"
+      ]
+    },
+    "index": 15,
+    "metadata": {
+      "content_hash": "0ad69783bd1c3175",
+      "end_byte": 871,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Billing"
+      ],
+      "path": "github://acme/widgets/lib/billing/account.rb@main",
+      "start_byte": 822,
+      "symbol": "open",
+      "visibility": "Private"
+    },
+    "start_offset": 822,
+    "text": "File: github://acme/widgets/lib/billing/account.rb@main\npath: github://acme/widgets/lib/billing/account.rb@main\nLanguage: ruby\nsymbol: Billing.open\nSymbol: Billing.open\nkind: Method\nParent: Billing\nparents: Billing\nSignature: def self.open(owner)\n\ndef self.open(owner)\n    Account.new(owner)\n  end\n\n// Identifiers:\n// symbol: open\n// params: owner\n// types: Account\n// calls: open, new\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 871,
+    "identifiers": {
+      "defined_symbol": "open",
+      "key_strings": [],
+      "parameters": [
+        "owner"
+      ],
+      "referenced_functions": [
+        "open",
+        "new"
+      ],
+      "referenced_types": [
+        "Account"
+      ]
+    },
+    "index": 16,
+    "metadata": {
+      "content_hash": "14ce39f84fcb01e5",
+      "end_byte": 871,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Billing"
+      ],
+      "path": "github://acme/widgets/lib/billing/account.rb@main",
+      "start_byte": 822,
+      "symbol": "open",
+      "visibility": "Private"
+    },
+    "start_offset": 822,
+    "text": "File: github://acme/widgets/lib/billing/account.rb@main\npath: github://acme/widgets/lib/billing/account.rb@main\nLanguage: ruby\nsymbol: Billing.open\nSymbol: Billing.open\nkind: Method\nParent: Billing\nparents: Billing\nSignature: def self.open(owner)\n [skeleton]\ndef self.open(owner)\n\n// Key identifiers:\n// defined: open\n// params: owner\n// types: Account\n"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 42,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 17,
+    "metadata": {
+      "content_hash": "18c33d01f3bccbfc",
+      "end_byte": 42,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/lib/billing/account.rb@main",
+      "start_byte": 15,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 15,
+    "text": "File: github://acme/widgets/lib/billing/account.rb@main\npath: github://acme/widgets/lib/billing/account.rb@main\nLanguage: ruby\nkind: top_level\n\nrequire_relative 'ledger'\n"
+  }
+]

@@ -1,0 +1,20 @@
+LinearRanker::new(
+    [
+        f32::from_bits(0xbf166acc),
+        f32::from_bits(0x402b26f6),
+        f32::from_bits(0x00000000),
+        f32::from_bits(0x401930de),
+        f32::from_bits(0x3d9b0d4e),
+        f32::from_bits(0x3d9b0d4e),
+        f32::from_bits(0x00000000),
+        f32::from_bits(0x3e3bbed5),
+        f32::from_bits(0x3e206d68),
+        f32::from_bits(0x3f51f17c),
+        f32::from_bits(0x3c629d1c),
+        f32::from_bits(0xba34d78a),
+        f32::from_bits(0xbe8fadd7),
+        f32::from_bits(0x4014da89),
+        f32::from_bits(0x00000000),
+    ],
+    f32::from_bits(0x3ee5035a),
+)

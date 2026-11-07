@@ -1,0 +1,849 @@
+[
+  {
+    "chunk_type": "FileHeader",
+    "end_offset": 96,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 0,
+    "metadata": {
+      "content_hash": "9902b1894261a95f",
+      "end_byte": 96,
+      "is_generated": false,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/invoices/service.ts@main",
+      "start_byte": 0,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 0,
+    "text": "path: github://acme/widgets/src/invoices/service.ts@main\nkind: file_header\n\nimport { HttpClient } from './http-client';\nimport type { Invoice, InvoiceLine } from './types';"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 179,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": [
+        "InvoiceState",
+        "Draft",
+        "Sent",
+        "Paid"
+      ]
+    },
+    "index": 1,
+    "metadata": {
+      "content_hash": "56ef6a90a1f6ab10",
+      "end_byte": 179,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/invoices/service.ts@main",
+      "start_byte": 98,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 98,
+    "text": "File: github://acme/widgets/src/invoices/service.ts@main\npath: github://acme/widgets/src/invoices/service.ts@main\nLanguage: typescript\nkind: Other\nSignature: export enum InvoiceState\n\n// Imports:\nimport { HttpClient } from './http-client';\nimport type { Invoice, InvoiceLine } from './types';\n\nexport enum InvoiceState {\n  Draft = 'draft',\n  Sent = 'sent',\n  Paid = 'paid',\n}\n\n// Identifiers:\n// types: InvoiceState, Draft, Sent, Paid\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 305,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "find",
+        "save"
+      ],
+      "referenced_types": [
+        "InvoiceStore",
+        "Promise",
+        "Invoice"
+      ]
+    },
+    "index": 2,
+    "metadata": {
+      "content_hash": "6892c700f019d805",
+      "end_byte": 305,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/invoices/service.ts@main",
+      "start_byte": 181,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 181,
+    "text": "File: github://acme/widgets/src/invoices/service.ts@main\npath: github://acme/widgets/src/invoices/service.ts@main\nLanguage: typescript\nkind: Other\nSignature: export interface InvoiceStore\n\n// Imports:\nimport type { Invoice, InvoiceLine } from './types';\n\nexport interface InvoiceStore {\n  find(id: string): Promise<Invoice | undefined>;\n  save(invoice: Invoice): Promise<void>;\n}\n\n// Identifiers:\n// types: InvoiceStore, Promise, Invoice\n// calls: find, save\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 305,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "find",
+        "save"
+      ],
+      "referenced_types": [
+        "InvoiceStore",
+        "Promise",
+        "Invoice"
+      ]
+    },
+    "index": 3,
+    "metadata": {
+      "content_hash": "53041da60b8c607f",
+      "end_byte": 305,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/invoices/service.ts@main",
+      "start_byte": 181,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 181,
+    "text": "File: github://acme/widgets/src/invoices/service.ts@main\npath: github://acme/widgets/src/invoices/service.ts@main\nLanguage: typescript\nkind: Other\nSignature: export interface InvoiceStore\n [skeleton]\nexport interface InvoiceStore\n\n// Key identifiers:\n// types: InvoiceStore, Promise, Invoice\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 305,
+    "identifiers": {
+      "defined_symbol": "InvoiceStore",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "find",
+        "save"
+      ],
+      "referenced_types": [
+        "InvoiceStore",
+        "Promise",
+        "Invoice"
+      ]
+    },
+    "index": 4,
+    "metadata": {
+      "content_hash": "c926b93a0d43f62c",
+      "end_byte": 305,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Interface",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/invoices/service.ts@main",
+      "start_byte": 188,
+      "symbol": "InvoiceStore",
+      "visibility": "Private"
+    },
+    "start_offset": 188,
+    "text": "File: github://acme/widgets/src/invoices/service.ts@main\npath: github://acme/widgets/src/invoices/service.ts@main\nLanguage: typescript\nsymbol: InvoiceStore\nSymbol: InvoiceStore\nkind: Interface\nSignature: interface InvoiceStore\n\n// Imports:\nimport type { Invoice, InvoiceLine } from './types';\n\ninterface InvoiceStore {\n  find(id: string): Promise<Invoice | undefined>;\n  save(invoice: Invoice): Promise<void>;\n}\n\n// Identifiers:\n// symbol: InvoiceStore\n// types: InvoiceStore, Promise, Invoice\n// calls: find, save\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 305,
+    "identifiers": {
+      "defined_symbol": "InvoiceStore",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "find",
+        "save"
+      ],
+      "referenced_types": [
+        "InvoiceStore",
+        "Promise",
+        "Invoice"
+      ]
+    },
+    "index": 5,
+    "metadata": {
+      "content_hash": "932db4292354fdf1",
+      "end_byte": 305,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Interface",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/invoices/service.ts@main",
+      "start_byte": 188,
+      "symbol": "InvoiceStore",
+      "visibility": "Private"
+    },
+    "start_offset": 188,
+    "text": "File: github://acme/widgets/src/invoices/service.ts@main\npath: github://acme/widgets/src/invoices/service.ts@main\nLanguage: typescript\nsymbol: InvoiceStore\nSymbol: InvoiceStore\nkind: Interface\nSignature: interface InvoiceStore\n [skeleton]\ninterface InvoiceStore\n\n// Key identifiers:\n// defined: InvoiceStore\n// types: InvoiceStore, Promise, Invoice\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 433,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [
+        "line",
+        "InvoiceLine",
+        "line"
+      ],
+      "referenced_functions": [],
+      "referenced_types": [
+        "LineTotal",
+        "InvoiceLine",
+        "LineTotal"
+      ]
+    },
+    "index": 6,
+    "metadata": {
+      "content_hash": "f38359e618d4d38f",
+      "end_byte": 433,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/invoices/service.ts@main",
+      "start_byte": 307,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 307,
+    "text": "export type LineTotal = (line: InvoiceLine) => number;\n\nconst lineTotal: LineTotal = (line) => line.quantity * line.unitPrice;"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1318,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [
+        "/api/invoices/send"
+      ],
+      "parameters": [],
+      "referenced_functions": [
+        "constructor",
+        "total",
+        "find",
+        "map",
+        "reduce",
+        "send",
+        "post",
+        "save"
+      ],
+      "referenced_types": [
+        "InvoiceService",
+        "HttpClient",
+        "InvoiceStore",
+        "Promise",
+        "Error",
+        "InvoiceState",
+        "Draft",
+        "Sent"
+      ]
+    },
+    "index": 7,
+    "metadata": {
+      "content_hash": "f25b6613d0e316e4",
+      "end_byte": 1318,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/invoices/service.ts@main",
+      "start_byte": 435,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 435,
+    "text": "File: github://acme/widgets/src/invoices/service.ts@main\npath: github://acme/widgets/src/invoices/service.ts@main\nLanguage: typescript\nkind: Other\nSignature: export class InvoiceService\n\n// Imports:\nimport { HttpClient } from './http-client';\n\nexport class InvoiceService {\n  private readonly client: HttpClient;\n  private readonly store: InvoiceStore;\n\n  constructor(client: HttpClient, store: InvoiceStore) {\n    this.client = client;\n    this.store = store;\n  }\n\n  async total(id: string): Promise<number> {\n    const invoice = await this.store.find(id);\n    if (!invoice) {\n      throw new Error(`invoice ${id} not found`);\n    }\n    return invoice.lines.map(lineTotal).reduce((sum, value) => sum + value, 0);\n  }\n\n  async send(id: string, recipient: string): Promise<InvoiceState> {\n    const invoice = await this.store.find(id);\n    if (!invoice || invoice.state !== InvoiceState.Draft) {\n      return invoice?.state ?? InvoiceState.Draft;\n    }\n    await this.client.post('/api/invoices/send', { id, recipient });\n    invoice.state = InvoiceState.Sent;\n    await this.store.save(invoice);\n    return invoice.state;\n  }\n}\n\n// Identifiers:\n// types: InvoiceService, HttpClient, InvoiceStore, Promise, Error, InvoiceState, Draft, Sent\n// calls: constructor, total, find, map, reduce, send, post, save\n// keys: /api/invoices/send\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 1318,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [
+        "/api/invoices/send"
+      ],
+      "parameters": [],
+      "referenced_functions": [
+        "constructor",
+        "total",
+        "find",
+        "map",
+        "reduce",
+        "send",
+        "post",
+        "save"
+      ],
+      "referenced_types": [
+        "InvoiceService",
+        "HttpClient",
+        "InvoiceStore",
+        "Promise",
+        "Error",
+        "InvoiceState",
+        "Draft",
+        "Sent"
+      ]
+    },
+    "index": 8,
+    "metadata": {
+      "content_hash": "e79964c0b8b580c0",
+      "end_byte": 1318,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/invoices/service.ts@main",
+      "start_byte": 435,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 435,
+    "text": "File: github://acme/widgets/src/invoices/service.ts@main\npath: github://acme/widgets/src/invoices/service.ts@main\nLanguage: typescript\nkind: Other\nSignature: export class InvoiceService\n [skeleton]\nexport class InvoiceService\n\n// Key identifiers:\n// types: InvoiceService, HttpClient, InvoiceStore, Promise, Error\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1318,
+    "identifiers": {
+      "defined_symbol": "InvoiceService",
+      "key_strings": [
+        "/api/invoices/send"
+      ],
+      "parameters": [],
+      "referenced_functions": [
+        "constructor",
+        "total",
+        "find",
+        "map",
+        "reduce",
+        "send",
+        "post",
+        "save"
+      ],
+      "referenced_types": [
+        "InvoiceService",
+        "HttpClient",
+        "InvoiceStore",
+        "Promise",
+        "Error",
+        "InvoiceState",
+        "Draft",
+        "Sent"
+      ]
+    },
+    "index": 9,
+    "metadata": {
+      "content_hash": "c95b6d4eb6c863d4",
+      "end_byte": 1318,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Class",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/invoices/service.ts@main",
+      "start_byte": 442,
+      "symbol": "InvoiceService",
+      "visibility": "Private"
+    },
+    "start_offset": 442,
+    "text": "File: github://acme/widgets/src/invoices/service.ts@main\npath: github://acme/widgets/src/invoices/service.ts@main\nLanguage: typescript\nsymbol: InvoiceService\nSymbol: InvoiceService\nkind: Class\nSignature: class InvoiceService\n\n// Imports:\nimport { HttpClient } from './http-client';\n\nclass InvoiceService {\n  private readonly client: HttpClient;\n  private readonly store: InvoiceStore;\n\n  constructor(client: HttpClient, store: InvoiceStore) {\n    this.client = client;\n    this.store = store;\n  }\n\n  async total(id: string): Promise<number> {\n    const invoice = await this.store.find(id);\n    if (!invoice) {\n      throw new Error(`invoice ${id} not found`);\n    }\n    return invoice.lines.map(lineTotal).reduce((sum, value) => sum + value, 0);\n  }\n\n  async send(id: string, recipient: string): Promise<InvoiceState> {\n    const invoice = await this.store.find(id);\n    if (!invoice || invoice.state !== InvoiceState.Draft) {\n      return invoice?.state ?? InvoiceState.Draft;\n    }\n    await this.client.post('/api/invoices/send', { id, recipient });\n    invoice.state = InvoiceState.Sent;\n    await this.store.save(invoice);\n    return invoice.state;\n  }\n}\n\n// Identifiers:\n// symbol: InvoiceService\n// types: InvoiceService, HttpClient, InvoiceStore, Promise, Error, InvoiceState, Draft, Sent\n// calls: constructor, total, find, map, reduce, send, post, save\n// keys: /api/invoices/send\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 655,
+    "identifiers": {
+      "defined_symbol": "constructor",
+      "key_strings": [],
+      "parameters": [
+        "client",
+        "HttpClient",
+        "store",
+        "InvoiceStore"
+      ],
+      "referenced_functions": [
+        "constructor"
+      ],
+      "referenced_types": [
+        "HttpClient",
+        "InvoiceStore"
+      ]
+    },
+    "index": 10,
+    "metadata": {
+      "content_hash": "8938ef0e8c569b0f",
+      "end_byte": 655,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "InvoiceService"
+      ],
+      "path": "github://acme/widgets/src/invoices/service.ts@main",
+      "start_byte": 547,
+      "symbol": "constructor",
+      "visibility": "Private"
+    },
+    "start_offset": 547,
+    "text": "File: github://acme/widgets/src/invoices/service.ts@main\npath: github://acme/widgets/src/invoices/service.ts@main\nLanguage: typescript\nsymbol: InvoiceService.constructor\nSymbol: InvoiceService.constructor\nkind: Method\nParent: InvoiceService\nparents: InvoiceService\nSignature: constructor(client: HttpClient, store: InvoiceStore)\n\n// Imports:\nimport { HttpClient } from './http-client';\n\nconstructor(client: HttpClient, store: InvoiceStore) {\n    this.client = client;\n    this.store = store;\n  }\n\n// Identifiers:\n// symbol: constructor\n// params: client, HttpClient, store, InvoiceStore\n// types: HttpClient, InvoiceStore\n// calls: constructor\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 655,
+    "identifiers": {
+      "defined_symbol": "constructor",
+      "key_strings": [],
+      "parameters": [
+        "client",
+        "HttpClient",
+        "store",
+        "InvoiceStore"
+      ],
+      "referenced_functions": [
+        "constructor"
+      ],
+      "referenced_types": [
+        "HttpClient",
+        "InvoiceStore"
+      ]
+    },
+    "index": 11,
+    "metadata": {
+      "content_hash": "0fcff97792a23f0e",
+      "end_byte": 655,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "InvoiceService"
+      ],
+      "path": "github://acme/widgets/src/invoices/service.ts@main",
+      "start_byte": 547,
+      "symbol": "constructor",
+      "visibility": "Private"
+    },
+    "start_offset": 547,
+    "text": "File: github://acme/widgets/src/invoices/service.ts@main\npath: github://acme/widgets/src/invoices/service.ts@main\nLanguage: typescript\nsymbol: InvoiceService.constructor\nSymbol: InvoiceService.constructor\nkind: Method\nParent: InvoiceService\nparents: InvoiceService\nSignature: constructor(client: HttpClient, store: InvoiceStore)\n [skeleton]\nconstructor(client: HttpClient, store: InvoiceStore)\n\n// Key identifiers:\n// defined: constructor\n// params: client, HttpClient, store, InvoiceStore\n// types: HttpClient, InvoiceStore\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 908,
+    "identifiers": {
+      "defined_symbol": "total",
+      "key_strings": [],
+      "parameters": [
+        "id",
+        "string"
+      ],
+      "referenced_functions": [
+        "total",
+        "find",
+        "map",
+        "reduce"
+      ],
+      "referenced_types": [
+        "Promise",
+        "Error"
+      ]
+    },
+    "index": 12,
+    "metadata": {
+      "content_hash": "1cf8506d3e7005a1",
+      "end_byte": 908,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "InvoiceService"
+      ],
+      "path": "github://acme/widgets/src/invoices/service.ts@main",
+      "start_byte": 659,
+      "symbol": "total",
+      "visibility": "Private"
+    },
+    "start_offset": 659,
+    "text": "File: github://acme/widgets/src/invoices/service.ts@main\npath: github://acme/widgets/src/invoices/service.ts@main\nLanguage: typescript\nsymbol: InvoiceService.total\nSymbol: InvoiceService.total\nkind: Method\nParent: InvoiceService\nparents: InvoiceService\nSignature: async total(id: string): Promise<number>\n\n// Imports:\nimport { HttpClient } from './http-client';\nimport type { Invoice, InvoiceLine } from './types';\n\nasync total(id: string): Promise<number> {\n    const invoice = await this.store.find(id);\n    if (!invoice) {\n      throw new Error(`invoice ${id} not found`);\n    }\n    return invoice.lines.map(lineTotal).reduce((sum, value) => sum + value, 0);\n  }\n\n// Identifiers:\n// symbol: total\n// params: id, string\n// types: Promise, Error\n// calls: total, find, map, reduce\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 908,
+    "identifiers": {
+      "defined_symbol": "total",
+      "key_strings": [],
+      "parameters": [
+        "id",
+        "string"
+      ],
+      "referenced_functions": [
+        "total",
+        "find",
+        "map",
+        "reduce"
+      ],
+      "referenced_types": [
+        "Promise",
+        "Error"
+      ]
+    },
+    "index": 13,
+    "metadata": {
+      "content_hash": "f066181dfcb0e6af",
+      "end_byte": 908,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "InvoiceService"
+      ],
+      "path": "github://acme/widgets/src/invoices/service.ts@main",
+      "start_byte": 659,
+      "symbol": "total",
+      "visibility": "Private"
+    },
+    "start_offset": 659,
+    "text": "File: github://acme/widgets/src/invoices/service.ts@main\npath: github://acme/widgets/src/invoices/service.ts@main\nLanguage: typescript\nsymbol: InvoiceService.total\nSymbol: InvoiceService.total\nkind: Method\nParent: InvoiceService\nparents: InvoiceService\nSignature: async total(id: string): Promise<number>\n [skeleton]\nasync total(id: string): Promise<number>\n\n// Key identifiers:\n// defined: total\n// params: id, string\n// types: Promise, Error\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 899,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [
+        "id",
+        "sum",
+        "value"
+      ],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 14,
+    "metadata": {
+      "content_hash": "f1be26895ceeb982",
+      "end_byte": 899,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "InvoiceService",
+        "total"
+      ],
+      "path": "github://acme/widgets/src/invoices/service.ts@main",
+      "start_byte": 706,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 706,
+    "text": "const invoice = await this.store.find(id);\n\n(sum, value) => sum + value"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1316,
+    "identifiers": {
+      "defined_symbol": "send",
+      "key_strings": [
+        "/api/invoices/send"
+      ],
+      "parameters": [
+        "id",
+        "string",
+        "recipient"
+      ],
+      "referenced_functions": [
+        "send",
+        "find",
+        "post",
+        "save"
+      ],
+      "referenced_types": [
+        "Promise",
+        "InvoiceState",
+        "Draft",
+        "Sent"
+      ]
+    },
+    "index": 15,
+    "metadata": {
+      "content_hash": "dd8fdc85170ae3de",
+      "end_byte": 1316,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "InvoiceService"
+      ],
+      "path": "github://acme/widgets/src/invoices/service.ts@main",
+      "start_byte": 912,
+      "symbol": "send",
+      "visibility": "Private"
+    },
+    "start_offset": 912,
+    "text": "File: github://acme/widgets/src/invoices/service.ts@main\npath: github://acme/widgets/src/invoices/service.ts@main\nLanguage: typescript\nsymbol: InvoiceService.send\nSymbol: InvoiceService.send\nkind: Method\nParent: InvoiceService\nparents: InvoiceService\nSignature: async send(id: string, recipient: string): Promise<InvoiceState>\n\n// Imports:\nimport { HttpClient } from './http-client';\nimport type { Invoice, InvoiceLine } from './types';\n\nasync send(id: string, recipient: string): Promise<InvoiceState> {\n    const invoice = await this.store.find(id);\n    if (!invoice || invoice.state !== InvoiceState.Draft) {\n      return invoice?.state ?? InvoiceState.Draft;\n    }\n    await this.client.post('/api/invoices/send', { id, recipient });\n    invoice.state = InvoiceState.Sent;\n    await this.store.save(invoice);\n    return invoice.state;\n  }\n\n// Identifiers:\n// symbol: send\n// params: id, string, recipient\n// types: Promise, InvoiceState, Draft, Sent\n// calls: send, find, post, save\n// keys: /api/invoices/send\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 1316,
+    "identifiers": {
+      "defined_symbol": "send",
+      "key_strings": [
+        "/api/invoices/send"
+      ],
+      "parameters": [
+        "id",
+        "string",
+        "recipient"
+      ],
+      "referenced_functions": [
+        "send",
+        "find",
+        "post",
+        "save"
+      ],
+      "referenced_types": [
+        "Promise",
+        "InvoiceState",
+        "Draft",
+        "Sent"
+      ]
+    },
+    "index": 16,
+    "metadata": {
+      "content_hash": "aeb429544a3cbd00",
+      "end_byte": 1316,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "InvoiceService"
+      ],
+      "path": "github://acme/widgets/src/invoices/service.ts@main",
+      "start_byte": 912,
+      "symbol": "send",
+      "visibility": "Private"
+    },
+    "start_offset": 912,
+    "text": "File: github://acme/widgets/src/invoices/service.ts@main\npath: github://acme/widgets/src/invoices/service.ts@main\nLanguage: typescript\nsymbol: InvoiceService.send\nSymbol: InvoiceService.send\nkind: Method\nParent: InvoiceService\nparents: InvoiceService\nSignature: async send(id: string, recipient: string): Promise<InvoiceState>\n [skeleton]\nasync send(id: string, recipient: string): Promise<InvoiceState>\n\n// Key identifiers:\n// defined: send\n// params: id, string, recipient\n// types: Promise, InvoiceState, Draft, Sent\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1025,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [
+        "id"
+      ],
+      "referenced_functions": [
+        "find"
+      ],
+      "referenced_types": []
+    },
+    "index": 17,
+    "metadata": {
+      "content_hash": "aa670e51be5c026e",
+      "end_byte": 1025,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "InvoiceService",
+        "send"
+      ],
+      "path": "github://acme/widgets/src/invoices/service.ts@main",
+      "start_byte": 983,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 983,
+    "text": "File: github://acme/widgets/src/invoices/service.ts@main\npath: github://acme/widgets/src/invoices/service.ts@main\nLanguage: typescript\nkind: Other\nParent: InvoiceService.send\nparents: InvoiceService.send\nSignature: const invoice = await this.store.find(id);\n\n// Imports:\nimport { HttpClient } from './http-client';\nimport type { Invoice, InvoiceLine } from './types';\n\nconst invoice = await this.store.find(id);\n\n// Identifiers:\n// params: id\n// calls: find\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1491,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [
+        "invoice",
+        "Invoice",
+        "now",
+        "Date"
+      ],
+      "referenced_functions": [
+        "isOverdue",
+        "getTime"
+      ],
+      "referenced_types": [
+        "Invoice",
+        "Date",
+        "InvoiceState",
+        "Paid"
+      ]
+    },
+    "index": 18,
+    "metadata": {
+      "content_hash": "e03d0ebb4cbaf2cb",
+      "end_byte": 1491,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/invoices/service.ts@main",
+      "start_byte": 1320,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 1320,
+    "text": "File: github://acme/widgets/src/invoices/service.ts@main\npath: github://acme/widgets/src/invoices/service.ts@main\nLanguage: typescript\nkind: Other\nSignature: export function isOverdue(invoice: Invoice, now: Date = new Date()): boolean\n\n// Imports:\nimport type { Invoice, InvoiceLine } from './types';\n\nexport function isOverdue(invoice: Invoice, now: Date = new Date()): boolean {\n  return invoice.state !== InvoiceState.Paid && invoice.dueDate.getTime() < now.getTime();\n}\n\n// Identifiers:\n// params: invoice, Invoice, now, Date\n// types: Invoice, Date, InvoiceState, Paid\n// calls: isOverdue, getTime\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 1491,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [
+        "invoice",
+        "Invoice",
+        "now",
+        "Date"
+      ],
+      "referenced_functions": [
+        "isOverdue",
+        "getTime"
+      ],
+      "referenced_types": [
+        "Invoice",
+        "Date",
+        "InvoiceState",
+        "Paid"
+      ]
+    },
+    "index": 19,
+    "metadata": {
+      "content_hash": "21ca2e297c9a0f6f",
+      "end_byte": 1491,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/invoices/service.ts@main",
+      "start_byte": 1320,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 1320,
+    "text": "File: github://acme/widgets/src/invoices/service.ts@main\npath: github://acme/widgets/src/invoices/service.ts@main\nLanguage: typescript\nkind: Other\nSignature: export function isOverdue(invoice: Invoice, now: Date = new Date()): boolean\n [skeleton]\nexport function isOverdue(invoice: Invoice, now: Date = new Date()): boolean\n\n// Key identifiers:\n// params: invoice, Invoice, now, Date\n// types: Invoice, Date, InvoiceState, Paid\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1491,
+    "identifiers": {
+      "defined_symbol": "isOverdue",
+      "key_strings": [],
+      "parameters": [
+        "invoice",
+        "Invoice",
+        "now",
+        "Date"
+      ],
+      "referenced_functions": [
+        "isOverdue",
+        "getTime"
+      ],
+      "referenced_types": [
+        "Invoice",
+        "Date",
+        "InvoiceState",
+        "Paid"
+      ]
+    },
+    "index": 20,
+    "metadata": {
+      "content_hash": "661e16d3d17d724b",
+      "end_byte": 1491,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/invoices/service.ts@main",
+      "start_byte": 1327,
+      "symbol": "isOverdue",
+      "visibility": "Private"
+    },
+    "start_offset": 1327,
+    "text": "File: github://acme/widgets/src/invoices/service.ts@main\npath: github://acme/widgets/src/invoices/service.ts@main\nLanguage: typescript\nsymbol: isOverdue\nSymbol: isOverdue\nkind: Function\nSignature: function isOverdue(invoice: Invoice, now: Date = new Date()): boolean\n\n// Imports:\nimport type { Invoice, InvoiceLine } from './types';\n\nfunction isOverdue(invoice: Invoice, now: Date = new Date()): boolean {\n  return invoice.state !== InvoiceState.Paid && invoice.dueDate.getTime() < now.getTime();\n}\n\n// Identifiers:\n// symbol: isOverdue\n// params: invoice, Invoice, now, Date\n// types: Invoice, Date, InvoiceState, Paid\n// calls: isOverdue, getTime\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 1491,
+    "identifiers": {
+      "defined_symbol": "isOverdue",
+      "key_strings": [],
+      "parameters": [
+        "invoice",
+        "Invoice",
+        "now",
+        "Date"
+      ],
+      "referenced_functions": [
+        "isOverdue",
+        "getTime"
+      ],
+      "referenced_types": [
+        "Invoice",
+        "Date",
+        "InvoiceState",
+        "Paid"
+      ]
+    },
+    "index": 21,
+    "metadata": {
+      "content_hash": "e7315d465ed5a884",
+      "end_byte": 1491,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/invoices/service.ts@main",
+      "start_byte": 1327,
+      "symbol": "isOverdue",
+      "visibility": "Private"
+    },
+    "start_offset": 1327,
+    "text": "File: github://acme/widgets/src/invoices/service.ts@main\npath: github://acme/widgets/src/invoices/service.ts@main\nLanguage: typescript\nsymbol: isOverdue\nSymbol: isOverdue\nkind: Function\nSignature: function isOverdue(invoice: Invoice, now: Date = new Date()): boolean\n [skeleton]\nfunction isOverdue(invoice: Invoice, now: Date = new Date()): boolean\n\n// Key identifiers:\n// defined: isOverdue\n// params: invoice, Invoice, now, Date\n// types: Invoice, Date, InvoiceState, Paid\n"
+  }
+]
