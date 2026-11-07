@@ -123,6 +123,92 @@ mod tests {
     }
 
     #[test]
+    fn learned_ranker_prefers_exact_symbol_file() {
+        let ranker: LinearRanker = include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/ranking/trained_ranker.rs"
+        ));
+        let query = "What does should_skip_blob do when a GitHub file SHA is unchanged?";
+        let exact = score_hit(
+            &ranker,
+            query,
+            "github://acme/widgets/src/content/mod.rs@main",
+            "mod.rs",
+            "fn should_skip_blob(uri: &str, sha: &str) -> bool { uri.is_empty() }",
+            Some(0.55),
+            Some(0.40),
+            Some(1),
+            Some(6),
+            0.009,
+        );
+        let neighbor = score_hit(
+            &ranker,
+            query,
+            "github://acme/widgets/src/adapters/auth.ts@main",
+            "auth.ts",
+            "generic authentication helper",
+            Some(0.81),
+            Some(0.02),
+            None,
+            Some(1),
+            0.011,
+        );
+        let fixture = score_hit(
+            &ranker,
+            query,
+            "github://acme/widgets/evals/retrieval.json@main",
+            "retrieval.json",
+            "should_skip_blob",
+            Some(0.74),
+            Some(0.20),
+            Some(2),
+            Some(3),
+            0.013,
+        );
+        assert!(exact > neighbor, "exact={exact} neighbor={neighbor}");
+        assert!(exact > fixture, "exact={exact} fixture={fixture}");
+        let mention = score_hit(
+            &ranker,
+            query,
+            "github://acme/widgets/src/embeddings/query.rs@main",
+            "query.rs",
+            "assert!(rewritten.identifiers.iter().any(|i| i == \"should_skip_blob\"));",
+            Some(0.66),
+            Some(0.08),
+            Some(1),
+            Some(4),
+            0.015,
+        );
+        assert!(exact > mention, "exact={exact} mention={mention}");
+        let method = score_hit(
+            &ranker,
+            query,
+            "github://acme/widgets/src/content/mod.rs@main",
+            "mod.rs",
+            "impl FetchConfig { pub fn should_skip_blob(&self, uri: &str, blob_sha: &str) -> bool { true } }",
+            Some(0.55),
+            Some(0.40),
+            Some(1),
+            Some(6),
+            0.009,
+        );
+        assert!(method > mention, "method={method} mention={mention}");
+        let header = score_hit(
+            &ranker,
+            query,
+            "github://acme/widgets/src/content/mod.rs@main",
+            "mod.rs",
+            "path: github://acme/widgets/content/mod.rs@main kind: file_header\n\nidentifiers: should_skip_blob, FetchConfig",
+            Some(0.72),
+            Some(0.45),
+            Some(1),
+            Some(1),
+            0.018,
+        );
+        assert!(method > header, "method={method} header={header}");
+    }
+
+    #[test]
     fn the_ranker_score_enters_through_the_blend() {
         let query = "login";
         let uri = "src/auth.ts";
