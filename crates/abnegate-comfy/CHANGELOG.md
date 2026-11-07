@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4](https://github.com/abnegate/crates/compare/abnegate-comfy/v0.2.3...abnegate-comfy/v0.2.4) - 2026-11-07
+
+### Added
+
+- *(llm)* add RerankProvider and an HTTP rerank adapter ([#73](https://github.com/abnegate/crates/pull/73))
+
 ## [0.2.3](https://github.com/abnegate/crates/compare/abnegate-comfy/v0.2.2...abnegate-comfy/v0.2.3) - 2026-11-06
 
 ### Other

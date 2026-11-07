@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.14](https://github.com/abnegate/crates/compare/abnegate-agent-cli/v0.1.13...abnegate-agent-cli/v0.1.14) - 2026-11-07
+
+### Added
+
+- *(agent-cli)* let a run wait for claude's background work ([#74](https://github.com/abnegate/crates/pull/74))
+- *(agent-cli)* sign claude's token client in to a proxy that wants it ([#75](https://github.com/abnegate/crates/pull/75))
+
+### Fixed
+
+- *(agent-cli)* show a subagent's report without claude's frame ([#72](https://github.com/abnegate/crates/pull/72))
+
 ## [0.1.13](https://github.com/abnegate/crates/compare/abnegate-agent-cli/v0.1.12...abnegate-agent-cli/v0.1.13) - 2026-11-06
 
 ### Added
