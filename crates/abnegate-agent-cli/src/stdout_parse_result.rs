@@ -75,6 +75,9 @@ pub struct StdoutParseResult {
     earlier_tokens: Option<CliUsage>,
     /// [`answer`](StdoutParseResult::answer) as of the last finished turn.
     earlier_answer: Option<String>,
+    /// Whether the output ended with a turn begun after one finished and not
+    /// finished itself.
+    ended_mid_turn: bool,
 }
 
 impl StdoutParseResult {
@@ -163,6 +166,26 @@ impl StdoutParseResult {
         if !self.finished && self.failure.is_none() {
             self.failure.clone_from(&self.diagnostic);
         }
+    }
+
+    /// How long the answers of the finished turns are, when any gave one.
+    pub(crate) fn earlier_answer_len(&self) -> Option<usize> {
+        self.earlier_answer.as_ref().map(String::len)
+    }
+
+    /// Note that the output ended with a later turn still being written.
+    pub(crate) fn end_mid_turn(&mut self) {
+        self.ended_mid_turn = true;
+    }
+
+    /// Whether the output ended with a later turn still being written.
+    pub(crate) fn ended_mid_turn(&self) -> bool {
+        self.ended_mid_turn
+    }
+
+    /// Whether a finished turn said anything: an answer, or prose.
+    pub(crate) fn answered(&self) -> bool {
+        self.finished && !self.reply().trim().is_empty()
     }
 
     /// What the agent answered: its final [answer](StdoutParseResult::answer)
@@ -362,6 +385,33 @@ mod tests {
         assert_eq!((usage.prompt_tokens, usage.completion_tokens), (30, 15));
         assert_eq!(result.turns, Some(3));
         assert_eq!(result.answer.as_deref(), Some("First.\n\nSecond."));
+    }
+
+    #[test]
+    fn cache_tokens_add_up_across_finished_turns() {
+        let result: StdoutParseResult = [
+            AgentEvent::Tokens(
+                CliUsage::new(10, 4)
+                    .with_cache_read_input_tokens(100)
+                    .with_cache_creation_input_tokens(20),
+            ),
+            AgentEvent::finished(Some("success".to_string())),
+            AgentEvent::Tokens(
+                CliUsage::new(5, 2)
+                    .with_cache_read_input_tokens(50)
+                    .with_cache_creation_input_tokens(7),
+            ),
+            AgentEvent::finished(Some("success".to_string())),
+        ]
+        .into_iter()
+        .collect();
+
+        let tokens = result.tokens.expect("the run's tokens");
+        assert_eq!(tokens.input_tokens, Some(15));
+        assert_eq!(tokens.output_tokens, Some(6));
+        assert_eq!(tokens.cache_read_input_tokens, Some(150));
+        assert_eq!(tokens.cache_creation_input_tokens, Some(27));
+        assert_eq!(tokens.prompt_tokens(), 15 + 150 + 27);
     }
 
     #[test]

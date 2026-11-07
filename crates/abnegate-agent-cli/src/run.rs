@@ -63,9 +63,9 @@ pub(crate) struct Run {
     pub(crate) reader: JoinHandle<Result<StdoutParseResult, String>>,
     pub(crate) diagnostics: JoinHandle<String>,
     pub(crate) settled: mpsc::UnboundedReceiver<Verdict>,
-    /// Turned true when a turn finished while the run waited on background
-    /// work, so the agent has answered even if it never settles.
-    pub(crate) answered: watch::Receiver<bool>,
+    /// Whether the run waits on the agent's background work, so a timeout keeps
+    /// what the agent answered before it.
+    pub(crate) await_background: bool,
     /// Turned true once the run stops waiting for the agent's output to
     /// close, which starts its readers' drain.
     pub(crate) draining: watch::Sender<bool>,
@@ -163,8 +163,17 @@ impl Run {
                 failure = verdict.failure();
             }
         }
-        if stopped.as_deref() == Some(OUTLASTED)
-            && failure.is_none()
+        let outlasted = stopped.as_deref() == Some(OUTLASTED);
+        if outlasted && !stdout.answered() {
+            self.reaper.clean().await;
+            let _ = self.reap().await;
+            return Err(ExecutionError::new(
+                ProviderError::timeout(&self.name, self.timeout),
+                self.files.take(),
+            ));
+        }
+        if failure.is_none()
+            && (outlasted || stdout.ended_mid_turn())
             && stdout.finish_reason.as_deref() != Some(CUT_SHORT)
         {
             let cut_short = AgentEvent::finished(Some(CUT_SHORT.to_string()));
@@ -257,6 +266,12 @@ impl Run {
     /// Whatever ends the wait first: the agent's exit, a verdict on its
     /// output, or the run's deadline.
     async fn outcome(&mut self) -> Outcome {
+        if self
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            return Outcome::TimedOut;
+        }
         let deadline = self.deadline;
         let expiry = async move {
             match deadline {
@@ -302,7 +317,7 @@ impl Run {
                     .await;
                 tracing::warn!(provider = %self.name, label = %self.label, "agent timed out; stopping its process group");
                 stop_agent(&mut self.child, self.reaper.group()).await;
-                if *self.answered.borrow() {
+                if self.await_background {
                     return Ok(Some(Settlement {
                         stopped: Some(OUTLASTED.to_string()),
                         failure: None,

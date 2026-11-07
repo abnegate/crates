@@ -42,6 +42,14 @@ impl Turn {
         }
     }
 
+    /// Count a turn begun by a line too long to read, when it was the line that
+    /// begins one.
+    pub(crate) fn begin_unread(&mut self, prefix: &str) {
+        if self.agent == AgentKind::Claude && claude::begins_turn(prefix) {
+            self.claude.begin_unread();
+        }
+    }
+
     /// Whether work the agent sent to the background is running, a wakeup it
     /// set has yet to fire, or a turn either led to has yet to begin, as of
     /// the last line that said so.
@@ -244,19 +252,35 @@ mod tests {
     fn a_claude_turn_waits_for_no_wakeup_refused_cancelled_or_set_by_a_subagent() {
         const REFUSED: &str = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_wake","content":"no","is_error":true}]}}"#;
         const CANCEL: &str = r#"{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"tool_use","id":"toolu_stop","name":"ScheduleWakeup","input":{"stop":true}}]}}"#;
+        const CANCELLED: &str = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_stop","content":"cancelled","is_error":false}]}}"#;
         const SUBAGENTS: &str = r#"{"type":"assistant","parent_tool_use_id":"toolu_agent","message":{"content":[{"type":"tool_use","id":"toolu_its","name":"ScheduleWakeup","input":{"delaySeconds":60}}]}}"#;
 
-        for (set, undone) in [
-            (Some(WAKE), REFUSED),
-            (Some(WAKE), CANCEL),
-            (None, SUBAGENTS),
+        for lines in [
+            vec![WAKE, REFUSED],
+            vec![WAKE, CANCEL, CANCELLED],
+            vec![SUBAGENTS],
         ] {
             let mut turn = AgentKind::Claude.turn();
             let mut events = Vec::new();
-            for line in set.into_iter().chain([undone]) {
+            for line in &lines {
                 turn.interpret(line, &mut events);
             }
-            assert!(!turn.background_running(), "{undone}");
+            assert!(!turn.background_running(), "{lines:?}");
+        }
+    }
+
+    #[test]
+    fn a_wakeup_outlives_a_cancellation_claude_refused_or_never_answered() {
+        const CANCEL: &str = r#"{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"tool_use","id":"toolu_stop","name":"ScheduleWakeup","input":{"stop":true}}]}}"#;
+        const REFUSED: &str = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_stop","content":"no","is_error":true}]}}"#;
+
+        for lines in [vec![WAKE, CANCEL], vec![WAKE, CANCEL, REFUSED]] {
+            let mut turn = AgentKind::Claude.turn();
+            let mut events = Vec::new();
+            for line in &lines {
+                turn.interpret(line, &mut events);
+            }
+            assert!(turn.background_running(), "{lines:?}");
         }
     }
 

@@ -147,6 +147,9 @@ pub struct Turn {
     owed: usize,
     /// The main agent's calls that set a wakeup still to fire.
     wakeups: BTreeSet<String>,
+    /// The main agent's calls that cancel its wakeups, until claude says
+    /// whether they did.
+    cancellations: BTreeSet<String>,
     /// How many turns an `init` line has begun.
     begun: u64,
 }
@@ -155,6 +158,12 @@ impl Turn {
     /// How many turns an `init` line has begun.
     pub(crate) fn turns_begun(&self) -> u64 {
         self.begun
+    }
+
+    /// Count a turn begun by an `init` line too long to read.
+    pub(crate) fn begin_unread(&mut self) {
+        self.begun += 1;
+        self.owed = self.owed.saturating_sub(1);
     }
 
     /// Whether work runs in the background, a wakeup has yet to fire, or a
@@ -279,6 +288,9 @@ impl Turn {
         for (id, _, failed) in &results {
             if *failed {
                 self.wakeups.remove(id);
+                self.cancellations.remove(id);
+            } else if self.cancellations.remove(id) {
+                self.wakeups.clear();
             }
         }
         self.roster.returned(results, report, events);
@@ -338,7 +350,7 @@ impl Turn {
                 && name == SCHEDULE_WAKEUP
             {
                 if input.get(WAKEUP_STOP).and_then(Value::as_bool) == Some(true) {
-                    self.wakeups.clear();
+                    self.cancellations.insert(id.clone());
                 } else {
                     self.wakeups.insert(id.clone());
                 }

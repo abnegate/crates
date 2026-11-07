@@ -10,7 +10,6 @@ use tokio::process::ChildStdout;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 
-use crate::CUT_SHORT;
 use crate::activity::ELLIPSIS;
 use crate::drain::Drain;
 use crate::event::AgentEvent;
@@ -20,6 +19,7 @@ use crate::log::Journal;
 use crate::log::Record;
 use crate::log::Sink;
 use crate::overlong_error::OverlongError;
+use crate::paragraphs::PARAGRAPH_BREAK;
 use crate::paragraphs::Paragraphs;
 use crate::parser;
 use crate::parser::Turn;
@@ -70,8 +70,9 @@ const BUFFER: usize = 8 * 1024;
 /// after a finished one settled the run reopens it, so the run waits again.
 ///
 /// A turn that begins after one finished, and is still unfinished when the
-/// output ends, ends the stream with a [`CUT_SHORT`] finish, keeping what the
-/// finished turns said.
+/// output ends, settles the run and is noted on the result, which the run
+/// marks [`CUT_SHORT`](crate::CUT_SHORT) once it knows nothing failed. Answers
+/// joined across turns are held to the output limit, as prose is.
 ///
 /// Once the run starts to [`Drain`] it, the reader still takes everything the
 /// pipe holds, and stops when the drain ends.
@@ -91,7 +92,6 @@ pub(crate) struct Reader {
     forward: Option<mpsc::UnboundedSender<AgentEvent>>,
     drain: Drain,
     await_background: bool,
-    answered: watch::Sender<bool>,
     /// Whether a verdict has settled the run.
     settled: bool,
     /// Whether the verdict that settled it was a finished turn a later one
@@ -132,7 +132,6 @@ impl Reader {
             forward: None,
             drain: Drain::new(draining),
             await_background: false,
-            answered: watch::Sender::new(false),
             settled: false,
             reopenable: false,
             finished: 0,
@@ -150,15 +149,9 @@ impl Reader {
     }
 
     /// Let a finished turn settle the run only once nothing the agent sent to
-    /// the background is left to come, when `awaited`, and say on `answered`
-    /// that a turn finished while it waited.
-    pub(crate) fn awaiting_background(
-        mut self,
-        awaited: bool,
-        answered: watch::Sender<bool>,
-    ) -> Self {
+    /// the background is left to come, when `awaited`.
+    pub(crate) fn awaiting_background(mut self, awaited: bool) -> Self {
         self.await_background = awaited;
-        self.answered = answered;
         self
     }
 
@@ -183,9 +176,8 @@ impl Reader {
     ) -> Result<StdoutParseResult, String> {
         let outcome = self.read(stdout).await;
         if outcome.is_ok() && self.turn_open() && self.result.failure.is_none() {
-            let cut_short = AgentEvent::finished(Some(CUT_SHORT.to_string()));
-            self.hand_on(&cut_short);
-            self.result.record(cut_short);
+            self.result.end_mid_turn();
+            self.settle(Verdict::Finished);
         }
         self.result.conclude();
         if let Err(reason) = &outcome {
@@ -247,6 +239,11 @@ impl Reader {
             return Err(overlong.to_string());
         }
         self.result.dropped += 1;
+        let begun = self.turn.turns_begun();
+        self.turn.begin_unread(&overlong.prefix);
+        if self.turn.turns_begun() > begun {
+            self.reopen();
+        }
         let kind = parser::types(&overlong.prefix)
             .first()
             .map(|(_, kind)| (*kind).to_string());
@@ -317,6 +314,18 @@ impl Reader {
                     tracing::debug!(agent = %self.agent, diagnostic = %message, "agent diagnostic");
                     AgentEvent::Diagnostic(message)
                 }
+                AgentEvent::Answer(answer) => {
+                    let joined = self
+                        .result
+                        .earlier_answer_len()
+                        .map_or(answer.len(), |earlier| {
+                            earlier + PARAGRAPH_BREAK.len() + answer.len()
+                        });
+                    if joined > self.limit {
+                        return Err(format!("{} {} bytes", crate::PROSE_EXCEEDED, self.limit));
+                    }
+                    AgentEvent::Answer(answer)
+                }
                 AgentEvent::Finished { finish_reason } => {
                     self.finished += 1;
                     if self.agent == AgentKind::Claude && self.finished > self.turn.turns_begun() {
@@ -326,9 +335,6 @@ impl Reader {
                             begun = self.turn.turns_begun(),
                             "more results than turns begun: claude wrote no init for one"
                         );
-                    }
-                    if self.await_background {
-                        self.answered.send_replace(true);
                     }
                     if !(self.await_background
                         && (self.turn.background_running() || self.turn_open()))

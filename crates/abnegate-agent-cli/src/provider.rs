@@ -424,7 +424,6 @@ impl CliProvider {
         let forward = events.clone();
         let (verdicts, settled) = mpsc::unbounded_channel();
         let (draining, started) = watch::channel(false);
-        let (answered_sender, answered) = watch::channel(false);
         let prose = Sink::open(files.as_ref().map(|files| files.stdout.as_path())).await;
         let raw = Sink::open(files.as_ref().map(|files| files.stderr.as_path())).await;
         let reader = tokio::spawn(
@@ -439,7 +438,7 @@ impl CliProvider {
                 started.clone(),
             )
             .forwarding(events)
-            .awaiting_background(self.settings.await_background, answered_sender)
+            .awaiting_background(self.settings.await_background)
             .printing(self.settings.tool_output_limit)
             .in_directory(self.settings.working_directory.clone())
             .run(spawned.child.stdout.take()),
@@ -473,7 +472,7 @@ impl CliProvider {
             reader,
             diagnostics,
             settled,
-            answered,
+            await_background: self.settings.await_background,
             draining,
             rollout,
             forward,
@@ -3674,6 +3673,213 @@ wait"#
         let execution = execute(&provider, &[Message::user("hi")]).await;
 
         assert!(execution.stdout.failure.is_some(), "{execution:?}");
+        assert_ne!(
+            execution.stdout.finish_reason.as_deref(),
+            Some(crate::CUT_SHORT),
+            "{execution:?}"
+        );
+    }
+
+    /// An agent that closes its output with a later turn begun, and lives on.
+    #[tokio::test]
+    async fn output_closed_on_an_open_turn_settles_the_run() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let started = directory.path().join("started");
+        let script = format!(
+            r#"touch '{started}'
+echo '{{"type":"system","subtype":"init","session_id":"s"}}'
+echo '{{"type":"result","subtype":"success","is_error":false,"result":"First."}}'
+echo '{{"type":"system","subtype":"init","session_id":"s"}}'
+exec 1>&-
+sleep 60"#,
+            started = started.display(),
+        );
+        let provider = CliProvider::agent(
+            AgentKind::Claude,
+            settings(&directory, &script)
+                .await_background()
+                .with_timeout(Duration::from_secs(20)),
+        );
+
+        let (execution, waited) = timed(
+            async { execute(&provider, &[Message::user("hi")]).await },
+            &started,
+        )
+        .await;
+
+        assert!(waited < Duration::from_secs(14), "waited {waited:?}");
+        assert_eq!(
+            execution.stdout.finish_reason.as_deref(),
+            Some(crate::CUT_SHORT),
+            "{execution:?}"
+        );
+    }
+
+    /// Turns begun as fast as an agent can write them still end at the timeout.
+    #[tokio::test]
+    async fn turns_begun_faster_than_they_are_read_still_end_at_the_timeout() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let started = directory.path().join("started");
+        let script = format!(
+            r#"touch '{started}'
+while true; do
+  echo '{{"type":"system","subtype":"init","session_id":"s"}}'
+  echo '{{"type":"result","subtype":"success","is_error":false,"result":"a"}}'
+done"#,
+            started = started.display(),
+        );
+        let timeout = Duration::from_secs(6);
+        let provider = CliProvider::agent(
+            AgentKind::Claude,
+            settings(&directory, &script)
+                .await_background()
+                .with_timeout(timeout),
+        );
+
+        let (outcome, waited) = timed(
+            provider.execute(request(&[Message::user("hi")]), "test-run"),
+            &started,
+        )
+        .await;
+
+        assert!(
+            waited < timeout + Duration::from_secs(6),
+            "waited {waited:?}"
+        );
+        drop(outcome);
+    }
+
+    /// Answers joined across turns are held to the output limit, as prose is.
+    #[tokio::test]
+    async fn answers_joined_across_turns_are_held_to_the_output_limit() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let answer = "y".repeat(600);
+        let script = format!(
+            r#"echo '{{"type":"system","subtype":"init","session_id":"s"}}'
+echo '{{"type":"result","subtype":"success","is_error":false,"result":"{answer}"}}'
+echo '{{"type":"system","subtype":"init","session_id":"s"}}'
+echo '{{"type":"result","subtype":"success","is_error":false,"result":"{answer}"}}'"#
+        );
+        let provider = CliProvider::agent(
+            AgentKind::Claude,
+            settings(&directory, &script)
+                .await_background()
+                .with_output_limit(1024),
+        );
+
+        let outcome = provider
+            .execute(request(&[Message::user("hi")]), "test-run")
+            .await;
+
+        let failure = outcome.expect_err("answers past the output limit");
+        assert!(
+            failure.to_string().contains(crate::PROSE_EXCEEDED),
+            "{failure:?}"
+        );
+    }
+
+    /// A turn that said nothing has not answered, so the timeout still fails
+    /// the run.
+    #[tokio::test]
+    async fn an_empty_turn_outliving_the_timeout_fails_the_run() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = r#"echo '{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"b1"}]}'
+echo '{"type":"result","subtype":"success","is_error":false,"result":""}'
+sleep 120"#;
+        let provider = CliProvider::agent(
+            AgentKind::Claude,
+            settings(&directory, script)
+                .await_background()
+                .with_timeout(Duration::from_secs(6)),
+        );
+
+        let failure = provider
+            .execute(request(&[Message::user("hi")]), "test-run")
+            .await
+            .expect_err("a run that never answered");
+
+        assert!(
+            matches!(*failure.error, ProviderError::Timeout { .. }),
+            "{failure:?}"
+        );
+    }
+
+    /// An `init` too long to read still begins a turn.
+    #[tokio::test]
+    async fn a_turn_whose_init_is_too_long_to_read_still_counts_as_begun() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let tools = "t".repeat(8192);
+        let script = format!(
+            r#"echo '{{"type":"system","subtype":"init","session_id":"s","tools":["{tools}"]}}'
+echo '{{"type":"result","subtype":"success","is_error":false,"result":"First."}}'
+echo '{{"type":"system","subtype":"init","session_id":"s","tools":["{tools}"]}}'
+echo '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"The la"}}]}}}}'"#
+        );
+        let provider = CliProvider::agent(
+            AgentKind::Claude,
+            settings(&directory, &script).with_line_limit(4096),
+        );
+
+        let execution = execute(&provider, &[Message::user("hi")]).await;
+
+        assert_eq!(
+            execution.stdout.finish_reason.as_deref(),
+            Some(crate::CUT_SHORT),
+            "{execution:?}"
+        );
+    }
+
+    /// A trip on stderr with a later turn open is the run's failure, never a
+    /// turn cut short.
+    #[tokio::test]
+    async fn a_trip_with_a_later_turn_open_is_never_marked_cut_short() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = r#"echo '{"type":"system","subtype":"init","session_id":"s"}'
+echo '{"type":"result","subtype":"success","is_error":false,"result":"First."}'
+echo '{"type":"system","subtype":"init","session_id":"s"}'
+echo 'API Error: 429 Too Many Requests' >&2
+exit 0"#;
+        let provider = CliProvider::agent(
+            AgentKind::Claude,
+            settings(&directory, script).with_tripwire(|line| line.contains("429")),
+        );
+
+        let execution = execute(&provider, &[Message::user("hi")]).await;
+
+        assert!(
+            execution
+                .failure
+                .as_deref()
+                .is_some_and(|failure| failure.contains("429")),
+            "{execution:?}"
+        );
+        assert_ne!(
+            execution.stdout.finish_reason.as_deref(),
+            Some(crate::CUT_SHORT),
+            "{execution:?}"
+        );
+    }
+
+    /// A later turn that fails is a failure, never a turn cut short.
+    #[tokio::test]
+    async fn a_later_turn_that_fails_is_never_marked_cut_short() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = r#"echo '{"type":"system","subtype":"init","session_id":"s"}'
+echo '{"type":"result","subtype":"success","is_error":false,"result":"First."}'
+echo '{"type":"system","subtype":"init","session_id":"s"}'
+echo '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Boom"}'"#;
+        let provider = CliProvider::agent(AgentKind::Claude, settings(&directory, script));
+
+        let execution = execute(&provider, &[Message::user("hi")]).await;
+
+        assert!(
+            execution
+                .stdout
+                .failure
+                .as_deref()
+                .is_some_and(|failure| failure.contains("Boom")),
+            "{execution:?}"
+        );
         assert_ne!(
             execution.stdout.finish_reason.as_deref(),
             Some(crate::CUT_SHORT),

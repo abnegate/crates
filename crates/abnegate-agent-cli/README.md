@@ -190,7 +190,8 @@ the turns that finished, and its finish reason is `CUT_SHORT`, on the
 completion and on the last event of a stream.
 
 A run's usage, tokens and turn count add up over its results, and its answers
-join as paragraphs, since each result reports only its own turn.
+join as paragraphs, since each result reports only its own turn. Joined answers
+are held to the output limit, as prose is.
 
 An `McpServer` also takes options Claude's own MCP entry has no key for, which
 never reach Claude's file or a log: `with_tool_timeout` (Codex's
