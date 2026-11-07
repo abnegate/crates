@@ -16,7 +16,9 @@
 //! `pull_request::PullRequestService` opens, reads, checks, reviews and merges
 //! pull requests, sets them to merge once they are ready, moves them in and
 //! out of draft, creates repositories and registers their webhooks, over
-//! GitHub's REST and GraphQL APIs.
+//! GitHub's REST and GraphQL APIs. With the `gitlab` feature,
+//! `gitlab::GitLabService` reads a project's default branch, its tree and its
+//! blobs from GitLab or a self-hosted GitLab instance.
 //!
 //! Nothing here holds application state, so a task runner can drive it directly.
 //!
@@ -56,6 +58,10 @@
 //!   installation's token until it nears expiry, and
 //!   `pull_request::ApplicationService`, which registers an App from its
 //!   manifest and lists its installations and their repositories.
+//! - `gitlab`: `gitlab::GitLabService`, which reads a GitLab project's
+//!   default branch, its tree at a branch, tag or commit, and its blobs, from
+//!   gitlab.com or a self-hosted instance, anonymously or with a token, and
+//!   never from a link-local or cloud metadata address.
 //! - `testing`: `RepositoryUrl::local`,
 //!   `pull_request::PullRequestService::standing_in_for` and, with
 //!   `github-app`, `pull_request::InstallationIssuer::standing_in_for` and
@@ -70,6 +76,9 @@ mod commit_sha;
 pub mod conflict;
 pub mod discovery;
 pub mod git;
+#[cfg(feature = "gitlab")]
+#[cfg_attr(docsrs, doc(cfg(feature = "gitlab")))]
+pub mod gitlab;
 mod object_id;
 mod parse_error;
 #[cfg(feature = "github")]
@@ -103,6 +112,15 @@ pub use crate::git::DiffSummary;
 pub use crate::git::GitError;
 pub use crate::git::GitService;
 pub use crate::git::RemoteHead;
+#[cfg(feature = "gitlab")]
+#[cfg_attr(docsrs, doc(cfg(feature = "gitlab")))]
+pub use crate::gitlab::GitLabError;
+#[cfg(feature = "gitlab")]
+#[cfg_attr(docsrs, doc(cfg(feature = "gitlab")))]
+pub use crate::gitlab::GitLabService;
+#[cfg(feature = "gitlab")]
+#[cfg_attr(docsrs, doc(cfg(feature = "gitlab")))]
+pub use crate::gitlab::Project;
 pub use crate::object_id::ObjectId;
 pub use crate::parse_error::ParseError;
 #[cfg(feature = "github-app")]
