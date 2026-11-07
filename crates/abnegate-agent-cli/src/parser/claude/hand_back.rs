@@ -18,15 +18,19 @@ const USAGE_END: &str = "</usage>";
 
 /// How each line claude writes only for the main agent opens and closes. Any
 /// other note is kept, since it may say something the report leaves out: that
-/// the subagent was cut off, say, which claude still reports as completed.
+/// the subagent was cut off, say, which claude still reports as completed, or
+/// that its report was shortened, which opens like a note on saved files.
 const INTERNAL_NOTES: &[(&str, &str)] = &[
     (
         "<tools-used-before-summary>",
         "</tools-used-before-summary>",
     ),
     ("[harness: subagent output matched ", "]"),
-    ("[Harness note, not part of the agent's report: ", "]"),
 ];
+
+/// How claude opens a note on the files a tool saved, before the tool's name.
+const SAVED_FILES_NOTE: &str = "[Harness note, not part of the agent's report: ";
+const SAVED: &str = "saved ";
 
 /// What claude writes in place of a report with nothing in it.
 const PLACEHOLDERS: &[&str] = &[
@@ -121,4 +125,13 @@ fn internal(line: &str) -> bool {
     INTERNAL_NOTES
         .iter()
         .any(|(open, close)| line.starts_with(open) && line.ends_with(close))
+        || saved_files(line)
+}
+
+fn saved_files(line: &str) -> bool {
+    line.ends_with(']')
+        && line
+            .strip_prefix(SAVED_FILES_NOTE)
+            .and_then(|note| note.split_once(' '))
+            .is_some_and(|(tool, rest)| !tool.is_empty() && rest.starts_with(SAVED))
 }

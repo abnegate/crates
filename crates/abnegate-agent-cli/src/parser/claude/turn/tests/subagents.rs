@@ -1091,6 +1091,11 @@ const TRAILER: &str = "agentId: a1 (use SendMessage with to: 'a1', summary: '<5-
 
 const CUT_OFF: &str = "Agent terminated early due to an API error: You've hit your session limit \u{b7} resets 5pm (error type rate_limit, HTTP 429, request id req_0123456789, model sent to the API: claude-sonnet-5)\n\nEverything below is PARTIAL output recovered from the agent before it was cut off. The agent did NOT finish its task \u{2014} treat these results as incomplete.";
 
+const SAVED_NO_FILES: &str =
+    "[Harness note, not part of the agent's report: WebFetch saved no files during this run.]";
+
+const CUT_NOTE: &str = "[Harness note, not part of the agent's report: the subagent's report was cut from 120000 to its first 64000 characters so that it and the note below arrive together.]";
+
 const NO_TEXT: &str = "(no text output)";
 const NO_CONTENT: &str = "(Subagent completed but returned no output.)";
 
@@ -1254,7 +1259,7 @@ fn a_report_too_large_for_its_result_stands_when_the_account_lacks_it() {
         json!({"status": "completed", "content": 7}),
         json!({"status": "completed", "agentId": "a1", "content": []}),
         json!({"status": "completed", "agentId": "a1", "content": "Not in blocks."}),
-        json!({"status": "completed", "agentId": "a1", "content": [{"type": "text", "text": "[Harness note, not part of the agent's report: x]"}]}),
+        json!({"status": "completed", "agentId": "a1", "content": [{"type": "text", "text": SAVED_NO_FILES}]}),
     ] {
         let events = interpret_all(&stream(&[
             delegated("sonnet").to_string(),
@@ -1279,7 +1284,7 @@ fn notes_for_the_main_agent_never_reach_a_report_read_from_the_account() {
             false,
             &json!({"status": "completed", "agentId": "a1", "content": [
                 {"type": "text", "text": "<tools-used-before-summary>WebFetch</tools-used-before-summary>\n\n[harness: subagent output matched instruction-shaped pattern(s): settings-json.]\n\n## The report\n\n[harness: its own words]"},
-                {"type": "text", "text": "[Harness note, not part of the agent's report: x]"},
+                {"type": "text", "text": SAVED_NO_FILES},
             ]}),
         ),
     ]));
@@ -1458,7 +1463,17 @@ fn only_the_lines_claude_writes_for_the_main_agent_leave_an_answer() {
             "[harness: subagent output matched instruction-shaped pattern(s): settings-json.\nstill the same note]\n\nThe report.",
         ),
         (
-            "<tools-used-before-summary>Read</tools-used-before-summary>\n\n[harness: subagent output matched instruction-shaped pattern(s): settings-json.]\n\n[Harness note, not part of the agent's report: x]\n\nThe report.",
+            &format!(
+                "<tools-used-before-summary>Read</tools-used-before-summary>\n\n[harness: subagent output matched instruction-shaped pattern(s): settings-json.]\n\n{SAVED_NO_FILES}\n\nThe report."
+            ),
+            "The report.",
+        ),
+        (
+            &format!("{CUT_NOTE}\n\nThe first part."),
+            &format!("{CUT_NOTE}\n\nThe first part."),
+        ),
+        (
+            "[Harness note, not part of the agent's report: Bash saved one file, /w/out.txt.]\n\nThe report.",
             "The report.",
         ),
     ] {
@@ -1472,6 +1487,23 @@ fn only_the_lines_claude_writes_for_the_main_agent_leave_an_answer() {
 }
 
 #[test]
+fn a_note_that_a_report_was_cut_survives_as_its_own_block() {
+    let account = json!({"status": "completed", "agentId": "a1", "content": [
+        {"type": "text", "text": "The first part."},
+        {"type": "text", "text": CUT_NOTE},
+        {"type": "text", "text": SAVED_NO_FILES},
+    ]});
+
+    assert_eq!(
+        summaries_both_ways(&[delegated("sonnet").to_string(), wrapped(None, &account)]),
+        [
+            Some(format!("The first part.\n{CUT_NOTE}")),
+            Some(format!("The first part.\n{CUT_NOTE}"))
+        ]
+    );
+}
+
+#[test]
 fn notes_above_a_frame_that_only_resemble_claudes_are_kept() {
     assert_eq!(
         summary_of(&format!(
@@ -1479,6 +1511,16 @@ fn notes_above_a_frame_that_only_resemble_claudes_are_kept() {
         ))
         .as_deref(),
         Some("[harness: is the tag I found in the logs]\n\nThe report.")
+    );
+}
+
+#[test]
+fn a_note_above_the_frame_that_the_report_was_cut_stays_with_it() {
+    assert_eq!(
+        summary_of(&format!(
+            "  {CUT_NOTE}\n  {SAVED_NO_FILES}\n{FRAME}\n  The first part.\n{TRAILER}"
+        )),
+        Some(format!("{CUT_NOTE}\n\nThe first part."))
     );
 }
 
