@@ -30,6 +30,9 @@ const AGENT_TASKS: &[&str] = &["local_agent", "remote_agent"];
 /// The status of a finished subagent's report.
 const COMPLETED: &str = "completed";
 
+/// How claude opens what it writes in place of a result too large to hold.
+const PERSISTED: &str = "<persisted-output>\nOutput too large";
+
 /// The statuses of a call that only launched its subagent, which then runs
 /// on in the background, remotely or as a teammate and reports through task
 /// notices instead.
@@ -223,7 +226,8 @@ impl Roster {
     /// only that it runs on, and its report comes later as task news. Only a
     /// report that says something outranks a later task notice's summary.
     /// The [`Output`] of the call keeps the frame claude wrote around the
-    /// report, as the main agent read it; only this news is without it.
+    /// report, or the wrapper it wrote in place of one too large to hold, as
+    /// the main agent read it; only this news is without them.
     fn reported(
         &mut self,
         id: &str,
@@ -232,9 +236,15 @@ impl Roster {
         report: Option<&Report>,
     ) -> Option<Subagent> {
         let background = *self.subagents.get(id)?;
-        let written = hand_back::report(text);
         let empty = Report::default();
         let report = report.unwrap_or(&empty);
+        let whole = report
+            .content
+            .as_ref()
+            .filter(|_| text.starts_with(PERSISTED))
+            .map(printed)
+            .filter(|whole| !whole.is_empty());
+        let written = hand_back::report(whole.as_deref().unwrap_or(text));
         if let Some(task) = report.task.as_ref().filter(|task| !task.is_empty()) {
             self.tasks
                 .entry(task.clone())

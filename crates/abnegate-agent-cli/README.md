@@ -309,11 +309,11 @@ left out. The limit does not reach the call's arguments, which are handed on
 whole. A subagent's summary is its report as it wrote it, without the frame
 Claude hands it back to the main agent in, though with any note above that
 frame that is not only for the main agent, such as that it was cut off and is
-only partial; the call's `AgentEvent::Output` keeps the frame, as the main agent
-read it. Nothing renders either event: a
-caller that lists a subagent's calls as it lists the main agent's renders each
-step itself, with `Subagent::activity` for instance, and counts it toward
-whatever budget it keeps.
+only partial, and whole when it was too large for the call's result; the call's
+`AgentEvent::Output` keeps what the main agent read. Nothing renders either
+event: a caller that lists a subagent's calls as it lists the main agent's
+renders each step itself, with `Subagent::activity` for instance, and counts it
+toward whatever budget it keeps.
 
 A subagent's own calls, and those of every agent nested inside it, are steps
 of the subagent the main agent started, so they are no longer

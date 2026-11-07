@@ -1091,6 +1091,13 @@ const TRAILER: &str = "agentId: a1 (use SendMessage with to: 'a1', summary: '<5-
 
 const CUT_OFF: &str = "Agent terminated early due to an API error: You've hit your session limit \u{b7} resets 5pm (error type rate_limit, HTTP 429, request id req_0123456789, model sent to the API: claude-sonnet-5)\n\nEverything below is PARTIAL output recovered from the agent before it was cut off. The agent did NOT finish its task \u{2014} treat these results as incomplete.";
 
+const NO_TEXT: &str = "(no text output)";
+const NO_CONTENT: &str = "(Subagent completed but returned no output.)";
+
+/// What claude writes in place of a report too large for the call's result,
+/// its preview quoting the frame. Sanitised from a real transcript.
+const PERSISTED: &str = "<persisted-output>\nOutput too large (49.6KB). Full output saved to: /w/tool-results/toolu_01.json\n\nPreview (first 2KB):\n[\n  {\n    \"type\": \"text\",\n    \"text\": \"[Subagent hand-back] The text below is the final report\n...\n</persisted-output>";
+
 /// The summary a caller is told of a subagent whose call returned `text`.
 fn summary_of(text: &str) -> Option<String> {
     let events = interpret_all(&stream(&[
@@ -1152,9 +1159,144 @@ fn a_frame_with_no_report_after_it_says_nothing() {
         format!("{FRAME}\n  "),
         format!("{FRAME}\n{TRAILER}"),
         format!("  <tools-used-before-summary>Read</tools-used-before-summary>\n  \n{FRAME}"),
+        format!("{FRAME}\n  {NO_TEXT}\n{TRAILER}"),
+        format!("{FRAME}\n  {NO_CONTENT}\n{TRAILER}"),
+        NO_TEXT.to_string(),
+        NO_CONTENT.to_string(),
     ] {
         assert_eq!(summary_of(&empty), None, "{empty}");
     }
+}
+
+#[test]
+fn a_task_notice_can_still_speak_for_a_placeholder_in_place_of_a_report() {
+    for placeholder in [NO_TEXT, NO_CONTENT] {
+        let events = interpret_all(&stream(&[
+            delegated("sonnet").to_string(),
+            returned_to(
+                AGENT_CALL,
+                &format!("{FRAME}\n  {placeholder}\n{TRAILER}"),
+                false,
+                &json!({"status": "completed", "agentId": "a1"}),
+            ),
+            task(
+                "task_notification",
+                json!({"task_id": "a1", "tool_use_id": AGENT_CALL, "status": "completed", "summary": "It said its piece."}),
+            ),
+        ]));
+
+        assert_eq!(
+            last_update(&events, AGENT_CALL).and_then(|update| update.summary.as_deref()),
+            Some("It said its piece."),
+            "{placeholder}"
+        );
+    }
+}
+
+#[test]
+fn a_cut_off_subagents_notice_stands_alone_above_a_placeholder() {
+    assert_eq!(
+        summary_of(&format!(
+            "  Everything below is PARTIAL output recovered.\n{FRAME}\n  {NO_TEXT}\n{TRAILER}"
+        ))
+        .as_deref(),
+        Some("Everything below is PARTIAL output recovered.")
+    );
+}
+
+#[test]
+fn a_placeholder_is_only_empty_when_it_is_all_there_is() {
+    assert_eq!(
+        summary_of(&format!("{FRAME}\n  {NO_TEXT}\n  And more.\n{TRAILER}")),
+        Some(format!("{NO_TEXT}\nAnd more."))
+    );
+
+    for unchanged in [
+        format!("{NO_TEXT} And more."),
+        format!("It printed {NO_CONTENT}"),
+        format!("{NO_CONTENT}\n{TRAILER}"),
+    ] {
+        assert_eq!(summary_of(&unchanged).as_deref(), Some(unchanged.as_str()));
+    }
+}
+
+#[test]
+fn a_report_too_large_for_its_result_is_read_whole_from_the_account() {
+    let events = interpret_all(&stream(&[
+        delegated("sonnet").to_string(),
+        returned_to(
+            AGENT_CALL,
+            PERSISTED,
+            false,
+            &json!({"status": "completed", "agentId": "a1", "content": [{"type": "text", "text": "## The whole report\n\n    with its indentation."}]}),
+        ),
+    ]));
+
+    assert_eq!(
+        last_update(&events, AGENT_CALL).and_then(|update| update.summary.as_deref()),
+        Some("## The whole report\n\n    with its indentation.")
+    );
+    assert_eq!(
+        outputs(&events)[0].text,
+        PERSISTED,
+        "the main agent read the wrapper, so its output stays the wrapper"
+    );
+}
+
+#[test]
+fn a_report_too_large_for_its_result_stands_when_the_account_lacks_it() {
+    for account in [
+        Value::Null,
+        json!({"status": "completed"}),
+        json!({"status": "completed", "content": []}),
+        json!({"status": "completed", "content": [{"type": "text", "text": ""}]}),
+        json!({"status": "completed", "content": 7}),
+    ] {
+        let events = interpret_all(&stream(&[
+            delegated("sonnet").to_string(),
+            returned_to(AGENT_CALL, PERSISTED, false, &account),
+        ]));
+
+        assert_eq!(
+            last_update(&events, AGENT_CALL).and_then(|update| update.summary.as_deref()),
+            Some(PERSISTED),
+            "{account}"
+        );
+    }
+}
+
+#[test]
+fn the_accounts_content_never_replaces_a_result_that_is_no_wrapper() {
+    for text in [
+        "The report itself.".to_string(),
+        "It mentions <persisted-output>\nOutput too large here.".to_string(),
+    ] {
+        let events = interpret_all(&stream(&[
+            delegated("sonnet").to_string(),
+            returned_to(
+                AGENT_CALL,
+                &text,
+                false,
+                &json!({"status": "completed", "content": [{"type": "text", "text": "Something else."}]}),
+            ),
+        ]));
+
+        assert_eq!(
+            last_update(&events, AGENT_CALL).and_then(|update| update.summary.as_deref()),
+            Some(text.as_str())
+        );
+    }
+}
+
+#[test]
+fn notes_are_dropped_line_by_line_so_a_line_below_an_internal_one_is_kept() {
+    assert_eq!(
+        summary_of(&format!(
+            "  [harness: a note for the main agent]\n  A line that is not.\n{FRAME}\n  The report.\n{TRAILER}"
+        ))
+        .as_deref(),
+        Some("A line that is not.\n\nThe report.")
+    );
 }
 
 #[test]
@@ -1317,14 +1459,14 @@ fn a_partial_notice_survives_an_internal_note_above_or_beside_it() {
 }
 
 #[test]
-fn words_at_column_zero_below_the_trailer_leave_the_text_unchanged() {
+fn a_trailer_that_does_not_end_in_usage_leaves_the_text_unchanged() {
     let unknown = format!("{FRAME}\n  The report.\nagentId: a1\nA paragraph at column zero.");
 
     assert_eq!(summary_of(&unknown).as_deref(), Some(unknown.as_str()));
 }
 
 #[test]
-fn only_its_usage_may_follow_a_framed_report() {
+fn usage_alone_counts_as_the_trailer_of_a_framed_report() {
     assert_eq!(
         summary_of(&format!(
             "{FRAME}\n  The report.\n<usage>subagent_tokens: 700\ntool_uses: 0\nduration_ms: 300</usage>"

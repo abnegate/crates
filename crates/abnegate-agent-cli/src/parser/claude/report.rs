@@ -15,7 +15,7 @@ use crate::parser::lenient;
 ///
 /// Every tool writes an account of its call there in a shape of its own, so
 /// only an object is read as one, field by field and leniently, and every
-/// other field, the subagent's whole answer among them, is skipped unread.
+/// other field is skipped unread.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub(crate) struct Report {
@@ -32,6 +32,10 @@ pub(crate) struct Report {
     /// The id of the task claude runs the subagent as.
     #[serde(rename = "agentId", deserialize_with = "lenient")]
     pub(crate) task: Option<String>,
+    /// The subagent's whole answer, which the call's result leaves out when
+    /// it is too large to hold.
+    #[serde(deserialize_with = "lenient")]
+    pub(crate) content: Option<Value>,
 }
 
 impl Report {
@@ -137,6 +141,10 @@ mod tests {
         assert_eq!(report.tool_uses, Some(2));
         assert_eq!(report.duration_ms, None);
         assert_eq!(report.tokens, Some(18_200));
+        assert_eq!(
+            report.content,
+            Some(json!([{"type": "text", "text": "long"}]))
+        );
         assert_eq!(line.after.as_deref(), Some("read on"));
     }
 

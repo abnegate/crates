@@ -19,11 +19,21 @@ const TRAILER_END: &str = "</usage>";
 /// the subagent was cut off, say, which claude still reports as completed.
 const INTERNAL_NOTES: &[&str] = &["<tools-used-before-summary>", "[harness: ", "[Harness note"];
 
+/// What claude writes in place of a report with nothing in it.
+const PLACEHOLDERS: &[&str] = &[
+    "(no text output)",
+    "(Subagent completed but returned no output.)",
+];
+
 /// What the result of a subagent's call says, as the subagent wrote it: the
 /// frame, the indentation it added and the lines below it gone, and whatever
-/// notes above it say more than the report does before it. A text of any other
-/// shape is no frame, so it stands as it is.
+/// notes above it say more than the report does before it. A placeholder that
+/// is all a report or a whole text says is nothing. A text of any other shape
+/// is no frame, so it stands as it is.
 pub(crate) fn report(text: &str) -> Cow<'_, str> {
+    if PLACEHOLDERS.contains(&text) {
+        return Cow::Borrowed("");
+    }
     unframed(text).map_or(Cow::Borrowed(text), Cow::Owned)
 }
 
@@ -46,7 +56,7 @@ fn unframed(text: &str) -> Option<String> {
         } else if line.is_empty() {
             report.push(line);
         } else if TRAILERS.iter().any(|trailer| line.starts_with(trailer)) {
-            if !text.trim_end().ends_with(TRAILER_END) {
+            if !text.ends_with(TRAILER_END) {
                 return None;
             }
             break;
@@ -60,7 +70,7 @@ fn unframed(text: &str) -> Option<String> {
         .filter_map(said)
         .collect();
     let report = report.join("\n");
-    if !report.trim().is_empty() {
+    if !report.trim().is_empty() && !PLACEHOLDERS.contains(&report.as_str()) {
         parts.push(report);
     }
     Some(parts.join("\n\n"))
