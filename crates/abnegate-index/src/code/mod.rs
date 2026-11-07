@@ -54,8 +54,11 @@ pub use crate::code::visibility::Visibility;
 
 const OVERLAP_DIVISOR: usize = 10;
 
-/// Chunk `content` as `language` with the default [`ChunkConfig`] and at most
-/// `maximum_tokens` tokens a chunk.
+/// Chunk `content` as `language` with the default [`ChunkConfig`] and a budget
+/// of `maximum_tokens` tokens a chunk.
+///
+/// The budget is a target: a chunk's header counts towards it and is never cut,
+/// so a small budget can be exceeded.
 pub fn chunk_code(content: &str, language: CodeLanguage, maximum_tokens: usize) -> Vec<CodeChunk> {
     chunk_code_with_config(
         content,
@@ -108,7 +111,15 @@ pub fn chunk_code_with_config(
         }
     }
 
-    let processed = process_symbols(&symbols, content, config, language, &file_context);
+    let mut expanded = HashSet::new();
+    let processed = process_symbols(
+        &symbols,
+        content,
+        config,
+        language,
+        &file_context,
+        &mut expanded,
+    );
 
     for chunk in processed {
         if !seen_hashes.contains(&chunk.metadata.content_hash) {

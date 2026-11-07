@@ -4,6 +4,9 @@ use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 
 use abnegate_index::ChunkConfig;
 use abnegate_index::CodeChunk;
@@ -133,7 +136,7 @@ fn run_case(case: &Value, content: &str) -> Chunks {
     }
 }
 
-fn hex_digest(bytes: &[u8]) -> String {
+fn hexadecimal_digest(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()
         .map(|byte| format!("{byte:02x}"))
@@ -232,11 +235,11 @@ fn actual_golden(chunks: Chunks, generated: bool) -> Value {
         (Chunks::Estimate(estimate), _) => json!({ "estimate": estimate }),
         (Chunks::Code(chunks), true) => json!({
             "count": chunks.len(),
-            "digest": hex_digest(canonical_code_chunks(&chunks).as_bytes()),
+            "digest": hexadecimal_digest(canonical_code_chunks(&chunks).as_bytes()),
         }),
         (Chunks::Text(chunks), true) => json!({
             "count": chunks.len(),
-            "digest": hex_digest(canonical_text_chunks(&chunks).as_bytes()),
+            "digest": hexadecimal_digest(canonical_text_chunks(&chunks).as_bytes()),
         }),
         (Chunks::Code(chunks), false) => Value::Array(chunks.iter().map(code_chunk_json).collect()),
         (Chunks::Text(chunks), false) => Value::Array(chunks.iter().map(text_chunk_json).collect()),
@@ -342,6 +345,88 @@ fn stored_inputs_chunk_exactly_as_the_donor_did() {
 fn generated_inputs_match_the_donor_digests() {
     let replayed = replay(true);
     assert_eq!(replayed, 4, "generated input cases replayed");
+}
+
+fn nested_arrays(depth: usize) -> String {
+    format!("{}{}", "[\n".repeat(depth), "]\n".repeat(depth))
+}
+
+fn nested_arrow_functions(depth: usize) -> String {
+    format!(
+        "{}{}{}",
+        "const f = () => {\n".repeat(depth),
+        "  const value = compute(input);\n".repeat(80),
+        "};\n".repeat(depth)
+    )
+}
+
+#[test]
+fn nested_symbols_over_the_token_budget_match_the_donor_digests() {
+    let cases = [
+        (
+            nested_arrays(513),
+            CodeLanguage::Json,
+            485,
+            "1fb6be071204517ffc1d66f2424d62b910fd933eef1c520ab5edd4b4ab1b543b",
+        ),
+        (
+            nested_arrays(517),
+            CodeLanguage::Json,
+            485,
+            "85a2934672c1d84a8280c7350b2993c1f3f541295f5b86357b4d763a0f8fece6",
+        ),
+        (
+            nested_arrow_functions(3),
+            CodeLanguage::TypeScript,
+            4,
+            "be01ffc11dfca60d046bd49ea3e8fec7e772679ce630ab5a7033f2d329cc2a0f",
+        ),
+        (
+            nested_arrow_functions(6),
+            CodeLanguage::TypeScript,
+            5,
+            "2e3fc6e51e43e170c43b5d074ccdd3346702d3e3839ebc12171640b39ea1bc64",
+        ),
+    ];
+    for (source, language, count, digest) in cases {
+        let chunks = chunk_code(&source, language, 512);
+        assert_eq!(
+            chunks.len(),
+            count,
+            "{language:?} of {} bytes",
+            source.len()
+        );
+        assert_eq!(
+            hexadecimal_digest(canonical_code_chunks(&chunks).as_bytes()),
+            digest,
+            "{language:?} of {} bytes",
+            source.len()
+        );
+    }
+}
+
+#[test]
+fn nesting_over_the_token_budget_finishes_promptly() {
+    const DEADLINE: Duration = Duration::from_secs(60);
+    const STACK_BYTES: usize = 64 * 1024 * 1024;
+
+    let cases = [
+        (nested_arrays(600), CodeLanguage::Json),
+        (nested_arrow_functions(24), CodeLanguage::TypeScript),
+    ];
+    for (source, language) in cases {
+        let (sender, receiver) = mpsc::channel();
+        thread::Builder::new()
+            .stack_size(STACK_BYTES)
+            .spawn(move || {
+                let _ = sender.send(chunk_code(&source, language, 512).len());
+            })
+            .expect("spawn chunking thread");
+        let chunks = receiver
+            .recv_timeout(DEADLINE)
+            .unwrap_or_else(|error| panic!("{language:?} did not finish: {error}"));
+        assert!(chunks > 0, "{language:?} produced no chunks");
+    }
 }
 
 #[test]

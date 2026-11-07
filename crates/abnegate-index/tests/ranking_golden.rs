@@ -96,11 +96,12 @@ fn optional_usize(value: &Value) -> Option<usize> {
 }
 
 fn golden_float(value: &Value) -> f32 {
-    let hex = text(value)
+    let hexadecimal = text(value)
         .strip_prefix("0x")
         .unwrap_or_else(|| panic!("expected 0x-prefixed bits, got {value}"));
     f32::from_bits(
-        u32::from_str_radix(hex, 16).unwrap_or_else(|error| panic!("bits {value}: {error}")),
+        u32::from_str_radix(hexadecimal, 16)
+            .unwrap_or_else(|error| panic!("bits {value}: {error}")),
     )
 }
 

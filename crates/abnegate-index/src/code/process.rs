@@ -1,6 +1,8 @@
 //! Turn parsed symbols into body and skeleton chunks, merging small symbols
 //! and splitting large ones.
 
+use std::collections::HashSet;
+
 use crate::code::build::build_body_chunk;
 use crate::code::build::build_skeleton_chunk;
 use crate::code::build::format_chunk_header;
@@ -25,12 +27,21 @@ const SPLIT_OVERLAP_RESERVE_TOKENS: usize = 50;
 
 const SPLIT_OVERLAP_LINES: usize = 2;
 
+/// The chunks of `symbols`, in source order.
+///
+/// `expanded` holds the symbols already split for being over the token budget.
+/// A symbol is reached once through its parent's split and again through its
+/// parent's nested symbols, which doubles the work at every level of nesting.
+/// Expanding it again could only repeat chunks already emitted, which
+/// [`chunk_code_with_config`](super::chunk_code_with_config) drops by content
+/// hash, so a later visit emits nothing.
 pub(super) fn process_symbols(
     symbols: &[ParsedSymbol],
     source: &str,
     config: &ChunkConfig,
     language: CodeLanguage,
     file_context: &FileContext,
+    expanded: &mut HashSet<*const ParsedSymbol>,
 ) -> Vec<CodeChunk> {
     let mut chunks = Vec::new();
     let mut pending_small: Vec<&ParsedSymbol> = Vec::new();
@@ -71,6 +82,7 @@ pub(super) fn process_symbols(
                 config,
                 language,
                 file_context,
+                expanded,
             ));
             continue;
         }
@@ -81,14 +93,17 @@ pub(super) fn process_symbols(
             if config.generate_skeletons && !is_container {
                 chunks.push(build_skeleton_chunk(symbol, config, language));
             }
-        } else {
+        } else if expanded.insert(std::ptr::from_ref(symbol)) {
             chunks.extend(split_large_symbol(
                 symbol,
                 source,
                 config,
                 language,
                 file_context,
+                expanded,
             ));
+        } else {
+            continue;
         }
 
         if !symbol.nested_symbols.is_empty() {
@@ -98,6 +113,7 @@ pub(super) fn process_symbols(
                 config,
                 language,
                 file_context,
+                expanded,
             ));
         }
     }
@@ -241,6 +257,7 @@ fn split_large_symbol(
     config: &ChunkConfig,
     language: CodeLanguage,
     file_context: &FileContext,
+    expanded: &mut HashSet<*const ParsedSymbol>,
 ) -> Vec<CodeChunk> {
     let mut chunks = Vec::new();
 
@@ -268,6 +285,7 @@ fn split_large_symbol(
                 config,
                 language,
                 file_context,
+                expanded,
             ));
         }
         return chunks;

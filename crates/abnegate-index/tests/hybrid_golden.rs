@@ -80,10 +80,10 @@ fn strings(value: &Value) -> Vec<String> {
 }
 
 fn golden_bits(value: &Value) -> u32 {
-    let hex = text(value)
+    let hexadecimal = text(value)
         .strip_prefix("0x")
         .expect("0x-prefixed f32 bits");
-    u32::from_str_radix(hex, 16).expect("hex f32 bits")
+    u32::from_str_radix(hexadecimal, 16).expect("hex f32 bits")
 }
 
 fn optional_golden_bits(value: &Value) -> Option<u32> {

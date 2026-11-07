@@ -79,6 +79,10 @@ pub fn apply_local_rerank<Id>(
 ///
 /// Within a file this shows the definition before a mention or identifier bag,
 /// so a one-row-per-file pass keeps the implementation.
+///
+/// A NaN score compares equal to every other score, so it leaves its row where
+/// the sort finds it. The order of a list holding one is stable and repeatable
+/// but not meaningful, and it never panics.
 pub fn prefer_definition_chunks<Id>(query: &str, results: &mut [HybridSearchResult<Id>]) {
     let identifiers = rewrite_query(query).identifiers;
     let keys: Vec<(u8, u8, f32)> = results
@@ -91,8 +95,7 @@ pub fn prefer_definition_chunks<Id>(query: &str, results: &mut [HybridSearchResu
             )
         })
         .collect();
-    let mut order: Vec<usize> = (0..results.len()).collect();
-    order.sort_by(|&left, &right| {
+    let compare = |&left: &usize, &right: &usize| {
         let (left_tier, left_role, left_coverage) = keys[left];
         let (right_tier, right_role, right_coverage) = keys[right];
         right_tier
@@ -109,7 +112,15 @@ pub fn prefer_definition_chunks<Id>(query: &str, results: &mut [HybridSearchResu
                     .partial_cmp(&results[left].score)
                     .unwrap_or(Ordering::Equal)
             })
-    });
+    };
+    let mut order: Vec<usize> = (0..results.len()).collect();
+    let comparison_is_total = !results.iter().any(|result| result.score.is_nan())
+        && !keys.iter().any(|(_, _, coverage)| coverage.is_nan());
+    if comparison_is_total {
+        order.sort_by(compare);
+    } else {
+        insertion_sort_by(&mut order, compare);
+    }
     reorder(results, &order);
 }
 
@@ -126,6 +137,16 @@ pub fn sort_by_score<Id>(results: &mut [HybridSearchResult<Id>]) {
                 .unwrap_or(Ordering::Equal),
         },
     );
+}
+
+fn insertion_sort_by<T>(items: &mut [T], compare: impl Fn(&T, &T) -> Ordering) {
+    for sorted in 1..items.len() {
+        let mut position = sorted;
+        while position > 0 && compare(&items[sorted], &items[position - 1]) == Ordering::Less {
+            position -= 1;
+        }
+        items[position..=sorted].rotate_right(1);
+    }
 }
 
 fn reorder<T>(items: &mut [T], order: &[usize]) {
@@ -343,6 +364,89 @@ mod tests {
         sort_by_score(&mut results);
         let ids: Vec<u128> = results.iter().map(|result| result.id).collect();
         assert_eq!(ids, [3, 2, 1]);
+    }
+
+    #[test]
+    fn nan_scores_in_a_long_list_never_panic() {
+        let scores = [
+            1.0,
+            12.0,
+            3.0,
+            11.0,
+            16.0,
+            f32::NAN,
+            5.0,
+            7.0,
+            5.0,
+            f32::NAN,
+            15.0,
+            18.0,
+            f32::NAN,
+            20.0,
+            0.0,
+            0.0,
+            11.0,
+            1.0,
+            5.0,
+            2.0,
+            16.0,
+        ];
+        let mut results: Vec<HybridSearchResult<usize>> = scores
+            .into_iter()
+            .enumerate()
+            .map(|(id, score)| {
+                HybridSearchResult::new(id, "same text", format!("src/f{id}.rs"), "t", score)
+            })
+            .collect();
+
+        prefer_definition_chunks("what is memory", &mut results);
+
+        let mut ids: Vec<usize> = results.iter().map(|result| result.id).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, (0..scores.len()).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn nan_scores_in_a_short_list_keep_the_donor_order() {
+        let scores = [
+            1.0,
+            12.0,
+            3.0,
+            11.0,
+            16.0,
+            f32::NAN,
+            5.0,
+            7.0,
+            5.0,
+            f32::NAN,
+            15.0,
+            18.0,
+            f32::NAN,
+            20.0,
+            0.0,
+            0.0,
+            11.0,
+            1.0,
+            5.0,
+            2.0,
+        ];
+        let mut results: Vec<HybridSearchResult<usize>> = scores
+            .into_iter()
+            .enumerate()
+            .map(|(id, score)| {
+                HybridSearchResult::new(id, "same text", format!("src/f{id}.rs"), "t", score)
+            })
+            .collect();
+
+        prefer_definition_chunks("what is memory", &mut results);
+
+        let ids: Vec<usize> = results.iter().map(|result| result.id).collect();
+        assert_eq!(
+            ids,
+            [
+                4, 1, 3, 2, 0, 5, 7, 6, 8, 9, 11, 10, 12, 13, 16, 18, 19, 17, 14, 15
+            ]
+        );
     }
 
     #[test]
