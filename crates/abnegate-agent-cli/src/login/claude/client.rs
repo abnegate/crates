@@ -4,6 +4,7 @@ mod granted;
 mod reason;
 mod refresh;
 
+use std::fmt;
 use std::time::Duration;
 
 use abnegate_http::metadata::MetadataResolver;
@@ -39,6 +40,8 @@ const REFRESH_TOKEN: &str = "refresh_token";
 const UNREADABLE: &str = "Claude's token endpoint sent a grant that could not be read";
 const UNRENEWABLE: &str = "This Claude sign-in has no refresh token";
 const PROXY: &str = "proxy";
+const BASIC_SEPARATOR: char = ':';
+const USERNAME_REFUSED: &str = "a proxy username cannot hold a colon";
 
 /// Exchanges a sign-in's code for [`Tokens`], and renews them, at the
 /// [`Endpoints::token`] endpoint.
@@ -48,15 +51,28 @@ const PROXY: &str = "proxy";
 /// name resolves to, gives up on a request after 30 seconds, reads at most
 /// 64 KiB of an answer, and names itself `abnegate-agent-cli/<version>`. It
 /// goes through no proxy, whatever this process's environment says, unless
-/// one is given with [`Client::with_proxy`].
+/// one is given with [`Client::with_proxy`] or
+/// [`Client::with_authenticated_proxy`].
 ///
 /// Building one starts a connection pool and loads the TLS roots, so build
 /// it once and clone it wherever it is needed: clones share the pool.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Client {
     http: reqwest::Client,
     endpoints: Endpoints,
     proxy: Option<Url>,
+    /// Kept only to scrub from what a failed request reports.
+    proxy_password: Option<SecretValue>,
+}
+
+impl fmt::Debug for Client {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Client")
+            .field("endpoints", &self.endpoints)
+            .field("proxy", &self.proxy.as_ref().map(Url::as_str))
+            .finish_non_exhaustive()
+    }
 }
 
 impl Client {
@@ -71,12 +87,13 @@ impl Client {
             http: http(None)?,
             endpoints,
             proxy: None,
+            proxy_password: None,
         })
     }
 
     /// This client, sending every request through the HTTP proxy at
     /// `proxy`, such as `http://proxy.internal:3128`. The proxy is never read
-    /// from the environment: this is the only way to set one.
+    /// from the environment.
     ///
     /// The URL is checked as [`Endpoints`] checks theirs, so a loopback or
     /// LAN proxy is allowed, and a link-local or cloud metadata one, another
@@ -91,8 +108,43 @@ impl Client {
     pub fn with_proxy(self, proxy: &str) -> Result<Self, LoginError> {
         let proxy = checked(PROXY, proxy)?;
         Ok(Self {
-            http: http(Some(&proxy))?,
+            http: http(Some((&proxy, None)))?,
             proxy: Some(proxy),
+            proxy_password: None,
+            ..self
+        })
+    }
+
+    /// This client, sending every request through the HTTP proxy at `proxy`
+    /// and signing in to it as `username` with `password`.
+    ///
+    /// The URL is checked as [`Client::with_proxy`] checks it, so credentials
+    /// still may not be written in it: they are given here so they stay out of
+    /// [`Client::proxy`], `Debug` and every error.
+    ///
+    /// # Errors
+    ///
+    /// [`LoginError::Endpoint`] naming the `proxy` when its URL is refused or
+    /// `username` holds a colon, which HTTP Basic cannot carry, and
+    /// [`LoginError::Transport`] when the HTTP client cannot be built.
+    pub fn with_authenticated_proxy(
+        self,
+        proxy: &str,
+        username: &str,
+        password: impl Into<SecretValue>,
+    ) -> Result<Self, LoginError> {
+        let proxy = checked(PROXY, proxy)?;
+        if username.contains(BASIC_SEPARATOR) {
+            return Err(LoginError::Endpoint {
+                name: PROXY,
+                reason: USERNAME_REFUSED.to_string(),
+            });
+        }
+        let password = password.into();
+        Ok(Self {
+            http: http(Some((&proxy, Some((username, &password)))))?,
+            proxy: Some(proxy),
+            proxy_password: Some(password),
             ..self
         })
     }
@@ -189,6 +241,9 @@ impl Client {
     }
 
     async fn grant(&self, request: &impl Serialize, sent: &[&str]) -> Result<Granted, LoginError> {
+        let mut secrets = sent.to_vec();
+        secrets.extend(self.proxy_password.as_ref().map(SecretValue::expose));
+        let sent = secrets.as_slice();
         let response = self
             .http
             .post(self.endpoints.token().clone())
@@ -221,7 +276,9 @@ impl Client {
     }
 }
 
-fn http(proxy: Option<&Url>) -> Result<reqwest::Client, LoginError> {
+fn http(
+    proxy: Option<(&Url, Option<(&str, &SecretValue)>)>,
+) -> Result<reqwest::Client, LoginError> {
     let builder = reqwest::Client::builder()
         .timeout(TIMEOUT)
         .no_proxy()
@@ -229,8 +286,12 @@ fn http(proxy: Option<&Url>) -> Result<reqwest::Client, LoginError> {
         .dns_resolver(MetadataResolver::new())
         .user_agent(USER_AGENT);
     let builder = match proxy {
-        Some(proxy) => {
-            builder.proxy(Proxy::all(proxy.clone()).map_err(|error| transport(error, &[]))?)
+        Some((proxy, credentials)) => {
+            let proxy = Proxy::all(proxy.clone()).map_err(|error| transport(error, &[]))?;
+            builder.proxy(match credentials {
+                Some((username, password)) => proxy.basic_auth(username, password.expose()),
+                None => proxy,
+            })
         }
         None => builder,
     };
