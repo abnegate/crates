@@ -65,3 +65,11 @@ tree-sitter-yaml = { workspace = true, optional = true }
 [dev-dependencies]
 serde_json = { workspace = true }
 tempfile = { workspace = true }
+
+[[test]]
+name = "code_chunking"
+required-features = ["code-chunking"]
+
+[[test]]
+name = "code_golden"
+required-features = ["code-chunking"]
