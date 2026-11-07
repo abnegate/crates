@@ -1,5 +1,5 @@
 use crate::object_id::ObjectId;
-use crate::pull_request::TreeEntry;
+use crate::tree_entry::TreeEntry;
 
 /// A git tree as GitHub lists it: its entries, and whether GitHub left any out.
 #[derive(Debug, Clone, PartialEq, Eq)]

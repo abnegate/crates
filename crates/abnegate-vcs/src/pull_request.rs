@@ -74,7 +74,6 @@
 mod application;
 mod auto_merge;
 mod automation;
-mod blob;
 mod branch;
 mod changed_file;
 mod check_run;
@@ -191,8 +190,6 @@ mod state_filter;
 mod submitted_review;
 mod thread_comment;
 mod tree;
-mod tree_entry;
-mod tree_entry_kind;
 mod webhook_configuration;
 mod webhook_event;
 mod webhook_request;
@@ -201,6 +198,7 @@ mod workflow_job;
 mod workflow_run;
 mod workflow_run_filter;
 
+pub use crate::blob::Blob;
 #[cfg(feature = "github-app")]
 pub use crate::pull_request::application::Account;
 #[cfg(feature = "github-app")]
@@ -231,7 +229,6 @@ pub use crate::pull_request::application::RepositorySelection;
 pub use crate::pull_request::application::TokenCache;
 pub use crate::pull_request::auto_merge::AutoMerge;
 pub use crate::pull_request::automation::PullRequestAutomation;
-pub use crate::pull_request::blob::Blob;
 pub use crate::pull_request::branch::Branch;
 pub use crate::pull_request::changed_file::ChangedFile;
 pub use crate::pull_request::check_run::CheckRun;
@@ -289,10 +286,10 @@ pub use crate::pull_request::state_filter::StateFilter;
 pub use crate::pull_request::submitted_review::SubmittedReview;
 pub use crate::pull_request::thread_comment::ThreadComment;
 pub use crate::pull_request::tree::Tree;
-pub use crate::pull_request::tree_entry::TreeEntry;
-pub use crate::pull_request::tree_entry_kind::TreeEntryKind;
 pub use crate::pull_request::webhook_event::WebhookEvent;
 pub use crate::pull_request::webhook_signature::WebhookSignature;
 pub use crate::pull_request::workflow_job::WorkflowJob;
 pub use crate::pull_request::workflow_run::WorkflowRun;
 pub use crate::pull_request::workflow_run_filter::WorkflowRunFilter;
+pub use crate::tree_entry::TreeEntry;
+pub use crate::tree_entry_kind::TreeEntryKind;

@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use std::fmt;
 
-/// What a git tree entry points at, as GitHub names it.
+/// What a git tree entry points at, as GitHub and GitLab both name it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[non_exhaustive]
@@ -12,13 +12,13 @@ pub enum TreeEntryKind {
     Tree,
     /// A submodule, pinned at a commit of another repository.
     Commit,
-    /// A kind GitHub gave that this crate does not know yet.
+    /// A kind the forge gave that this crate does not know yet.
     #[serde(other)]
     Unknown,
 }
 
 impl TreeEntryKind {
-    /// The kind as GitHub spells it, or `unknown`.
+    /// The kind as GitHub and GitLab spell it, or `unknown`.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Blob => "blob",
@@ -41,7 +41,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn a_tree_entry_kind_reads_and_prints_as_github_spells_it() {
+    fn a_tree_entry_kind_reads_and_prints_as_the_forges_spell_it() {
         for (kind, spelled) in [
             (TreeEntryKind::Blob, "blob"),
             (TreeEntryKind::Tree, "tree"),
@@ -58,7 +58,7 @@ mod tests {
     }
 
     #[test]
-    fn a_kind_github_has_not_named_yet_is_unknown() {
+    fn a_kind_no_forge_has_named_yet_is_unknown() {
         assert_eq!(
             serde_json::from_value::<TreeEntryKind>(json!("tag")).unwrap(),
             TreeEntryKind::Unknown

@@ -63,6 +63,7 @@
 //!   repository on the local disk or a mock API server. Nothing a
 //!   caller configures produces any of them, so only a test should enable it.
 
+mod blob;
 mod branch_name;
 mod checkout;
 mod commit_sha;
@@ -79,9 +80,12 @@ mod repository_url;
 pub mod resolution;
 pub mod subject;
 mod tag_name;
+mod tree_entry;
+mod tree_entry_kind;
 mod truncation;
 pub mod worktree;
 
+pub use crate::blob::Blob;
 pub use crate::branch_name::BranchName;
 pub use crate::checkout::Checkout;
 pub use crate::commit_sha::CommitSha;
@@ -122,9 +126,6 @@ pub use crate::pull_request::ApplicationService;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::AutoMerge;
-#[cfg(feature = "github")]
-#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
-pub use crate::pull_request::Blob;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::Branch;
@@ -316,12 +317,6 @@ pub use crate::pull_request::TokenCache;
 pub use crate::pull_request::Tree;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
-pub use crate::pull_request::TreeEntry;
-#[cfg(feature = "github")]
-#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
-pub use crate::pull_request::TreeEntryKind;
-#[cfg(feature = "github")]
-#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::WebhookEvent;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
@@ -348,6 +343,8 @@ pub use crate::resolution::ResolutionVerdict;
 pub use crate::resolution::judge;
 pub use crate::subject::Kind;
 pub use crate::subject::Subject;
+pub use crate::tree_entry::TreeEntry;
+pub use crate::tree_entry_kind::TreeEntryKind;
 pub use crate::worktree::Unfinished;
 
 #[cfg(doctest)]
