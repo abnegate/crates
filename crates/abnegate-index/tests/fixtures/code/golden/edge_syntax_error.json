@@ -1,0 +1,203 @@
+[
+  {
+    "chunk_type": "FileHeader",
+    "end_offset": 13,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 0,
+    "metadata": {
+      "content_hash": "a2764fe0b1a7e4ab",
+      "end_byte": 13,
+      "is_generated": false,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/broken.rs@main",
+      "start_byte": 0,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 0,
+    "text": "path: github://acme/widgets/src/broken.rs@main\nkind: file_header\n\nuse std::fmt;"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 100,
+    "identifiers": {
+      "defined_symbol": "Broken",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "new"
+      ],
+      "referenced_types": [
+        "Broken",
+        "Self"
+      ]
+    },
+    "index": 1,
+    "metadata": {
+      "content_hash": "119b5fcd76114588",
+      "end_byte": 100,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Struct",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/broken.rs@main",
+      "start_byte": 15,
+      "symbol": "Broken",
+      "visibility": "Public"
+    },
+    "start_offset": 15,
+    "text": "File: github://acme/widgets/src/broken.rs@main\npath: github://acme/widgets/src/broken.rs@main\nLanguage: rust\nsymbol: Broken\nSymbol: Broken\nkind: Struct\nSignature: pub struct Broken\n\n// Imports:\nuse std::fmt;\n\npub struct Broken {\n    value: u32,\n\nimpl Broken {\n    pub fn new(value: u32) -> Self\n\n// Identifiers:\n// symbol: Broken\n// types: Broken, Self\n// calls: new\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 193,
+    "identifiers": {
+      "defined_symbol": "double",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "double"
+      ],
+      "referenced_types": []
+    },
+    "index": 2,
+    "metadata": {
+      "content_hash": "9055001235f3f6a4",
+      "end_byte": 193,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/broken.rs@main",
+      "start_byte": 135,
+      "symbol": "double",
+      "visibility": "Public"
+    },
+    "start_offset": 135,
+    "text": "File: github://acme/widgets/src/broken.rs@main\npath: github://acme/widgets/src/broken.rs@main\nLanguage: rust\nsymbol: double\nSymbol: double\nkind: Function\nSignature: pub fn double(&self) -> u32\n\n// Imports:\nuse std::fmt;\n\npub fn double(&self) -> u32 {\n        self.value * 2\n    }\n\n// Identifiers:\n// symbol: double\n// calls: double\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 193,
+    "identifiers": {
+      "defined_symbol": "double",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "double"
+      ],
+      "referenced_types": []
+    },
+    "index": 3,
+    "metadata": {
+      "content_hash": "23974c0e1107b328",
+      "end_byte": 193,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/broken.rs@main",
+      "start_byte": 135,
+      "symbol": "double",
+      "visibility": "Public"
+    },
+    "start_offset": 135,
+    "text": "File: github://acme/widgets/src/broken.rs@main\npath: github://acme/widgets/src/broken.rs@main\nLanguage: rust\nsymbol: double\nSymbol: double\nkind: Function\nSignature: pub fn double(&self) -> u32\n [skeleton]\npub fn double(&self) -> u32\n\n// Key identifiers:\n// defined: double\n"
+  },
+  {
+    "chunk_type": "ApiSurface",
+    "end_offset": 193,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": [
+        "Broken",
+        "double"
+      ]
+    },
+    "index": 4,
+    "metadata": {
+      "content_hash": "1d8292b1057a7a83",
+      "end_byte": 193,
+      "is_generated": false,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/broken.rs@main",
+      "start_byte": 15,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 15,
+    "text": "path: github://acme/widgets/src/broken.rs@main\nkind: api_surface\n\n// Public API:\n\npub struct Broken\n\npub fn double(&self) -> u32\n\n"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 131,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 5,
+    "metadata": {
+      "content_hash": "b4dffebc7630c259",
+      "end_byte": 131,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/broken.rs@main",
+      "start_byte": 103,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 103,
+    "text": "File: github://acme/widgets/src/broken.rs@main\npath: github://acme/widgets/src/broken.rs@main\nLanguage: rust\nkind: top_level\n\n        Self { value\n    }\n"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 212,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 6,
+    "metadata": {
+      "content_hash": "69ca4b89edfd1b9e",
+      "end_byte": 212,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/broken.rs@main",
+      "start_byte": 194,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 194,
+    "text": "File: github://acme/widgets/src/broken.rs@main\npath: github://acme/widgets/src/broken.rs@main\nLanguage: rust\nkind: top_level\n\n}\n\nfn dangling( {"
+  }
+]

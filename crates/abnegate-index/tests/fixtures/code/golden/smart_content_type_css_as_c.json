@@ -1,0 +1,14 @@
+[
+  {
+    "end_offset": 293,
+    "index": 0,
+    "start_offset": 210,
+    "text": "File: github://acme/widgets/static/style.css@main\npath: github://acme/widgets/static/style.css@main\nLanguage: c\nsymbol: pulse\nSymbol: pulse\nkind: Other\nSignature: keyframes pulse\n\nkeyframes pulse {\n  from { transform: scale(1.2); }\n  to { transform: scale(1); }\n}\n\n// Identifiers:\n// symbol: pulse\n// calls: scale\n"
+  },
+  {
+    "end_offset": 209,
+    "index": 1,
+    "start_offset": 0,
+    "text": "File: github://acme/widgets/static/style.css@main\npath: github://acme/widgets/static/style.css@main\nLanguage: c\nkind: top_level\n\n:root {\n  --badge-color: #d33;\n}\n\n.badge {\n  display: inline-flex;\n  padding: 0.25rem 0.5rem;\n  border-radius: 999px;\n  background: var(--badge-color);\n}\n\n.badge--pulse {\n  animation: pulse 300ms ease-out;\n}\n"
+  }
+]

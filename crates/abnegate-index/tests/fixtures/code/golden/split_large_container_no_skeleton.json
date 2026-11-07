@@ -1,0 +1,1511 @@
+[
+  {
+    "chunk_type": "FileHeader",
+    "end_offset": 32,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 0,
+    "metadata": {
+      "content_hash": "67bada31bb693d0d",
+      "end_byte": 32,
+      "is_generated": false,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 0,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 0,
+    "text": "path: github://acme/widgets/src/scheduler.ts@main\nkind: file_header\n\n/** Schedules recurring jobs. */\n\nimport { Clock } from \"./clock\";"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 193,
+    "identifiers": {
+      "defined_symbol": "constructor",
+      "key_strings": [],
+      "parameters": [
+        "private",
+        "readonly",
+        "clock",
+        "Clock"
+      ],
+      "referenced_functions": [
+        "constructor"
+      ],
+      "referenced_types": [
+        "Clock"
+      ]
+    },
+    "index": 1,
+    "metadata": {
+      "content_hash": "692fc636bcca68aa",
+      "end_byte": 193,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Scheduler"
+      ],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 148,
+      "symbol": "constructor",
+      "visibility": "Private"
+    },
+    "start_offset": 148,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nsymbol: Scheduler.constructor\nSymbol: Scheduler.constructor\nkind: Method\nParent: Scheduler\nparents: Scheduler\nSignature: constructor(private readonly clock: Clock)\n\n// Imports:\nimport { Clock } from \"./clock\";\n\nconstructor(private readonly clock: Clock) {}\n\n// Identifiers:\n// symbol: constructor\n// params: private, readonly, clock, Clock\n// types: Clock\n// calls: constructor\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 435,
+    "identifiers": {
+      "defined_symbol": "registerJob0",
+      "key_strings": [],
+      "parameters": [
+        "interval",
+        "number"
+      ],
+      "referenced_functions": [
+        "registerJob0",
+        "now",
+        "set"
+      ],
+      "referenced_types": [
+        "Error"
+      ]
+    },
+    "index": 2,
+    "metadata": {
+      "content_hash": "c5f90ee63f0971bd",
+      "end_byte": 435,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Scheduler"
+      ],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 229,
+      "symbol": "registerJob0",
+      "visibility": "Private"
+    },
+    "start_offset": 229,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nsymbol: Scheduler.registerJob0\nSymbol: Scheduler.registerJob0\nkind: Method\nParent: Scheduler\nparents: Scheduler\nSignature: registerJob0(interval: number): void\n\n/** Register job number 0. */\n// Imports:\nimport { Clock } from \"./clock\";\n\nregisterJob0(interval: number): void {\n    const next = this.clock.now() + interval * 1;\n    this.jobs.set(\"job-0\", next);\n    if (next < 0) {\n      throw new Error(\"negative schedule for job 0\");\n    }\n  }\n\n// Identifiers:\n// symbol: registerJob0\n// params: interval, number\n// types: Error\n// calls: registerJob0, now, set\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 317,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "now"
+      ],
+      "referenced_types": []
+    },
+    "index": 3,
+    "metadata": {
+      "content_hash": "0644965406920cd2",
+      "end_byte": 317,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "Scheduler",
+        "registerJob0"
+      ],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 272,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 272,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nkind: Other\nParent: Scheduler.registerJob0\nparents: Scheduler.registerJob0\nSignature: const next = this.clock.now() + interval * 1;\n\n// Imports:\nimport { Clock } from \"./clock\";\n\nconst next = this.clock.now() + interval * 1;\n\n// Identifiers:\n// calls: now\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 677,
+    "identifiers": {
+      "defined_symbol": "registerJob1",
+      "key_strings": [],
+      "parameters": [
+        "interval",
+        "number"
+      ],
+      "referenced_functions": [
+        "registerJob1",
+        "now",
+        "set"
+      ],
+      "referenced_types": [
+        "Error"
+      ]
+    },
+    "index": 4,
+    "metadata": {
+      "content_hash": "36643352c862c887",
+      "end_byte": 677,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Scheduler"
+      ],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 471,
+      "symbol": "registerJob1",
+      "visibility": "Private"
+    },
+    "start_offset": 471,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nsymbol: Scheduler.registerJob1\nSymbol: Scheduler.registerJob1\nkind: Method\nParent: Scheduler\nparents: Scheduler\nSignature: registerJob1(interval: number): void\n\n/** Register job number 1. */\n// Imports:\nimport { Clock } from \"./clock\";\n\nregisterJob1(interval: number): void {\n    const next = this.clock.now() + interval * 2;\n    this.jobs.set(\"job-1\", next);\n    if (next < 0) {\n      throw new Error(\"negative schedule for job 1\");\n    }\n  }\n\n// Identifiers:\n// symbol: registerJob1\n// params: interval, number\n// types: Error\n// calls: registerJob1, now, set\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 559,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "now"
+      ],
+      "referenced_types": []
+    },
+    "index": 5,
+    "metadata": {
+      "content_hash": "82baa3d7e3fe745d",
+      "end_byte": 559,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "Scheduler",
+        "registerJob1"
+      ],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 514,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 514,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nkind: Other\nParent: Scheduler.registerJob1\nparents: Scheduler.registerJob1\nSignature: const next = this.clock.now() + interval * 2;\n\n// Imports:\nimport { Clock } from \"./clock\";\n\nconst next = this.clock.now() + interval * 2;\n\n// Identifiers:\n// calls: now\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 919,
+    "identifiers": {
+      "defined_symbol": "registerJob2",
+      "key_strings": [],
+      "parameters": [
+        "interval",
+        "number"
+      ],
+      "referenced_functions": [
+        "registerJob2",
+        "now",
+        "set"
+      ],
+      "referenced_types": [
+        "Error"
+      ]
+    },
+    "index": 6,
+    "metadata": {
+      "content_hash": "253817cafaf756a7",
+      "end_byte": 919,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Scheduler"
+      ],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 713,
+      "symbol": "registerJob2",
+      "visibility": "Private"
+    },
+    "start_offset": 713,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nsymbol: Scheduler.registerJob2\nSymbol: Scheduler.registerJob2\nkind: Method\nParent: Scheduler\nparents: Scheduler\nSignature: registerJob2(interval: number): void\n\n/** Register job number 2. */\n// Imports:\nimport { Clock } from \"./clock\";\n\nregisterJob2(interval: number): void {\n    const next = this.clock.now() + interval * 3;\n    this.jobs.set(\"job-2\", next);\n    if (next < 0) {\n      throw new Error(\"negative schedule for job 2\");\n    }\n  }\n\n// Identifiers:\n// symbol: registerJob2\n// params: interval, number\n// types: Error\n// calls: registerJob2, now, set\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 801,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "now"
+      ],
+      "referenced_types": []
+    },
+    "index": 7,
+    "metadata": {
+      "content_hash": "e099eda8497b74a7",
+      "end_byte": 801,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "Scheduler",
+        "registerJob2"
+      ],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 756,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 756,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nkind: Other\nParent: Scheduler.registerJob2\nparents: Scheduler.registerJob2\nSignature: const next = this.clock.now() + interval * 3;\n\n// Imports:\nimport { Clock } from \"./clock\";\n\nconst next = this.clock.now() + interval * 3;\n\n// Identifiers:\n// calls: now\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1161,
+    "identifiers": {
+      "defined_symbol": "registerJob3",
+      "key_strings": [],
+      "parameters": [
+        "interval",
+        "number"
+      ],
+      "referenced_functions": [
+        "registerJob3",
+        "now",
+        "set"
+      ],
+      "referenced_types": [
+        "Error"
+      ]
+    },
+    "index": 8,
+    "metadata": {
+      "content_hash": "479ae22daee3cf5e",
+      "end_byte": 1161,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Scheduler"
+      ],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 955,
+      "symbol": "registerJob3",
+      "visibility": "Private"
+    },
+    "start_offset": 955,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nsymbol: Scheduler.registerJob3\nSymbol: Scheduler.registerJob3\nkind: Method\nParent: Scheduler\nparents: Scheduler\nSignature: registerJob3(interval: number): void\n\n/** Register job number 3. */\n// Imports:\nimport { Clock } from \"./clock\";\n\nregisterJob3(interval: number): void {\n    const next = this.clock.now() + interval * 4;\n    this.jobs.set(\"job-3\", next);\n    if (next < 0) {\n      throw new Error(\"negative schedule for job 3\");\n    }\n  }\n\n// Identifiers:\n// symbol: registerJob3\n// params: interval, number\n// types: Error\n// calls: registerJob3, now, set\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1043,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "now"
+      ],
+      "referenced_types": []
+    },
+    "index": 9,
+    "metadata": {
+      "content_hash": "503111ca47662414",
+      "end_byte": 1043,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "Scheduler",
+        "registerJob3"
+      ],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 998,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 998,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nkind: Other\nParent: Scheduler.registerJob3\nparents: Scheduler.registerJob3\nSignature: const next = this.clock.now() + interval * 4;\n\n// Imports:\nimport { Clock } from \"./clock\";\n\nconst next = this.clock.now() + interval * 4;\n\n// Identifiers:\n// calls: now\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1403,
+    "identifiers": {
+      "defined_symbol": "registerJob4",
+      "key_strings": [],
+      "parameters": [
+        "interval",
+        "number"
+      ],
+      "referenced_functions": [
+        "registerJob4",
+        "now",
+        "set"
+      ],
+      "referenced_types": [
+        "Error"
+      ]
+    },
+    "index": 10,
+    "metadata": {
+      "content_hash": "3ae8733a9e5a58c9",
+      "end_byte": 1403,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Scheduler"
+      ],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 1197,
+      "symbol": "registerJob4",
+      "visibility": "Private"
+    },
+    "start_offset": 1197,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nsymbol: Scheduler.registerJob4\nSymbol: Scheduler.registerJob4\nkind: Method\nParent: Scheduler\nparents: Scheduler\nSignature: registerJob4(interval: number): void\n\n/** Register job number 4. */\n// Imports:\nimport { Clock } from \"./clock\";\n\nregisterJob4(interval: number): void {\n    const next = this.clock.now() + interval * 5;\n    this.jobs.set(\"job-4\", next);\n    if (next < 0) {\n      throw new Error(\"negative schedule for job 4\");\n    }\n  }\n\n// Identifiers:\n// symbol: registerJob4\n// params: interval, number\n// types: Error\n// calls: registerJob4, now, set\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1285,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "now"
+      ],
+      "referenced_types": []
+    },
+    "index": 11,
+    "metadata": {
+      "content_hash": "cef5b2c3ea077672",
+      "end_byte": 1285,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "Scheduler",
+        "registerJob4"
+      ],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 1240,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 1240,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nkind: Other\nParent: Scheduler.registerJob4\nparents: Scheduler.registerJob4\nSignature: const next = this.clock.now() + interval * 5;\n\n// Imports:\nimport { Clock } from \"./clock\";\n\nconst next = this.clock.now() + interval * 5;\n\n// Identifiers:\n// calls: now\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1645,
+    "identifiers": {
+      "defined_symbol": "registerJob5",
+      "key_strings": [],
+      "parameters": [
+        "interval",
+        "number"
+      ],
+      "referenced_functions": [
+        "registerJob5",
+        "now",
+        "set"
+      ],
+      "referenced_types": [
+        "Error"
+      ]
+    },
+    "index": 12,
+    "metadata": {
+      "content_hash": "c32b676ca5ee4593",
+      "end_byte": 1645,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Scheduler"
+      ],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 1439,
+      "symbol": "registerJob5",
+      "visibility": "Private"
+    },
+    "start_offset": 1439,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nsymbol: Scheduler.registerJob5\nSymbol: Scheduler.registerJob5\nkind: Method\nParent: Scheduler\nparents: Scheduler\nSignature: registerJob5(interval: number): void\n\n/** Register job number 5. */\n// Imports:\nimport { Clock } from \"./clock\";\n\nregisterJob5(interval: number): void {\n    const next = this.clock.now() + interval * 6;\n    this.jobs.set(\"job-5\", next);\n    if (next < 0) {\n      throw new Error(\"negative schedule for job 5\");\n    }\n  }\n\n// Identifiers:\n// symbol: registerJob5\n// params: interval, number\n// types: Error\n// calls: registerJob5, now, set\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1527,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "now"
+      ],
+      "referenced_types": []
+    },
+    "index": 13,
+    "metadata": {
+      "content_hash": "6d04f88065fb8a17",
+      "end_byte": 1527,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "Scheduler",
+        "registerJob5"
+      ],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 1482,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 1482,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nkind: Other\nParent: Scheduler.registerJob5\nparents: Scheduler.registerJob5\nSignature: const next = this.clock.now() + interval * 6;\n\n// Imports:\nimport { Clock } from \"./clock\";\n\nconst next = this.clock.now() + interval * 6;\n\n// Identifiers:\n// calls: now\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1887,
+    "identifiers": {
+      "defined_symbol": "registerJob6",
+      "key_strings": [],
+      "parameters": [
+        "interval",
+        "number"
+      ],
+      "referenced_functions": [
+        "registerJob6",
+        "now",
+        "set"
+      ],
+      "referenced_types": [
+        "Error"
+      ]
+    },
+    "index": 14,
+    "metadata": {
+      "content_hash": "eefd4e2882eeee02",
+      "end_byte": 1887,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Scheduler"
+      ],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 1681,
+      "symbol": "registerJob6",
+      "visibility": "Private"
+    },
+    "start_offset": 1681,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nsymbol: Scheduler.registerJob6\nSymbol: Scheduler.registerJob6\nkind: Method\nParent: Scheduler\nparents: Scheduler\nSignature: registerJob6(interval: number): void\n\n/** Register job number 6. */\n// Imports:\nimport { Clock } from \"./clock\";\n\nregisterJob6(interval: number): void {\n    const next = this.clock.now() + interval * 7;\n    this.jobs.set(\"job-6\", next);\n    if (next < 0) {\n      throw new Error(\"negative schedule for job 6\");\n    }\n  }\n\n// Identifiers:\n// symbol: registerJob6\n// params: interval, number\n// types: Error\n// calls: registerJob6, now, set\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1769,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "now"
+      ],
+      "referenced_types": []
+    },
+    "index": 15,
+    "metadata": {
+      "content_hash": "63e0ff0928796ded",
+      "end_byte": 1769,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "Scheduler",
+        "registerJob6"
+      ],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 1724,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 1724,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nkind: Other\nParent: Scheduler.registerJob6\nparents: Scheduler.registerJob6\nSignature: const next = this.clock.now() + interval * 7;\n\n// Imports:\nimport { Clock } from \"./clock\";\n\nconst next = this.clock.now() + interval * 7;\n\n// Identifiers:\n// calls: now\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 2129,
+    "identifiers": {
+      "defined_symbol": "registerJob7",
+      "key_strings": [],
+      "parameters": [
+        "interval",
+        "number"
+      ],
+      "referenced_functions": [
+        "registerJob7",
+        "now",
+        "set"
+      ],
+      "referenced_types": [
+        "Error"
+      ]
+    },
+    "index": 16,
+    "metadata": {
+      "content_hash": "682d3574df2a0470",
+      "end_byte": 2129,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Scheduler"
+      ],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 1923,
+      "symbol": "registerJob7",
+      "visibility": "Private"
+    },
+    "start_offset": 1923,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nsymbol: Scheduler.registerJob7\nSymbol: Scheduler.registerJob7\nkind: Method\nParent: Scheduler\nparents: Scheduler\nSignature: registerJob7(interval: number): void\n\n/** Register job number 7. */\n// Imports:\nimport { Clock } from \"./clock\";\n\nregisterJob7(interval: number): void {\n    const next = this.clock.now() + interval * 8;\n    this.jobs.set(\"job-7\", next);\n    if (next < 0) {\n      throw new Error(\"negative schedule for job 7\");\n    }\n  }\n\n// Identifiers:\n// symbol: registerJob7\n// params: interval, number\n// types: Error\n// calls: registerJob7, now, set\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 2011,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "now"
+      ],
+      "referenced_types": []
+    },
+    "index": 17,
+    "metadata": {
+      "content_hash": "40df47e9b5304048",
+      "end_byte": 2011,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "Scheduler",
+        "registerJob7"
+      ],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 1966,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 1966,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nkind: Other\nParent: Scheduler.registerJob7\nparents: Scheduler.registerJob7\nSignature: const next = this.clock.now() + interval * 8;\n\n// Imports:\nimport { Clock } from \"./clock\";\n\nconst next = this.clock.now() + interval * 8;\n\n// Identifiers:\n// calls: now\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 2371,
+    "identifiers": {
+      "defined_symbol": "registerJob8",
+      "key_strings": [],
+      "parameters": [
+        "interval",
+        "number"
+      ],
+      "referenced_functions": [
+        "registerJob8",
+        "now",
+        "set"
+      ],
+      "referenced_types": [
+        "Error"
+      ]
+    },
+    "index": 18,
+    "metadata": {
+      "content_hash": "f5ba79116afd5fe8",
+      "end_byte": 2371,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Scheduler"
+      ],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 2165,
+      "symbol": "registerJob8",
+      "visibility": "Private"
+    },
+    "start_offset": 2165,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nsymbol: Scheduler.registerJob8\nSymbol: Scheduler.registerJob8\nkind: Method\nParent: Scheduler\nparents: Scheduler\nSignature: registerJob8(interval: number): void\n\n/** Register job number 8. */\n// Imports:\nimport { Clock } from \"./clock\";\n\nregisterJob8(interval: number): void {\n    const next = this.clock.now() + interval * 9;\n    this.jobs.set(\"job-8\", next);\n    if (next < 0) {\n      throw new Error(\"negative schedule for job 8\");\n    }\n  }\n\n// Identifiers:\n// symbol: registerJob8\n// params: interval, number\n// types: Error\n// calls: registerJob8, now, set\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 2253,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "now"
+      ],
+      "referenced_types": []
+    },
+    "index": 19,
+    "metadata": {
+      "content_hash": "57fb713db6c635fc",
+      "end_byte": 2253,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "Scheduler",
+        "registerJob8"
+      ],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 2208,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 2208,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nkind: Other\nParent: Scheduler.registerJob8\nparents: Scheduler.registerJob8\nSignature: const next = this.clock.now() + interval * 9;\n\n// Imports:\nimport { Clock } from \"./clock\";\n\nconst next = this.clock.now() + interval * 9;\n\n// Identifiers:\n// calls: now\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 2614,
+    "identifiers": {
+      "defined_symbol": "registerJob9",
+      "key_strings": [],
+      "parameters": [
+        "interval",
+        "number"
+      ],
+      "referenced_functions": [
+        "registerJob9",
+        "now",
+        "set"
+      ],
+      "referenced_types": [
+        "Error"
+      ]
+    },
+    "index": 20,
+    "metadata": {
+      "content_hash": "d075115e8c3465ee",
+      "end_byte": 2614,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Scheduler"
+      ],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 2407,
+      "symbol": "registerJob9",
+      "visibility": "Private"
+    },
+    "start_offset": 2407,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nsymbol: Scheduler.registerJob9\nSymbol: Scheduler.registerJob9\nkind: Method\nParent: Scheduler\nparents: Scheduler\nSignature: registerJob9(interval: number): void\n\n/** Register job number 9. */\n// Imports:\nimport { Clock } from \"./clock\";\n\nregisterJob9(interval: number): void {\n    const next = this.clock.now() + interval * 10;\n    this.jobs.set(\"job-9\", next);\n    if (next < 0) {\n      throw new Error(\"negative schedule for job 9\");\n    }\n  }\n\n// Identifiers:\n// symbol: registerJob9\n// params: interval, number\n// types: Error\n// calls: registerJob9, now, set\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 2496,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "now"
+      ],
+      "referenced_types": []
+    },
+    "index": 21,
+    "metadata": {
+      "content_hash": "78da8b52c1cb48ff",
+      "end_byte": 2496,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "Scheduler",
+        "registerJob9"
+      ],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 2450,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 2450,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nkind: Other\nParent: Scheduler.registerJob9\nparents: Scheduler.registerJob9\nSignature: const next = this.clock.now() + interval * 10;\n\n// Imports:\nimport { Clock } from \"./clock\";\n\nconst next = this.clock.now() + interval * 10;\n\n// Identifiers:\n// calls: now\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 2861,
+    "identifiers": {
+      "defined_symbol": "registerJob10",
+      "key_strings": [],
+      "parameters": [
+        "interval",
+        "number"
+      ],
+      "referenced_functions": [
+        "registerJob10",
+        "now",
+        "set"
+      ],
+      "referenced_types": [
+        "Error"
+      ]
+    },
+    "index": 22,
+    "metadata": {
+      "content_hash": "76d52060b469b791",
+      "end_byte": 2861,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Scheduler"
+      ],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 2651,
+      "symbol": "registerJob10",
+      "visibility": "Private"
+    },
+    "start_offset": 2651,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nsymbol: Scheduler.registerJob10\nSymbol: Scheduler.registerJob10\nkind: Method\nParent: Scheduler\nparents: Scheduler\nSignature: registerJob10(interval: number): void\n\n/** Register job number 10. */\n// Imports:\nimport { Clock } from \"./clock\";\n\nregisterJob10(interval: number): void {\n    const next = this.clock.now() + interval * 11;\n    this.jobs.set(\"job-10\", next);\n    if (next < 0) {\n      throw new Error(\"negative schedule for job 10\");\n    }\n  }\n\n// Identifiers:\n// symbol: registerJob10\n// params: interval, number\n// types: Error\n// calls: registerJob10, now, set\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 2741,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "now"
+      ],
+      "referenced_types": []
+    },
+    "index": 23,
+    "metadata": {
+      "content_hash": "2440365e88296623",
+      "end_byte": 2741,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "Scheduler",
+        "registerJob10"
+      ],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 2695,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 2695,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nkind: Other\nParent: Scheduler.registerJob10\nparents: Scheduler.registerJob10\nSignature: const next = this.clock.now() + interval * 11;\n\n// Imports:\nimport { Clock } from \"./clock\";\n\nconst next = this.clock.now() + interval * 11;\n\n// Identifiers:\n// calls: now\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 3108,
+    "identifiers": {
+      "defined_symbol": "registerJob11",
+      "key_strings": [],
+      "parameters": [
+        "interval",
+        "number"
+      ],
+      "referenced_functions": [
+        "registerJob11",
+        "now",
+        "set"
+      ],
+      "referenced_types": [
+        "Error"
+      ]
+    },
+    "index": 24,
+    "metadata": {
+      "content_hash": "a4b48ae5f4a64900",
+      "end_byte": 3108,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Scheduler"
+      ],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 2898,
+      "symbol": "registerJob11",
+      "visibility": "Private"
+    },
+    "start_offset": 2898,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nsymbol: Scheduler.registerJob11\nSymbol: Scheduler.registerJob11\nkind: Method\nParent: Scheduler\nparents: Scheduler\nSignature: registerJob11(interval: number): void\n\n/** Register job number 11. */\n// Imports:\nimport { Clock } from \"./clock\";\n\nregisterJob11(interval: number): void {\n    const next = this.clock.now() + interval * 12;\n    this.jobs.set(\"job-11\", next);\n    if (next < 0) {\n      throw new Error(\"negative schedule for job 11\");\n    }\n  }\n\n// Identifiers:\n// symbol: registerJob11\n// params: interval, number\n// types: Error\n// calls: registerJob11, now, set\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 2988,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "now"
+      ],
+      "referenced_types": []
+    },
+    "index": 25,
+    "metadata": {
+      "content_hash": "5f5c3f45b14fa688",
+      "end_byte": 2988,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "Scheduler",
+        "registerJob11"
+      ],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 2942,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 2942,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nkind: Other\nParent: Scheduler.registerJob11\nparents: Scheduler.registerJob11\nSignature: const next = this.clock.now() + interval * 12;\n\n// Imports:\nimport { Clock } from \"./clock\";\n\nconst next = this.clock.now() + interval * 12;\n\n// Identifiers:\n// calls: now\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 3355,
+    "identifiers": {
+      "defined_symbol": "registerJob12",
+      "key_strings": [],
+      "parameters": [
+        "interval",
+        "number"
+      ],
+      "referenced_functions": [
+        "registerJob12",
+        "now",
+        "set"
+      ],
+      "referenced_types": [
+        "Error"
+      ]
+    },
+    "index": 26,
+    "metadata": {
+      "content_hash": "15a50a6772672bf9",
+      "end_byte": 3355,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Scheduler"
+      ],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 3145,
+      "symbol": "registerJob12",
+      "visibility": "Private"
+    },
+    "start_offset": 3145,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nsymbol: Scheduler.registerJob12\nSymbol: Scheduler.registerJob12\nkind: Method\nParent: Scheduler\nparents: Scheduler\nSignature: registerJob12(interval: number): void\n\n/** Register job number 12. */\n// Imports:\nimport { Clock } from \"./clock\";\n\nregisterJob12(interval: number): void {\n    const next = this.clock.now() + interval * 13;\n    this.jobs.set(\"job-12\", next);\n    if (next < 0) {\n      throw new Error(\"negative schedule for job 12\");\n    }\n  }\n\n// Identifiers:\n// symbol: registerJob12\n// params: interval, number\n// types: Error\n// calls: registerJob12, now, set\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 3235,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "now"
+      ],
+      "referenced_types": []
+    },
+    "index": 27,
+    "metadata": {
+      "content_hash": "7d45dab68a7fbc5b",
+      "end_byte": 3235,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "Scheduler",
+        "registerJob12"
+      ],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 3189,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 3189,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nkind: Other\nParent: Scheduler.registerJob12\nparents: Scheduler.registerJob12\nSignature: const next = this.clock.now() + interval * 13;\n\n// Imports:\nimport { Clock } from \"./clock\";\n\nconst next = this.clock.now() + interval * 13;\n\n// Identifiers:\n// calls: now\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 3602,
+    "identifiers": {
+      "defined_symbol": "registerJob13",
+      "key_strings": [],
+      "parameters": [
+        "interval",
+        "number"
+      ],
+      "referenced_functions": [
+        "registerJob13",
+        "now",
+        "set"
+      ],
+      "referenced_types": [
+        "Error"
+      ]
+    },
+    "index": 28,
+    "metadata": {
+      "content_hash": "7ceb849af858c48a",
+      "end_byte": 3602,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Scheduler"
+      ],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 3392,
+      "symbol": "registerJob13",
+      "visibility": "Private"
+    },
+    "start_offset": 3392,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nsymbol: Scheduler.registerJob13\nSymbol: Scheduler.registerJob13\nkind: Method\nParent: Scheduler\nparents: Scheduler\nSignature: registerJob13(interval: number): void\n\n/** Register job number 13. */\n// Imports:\nimport { Clock } from \"./clock\";\n\nregisterJob13(interval: number): void {\n    const next = this.clock.now() + interval * 14;\n    this.jobs.set(\"job-13\", next);\n    if (next < 0) {\n      throw new Error(\"negative schedule for job 13\");\n    }\n  }\n\n// Identifiers:\n// symbol: registerJob13\n// params: interval, number\n// types: Error\n// calls: registerJob13, now, set\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 3482,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "now"
+      ],
+      "referenced_types": []
+    },
+    "index": 29,
+    "metadata": {
+      "content_hash": "6a2feb1b2ba6b7f2",
+      "end_byte": 3482,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "Scheduler",
+        "registerJob13"
+      ],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 3436,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 3436,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nkind: Other\nParent: Scheduler.registerJob13\nparents: Scheduler.registerJob13\nSignature: const next = this.clock.now() + interval * 14;\n\n// Imports:\nimport { Clock } from \"./clock\";\n\nconst next = this.clock.now() + interval * 14;\n\n// Identifiers:\n// calls: now\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 3665,
+    "identifiers": {
+      "defined_symbol": "pending",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "pending",
+        "keys"
+      ],
+      "referenced_types": []
+    },
+    "index": 30,
+    "metadata": {
+      "content_hash": "da023267f46e6def",
+      "end_byte": 3665,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Scheduler"
+      ],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 3606,
+      "symbol": "pending",
+      "visibility": "Private"
+    },
+    "start_offset": 3606,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nsymbol: Scheduler.pending\nSymbol: Scheduler.pending\nkind: Method\nParent: Scheduler\nparents: Scheduler\nSignature: pending(): string[]\n\n// Imports:\nimport { Clock } from \"./clock\";\n\npending(): string[] {\n    return [...this.jobs.keys()];\n  }\n\n// Identifiers:\n// symbol: pending\n// calls: pending, keys\n"
+  },
+  {
+    "chunk_type": "ApiSurface",
+    "end_offset": 3667,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 31,
+    "metadata": {
+      "content_hash": "891d8f8bc4c6b3e2",
+      "end_byte": 3667,
+      "is_generated": false,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 67,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 67,
+    "text": "path: github://acme/widgets/src/scheduler.ts@main\nkind: api_surface\n\n// Public API:\n\n/** Schedules recurring jobs. */\nexport class Scheduler\n\n"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 146,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 32,
+    "metadata": {
+      "content_hash": "5e501d9ae9c434d8",
+      "end_byte": 146,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 34,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 34,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nkind: top_level\n\n/** Schedules recurring jobs. */\nexport class Scheduler {\n  private readonly jobs = new Map<string, number>();\n"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 227,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 33,
+    "metadata": {
+      "content_hash": "4a306ca6ded057d6",
+      "end_byte": 227,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 195,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 195,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nkind: top_level\n\n  /** Register job number 0. */"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 469,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 34,
+    "metadata": {
+      "content_hash": "729974b58e46fdb2",
+      "end_byte": 469,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 437,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 437,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nkind: top_level\n\n  /** Register job number 1. */"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 711,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 35,
+    "metadata": {
+      "content_hash": "0f67740e61116d83",
+      "end_byte": 711,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 679,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 679,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nkind: top_level\n\n  /** Register job number 2. */"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 953,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 36,
+    "metadata": {
+      "content_hash": "f1e5bae2974b2828",
+      "end_byte": 953,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 921,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 921,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nkind: top_level\n\n  /** Register job number 3. */"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 1195,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 37,
+    "metadata": {
+      "content_hash": "04328da336aa85d0",
+      "end_byte": 1195,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 1163,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 1163,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nkind: top_level\n\n  /** Register job number 4. */"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 1437,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 38,
+    "metadata": {
+      "content_hash": "774a659b69652302",
+      "end_byte": 1437,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 1405,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 1405,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nkind: top_level\n\n  /** Register job number 5. */"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 1679,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 39,
+    "metadata": {
+      "content_hash": "a6cdc7b3f17fe810",
+      "end_byte": 1679,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 1647,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 1647,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nkind: top_level\n\n  /** Register job number 6. */"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 1921,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 40,
+    "metadata": {
+      "content_hash": "4098f26063c57a1c",
+      "end_byte": 1921,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 1889,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 1889,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nkind: top_level\n\n  /** Register job number 7. */"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 2163,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 41,
+    "metadata": {
+      "content_hash": "82bb48edead65728",
+      "end_byte": 2163,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 2131,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 2131,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nkind: top_level\n\n  /** Register job number 8. */"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 2405,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 42,
+    "metadata": {
+      "content_hash": "a02d57d4434cf620",
+      "end_byte": 2405,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 2373,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 2373,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nkind: top_level\n\n  /** Register job number 9. */"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 2649,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 43,
+    "metadata": {
+      "content_hash": "1e8749f35d2a3992",
+      "end_byte": 2649,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 2616,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 2616,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nkind: top_level\n\n  /** Register job number 10. */"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 2896,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 44,
+    "metadata": {
+      "content_hash": "a9048ec649a12560",
+      "end_byte": 2896,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 2863,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 2863,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nkind: top_level\n\n  /** Register job number 11. */"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 3143,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 45,
+    "metadata": {
+      "content_hash": "a853e94f68fd15fb",
+      "end_byte": 3143,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 3110,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 3110,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nkind: top_level\n\n  /** Register job number 12. */"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 3390,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 46,
+    "metadata": {
+      "content_hash": "94b703a0687c0730",
+      "end_byte": 3390,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/scheduler.ts@main",
+      "start_byte": 3357,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 3357,
+    "text": "File: github://acme/widgets/src/scheduler.ts@main\npath: github://acme/widgets/src/scheduler.ts@main\nLanguage: typescript\nkind: top_level\n\n  /** Register job number 13. */"
+  }
+]

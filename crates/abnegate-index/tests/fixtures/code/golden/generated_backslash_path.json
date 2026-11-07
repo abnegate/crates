@@ -1,0 +1,83 @@
+[
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 2036,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 0,
+    "metadata": {
+      "content_hash": "60a4c8bee2d7ffc0",
+      "end_byte": 2036,
+      "is_generated": true,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "C:\\work\\widgets\\Generated\\warehouse.rs",
+      "start_byte": 0,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 0,
+    "text": "File: C:\\work\\widgets\\Generated\\warehouse.rs\npath: C:\\work\\widgets\\Generated\\warehouse.rs\n//! Inventory bookkeeping for the widget warehouse.\n//!\n//! Tracks stock levels and reservations per bin.\n\nuse std::collections::HashMap;\nuse std::fmt;\nuse std::sync::{Arc, Mutex};\n\nuse crate::error::StockError;\n\n/// Default number of bins a warehouse starts with.\npub const DEFAULT_BINS: usize = 16;\n\nstatic GLOBAL_COUNTER: AtomicCounter = AtomicCounter::new();\n\npub type BinId = u32;\n\n/// A single storage bin and its contents.\n#[derive(Debug, Clone, PartialEq)]\npub struct Bin {\n    pub id: BinId,\n    pub label: String,\n    quantity: u64,\n    reserved: u64,\n}\n\n/// Why a reservation could not be made.\n#[derive(Debug)]\npub enum ReservationError {\n    UnknownBin(BinId),\n    Insufficient { requested: u64, available: u64 },\n    Locked,\n}\n\nimpl fmt::Display for ReservationError {\n    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {\n        match self {\n            Self::UnknownBin(id) => write!(formatter, \"unknown bin {id}\"),\n            Self::Insufficient { requested, available } => {\n                write!(formatter, \"requested {requested}, only {available} available\")\n            }\n            Self::Locked => write!(formatter, \"warehouse is locked\"),\n        }\n    }\n}\n\n/// Anything that can report a stock level.\npub trait StockSource {\n    fn available(&self, bin: BinId) -> Option<u64>;\n    fn label(&self, bin: BinId) -> Option<&str>;\n}\n\n/// The warehouse holds every bin behind a lock.\npub struct Warehouse {\n    bins: Arc<Mutex<HashMap<BinId, Bin>>>,\n    locked: bool,\n}\n\nimpl Warehouse {\n    /// Create an empty warehouse with the default bin capacity.\n    pub fn new() -> Self {\n        Self {\n            bins: Arc::new(Mutex::new(HashMap::with_capacity(DEFAULT_BINS))),\n            locked: false,\n        }\n    }\n\n    /// Add stock to a bin, creating it when missing.\n    pub fn restock(&self, id: BinId, label: &str, quantity: u64) -> Result<u64, StockError> {\n        let mut bins = self.bins.lock().map_err(|_| StockError::Poisoned)?;\n        let bin = bins.entry(id).or_insert_with(|| Bin {\n"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 3644,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 1,
+    "metadata": {
+      "content_hash": "c73cdaba963617d2",
+      "end_byte": 3644,
+      "is_generated": true,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "C:\\work\\widgets\\Generated\\warehouse.rs",
+      "start_byte": 1832,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 1832,
+    "text": "File: C:\\work\\widgets\\Generated\\warehouse.rs\npath: C:\\work\\widgets\\Generated\\warehouse.rs\nf, id: BinId, label: &str, quantity: u64) -> Result<u64, StockError> {\n        let mut bins = self.bins.lock().map_err(|_| StockError::Poisoned)?;\n        let bin = bins.entry(id).or_insert_with(|| Bin {\n            id,\n            label: label.to_string(),\n            quantity: 0,\n            reserved: 0,\n        });\n        bin.quantity = bin.quantity.saturating_add(quantity);\n        Ok(bin.quantity)\n    }\n\n    /// Reserve stock for an order without removing it yet.\n    pub fn reserve(&self, id: BinId, requested: u64) -> Result<u64, ReservationError> {\n        if self.locked {\n            return Err(ReservationError::Locked);\n        }\n        let mut bins = self.bins.lock().map_err(|_| ReservationError::Locked)?;\n        let bin = bins.get_mut(&id).ok_or(ReservationError::UnknownBin(id))?;\n        let available = bin.quantity - bin.reserved;\n        if requested > available {\n            return Err(ReservationError::Insufficient { requested, available });\n        }\n        bin.reserved += requested;\n        Ok(available - requested)\n    }\n\n    fn lock(&mut self) {\n        self.locked = true;\n    }\n}\n\nimpl StockSource for Warehouse {\n    fn available(&self, bin: BinId) -> Option<u64> {\n        let bins = self.bins.lock().ok()?;\n        bins.get(&bin).map(|bin| bin.quantity - bin.reserved)\n    }\n\n    fn label(&self, _bin: BinId) -> Option<&str> {\n        None\n    }\n}\n\nmod audit {\n    pub(crate) fn summarize(totals: &[u64]) -> u64 {\n        totals.iter().copied().sum()\n    }\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn reserve_reduces_availability() {\n        let warehouse = Warehouse::new();\n        warehouse.restock(7, \"bolts\", 10).unwrap();\n        assert_eq!(warehouse.reserve(7, 4).unwrap(), 6);\n        assert_eq!(warehouse.available(7), Some(6));\n    }\n}\n"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 3644,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 2,
+    "metadata": {
+      "content_hash": "2df1840a754f3fdf",
+      "end_byte": 3644,
+      "is_generated": true,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "C:\\work\\widgets\\Generated\\warehouse.rs",
+      "start_byte": 3440,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 3440,
+    "text": "File: C:\\work\\widgets\\Generated\\warehouse.rs\npath: C:\\work\\widgets\\Generated\\warehouse.rs\nlet warehouse = Warehouse::new();\n        warehouse.restock(7, \"bolts\", 10).unwrap();\n        assert_eq!(warehouse.reserve(7, 4).unwrap(), 6);\n        assert_eq!(warehouse.available(7), Some(6));\n    }\n}\n"
+  }
+]

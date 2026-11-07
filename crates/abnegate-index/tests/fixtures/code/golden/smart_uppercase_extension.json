@@ -1,0 +1,110 @@
+[
+  {
+    "end_offset": 132,
+    "index": 0,
+    "start_offset": 74,
+    "text": "path: github://acme/widgets/internal/catalog/server.go@main\nkind: file_header\n\n// Package catalog serves the product catalog over HTTP.\n\npackage catalog\nimport (\n\t\"encoding/json\"\n\t\"net/http\"\n\t\"sync\"\n\t\"testing\"\n)"
+  },
+  {
+    "end_offset": 457,
+    "index": 1,
+    "start_offset": 167,
+    "text": "// Product is one catalog entry.\ntype Product struct {\n\tID    string  `json:\"id\"`\n\tName  string  `json:\"name\"`\n\tPrice float64 `json:\"price\"`\n}\n\n// Store keeps products in memory.\ntype Store struct {\n\tmu       sync.RWMutex\n\tproducts map[string]Product\n}\n\n// Lister lists products.\ntype Lister interface {\n\tList() []Product\n}"
+  },
+  {
+    "end_offset": 572,
+    "index": 2,
+    "start_offset": 495,
+    "text": "File: github://acme/widgets/internal/catalog/server.go@main\npath: github://acme/widgets/internal/catalog/server.go@main\nLanguage: go\nsymbol: NewStore\nSymbol: NewStore\nkind: Function\nSignature: func NewStore() *Store\n\n// NewStore creates an empty store.\n// Imports:\nimport (\n\t\"encoding/json\"\n\t\"net/http\"\n\t\"sync\"\n\t\"testing\"\n)\n\nfunc NewStore() *Store {\n\treturn &Store{products: make(map[string]Product)}\n}\n\n// Identifiers:\n// symbol: NewStore\n// types: NewStore, Store, Product\n// calls: make\n"
+  },
+  {
+    "end_offset": 572,
+    "index": 3,
+    "start_offset": 495,
+    "text": "File: github://acme/widgets/internal/catalog/server.go@main\npath: github://acme/widgets/internal/catalog/server.go@main\nLanguage: go\nsymbol: NewStore\nSymbol: NewStore\nkind: Function\nSignature: func NewStore() *Store\n [skeleton]\n// NewStore creates an empty store.\nfunc NewStore() *Store\n\n// Key identifiers:\n// defined: NewStore\n// types: NewStore, Store, Product\n"
+  },
+  {
+    "end_offset": 720,
+    "index": 4,
+    "start_offset": 612,
+    "text": "File: github://acme/widgets/internal/catalog/server.go@main\npath: github://acme/widgets/internal/catalog/server.go@main\nLanguage: go\nsymbol: Put\nSymbol: Put\nkind: Method\nSignature: func (s *Store) Put(product Product)\n\n// Put inserts or replaces a product.\n// Imports:\nimport (\n\t\"encoding/json\"\n\t\"net/http\"\n\t\"sync\"\n\t\"testing\"\n)\n\nfunc (s *Store) Put(product Product) {\n\ts.mu.Lock()\n\tdefer s.mu.Unlock()\n\ts.products[product.ID] = product\n}\n\n// Identifiers:\n// symbol: Put\n// params: s, Store, Put, product, Product\n// types: Store, Put, Product, Lock, Unlock, ID\n"
+  },
+  {
+    "end_offset": 720,
+    "index": 5,
+    "start_offset": 612,
+    "text": "File: github://acme/widgets/internal/catalog/server.go@main\npath: github://acme/widgets/internal/catalog/server.go@main\nLanguage: go\nsymbol: Put\nSymbol: Put\nkind: Method\nSignature: func (s *Store) Put(product Product)\n [skeleton]\n// Put inserts or replaces a product.\nfunc (s *Store) Put(product Product)\n\n// Key identifiers:\n// defined: Put\n// params: s, Store, Put, product, Product\n// types: Store, Put, Product, Lock, Unlock\n"
+  },
+  {
+    "end_offset": 951,
+    "index": 6,
+    "start_offset": 753,
+    "text": "File: github://acme/widgets/internal/catalog/server.go@main\npath: github://acme/widgets/internal/catalog/server.go@main\nLanguage: go\nsymbol: List\nSymbol: List\nkind: Method\nSignature: func (s *Store) List() []Product\n\n// List returns every product.\n// Imports:\nimport (\n\t\"encoding/json\"\n\t\"net/http\"\n\t\"sync\"\n\t\"testing\"\n)\n\nfunc (s *Store) List() []Product {\n\ts.mu.RLock()\n\tdefer s.mu.RUnlock()\n\tout := make([]Product, 0, len(s.products))\n\tfor _, product := range s.products {\n\t\tout = append(out, product)\n\t}\n\treturn out\n}\n\n// Identifiers:\n// symbol: List\n// params: s, Store, List\n// types: Store, List, Product, RLock, RUnlock\n// calls: make, len, append\n"
+  },
+  {
+    "end_offset": 951,
+    "index": 7,
+    "start_offset": 753,
+    "text": "File: github://acme/widgets/internal/catalog/server.go@main\npath: github://acme/widgets/internal/catalog/server.go@main\nLanguage: go\nsymbol: List\nSymbol: List\nkind: Method\nSignature: func (s *Store) List() []Product\n [skeleton]\n// List returns every product.\nfunc (s *Store) List() []Product\n\n// Key identifiers:\n// defined: List\n// params: s, Store, List\n// types: Store, List, Product, RLock, RUnlock\n"
+  },
+  {
+    "end_offset": 1183,
+    "index": 8,
+    "start_offset": 953,
+    "text": "File: github://acme/widgets/internal/catalog/server.go@main\npath: github://acme/widgets/internal/catalog/server.go@main\nLanguage: go\nsymbol: handleList\nSymbol: handleList\nkind: Function\nSignature: func handleList(lister Lister) http.HandlerFunc\n\n// Imports:\nimport (\n\t\"encoding/json\"\n\t\"net/http\"\n\t\"sync\"\n\t\"testing\"\n)\n\nfunc handleList(lister Lister) http.HandlerFunc {\n\treturn func(writer http.ResponseWriter, request *http.Request) {\n\t\twriter.Header().Set(\"Content-Type\", \"application/json\")\n\t\t_ = json.NewEncoder(writer).Encode(lister.List())\n\t}\n}\n\n// Identifiers:\n// symbol: handleList\n// params: lister, Lister\n// types: Lister, HandlerFunc, ResponseWriter, Request, Header, Set, Content, Type, NewEncoder, Encode, List\n// calls: func, handleList\n"
+  },
+  {
+    "end_offset": 1183,
+    "index": 9,
+    "start_offset": 953,
+    "text": "File: github://acme/widgets/internal/catalog/server.go@main\npath: github://acme/widgets/internal/catalog/server.go@main\nLanguage: go\nsymbol: handleList\nSymbol: handleList\nkind: Function\nSignature: func handleList(lister Lister) http.HandlerFunc\n [skeleton]\nfunc handleList(lister Lister) http.HandlerFunc\n\n// Key identifiers:\n// defined: handleList\n// params: lister, Lister\n// types: Lister, HandlerFunc, ResponseWriter, Request, Header\n"
+  },
+  {
+    "end_offset": 1372,
+    "index": 10,
+    "start_offset": 1185,
+    "text": "File: github://acme/widgets/internal/catalog/server.go@main\npath: github://acme/widgets/internal/catalog/server.go@main\nLanguage: go\nsymbol: TestStorePutThenList\nSymbol: TestStorePutThenList\nkind: Function\nSignature: func TestStorePutThenList(t *testing.T)\n\n// Imports:\nimport (\n\t\"encoding/json\"\n\t\"net/http\"\n\t\"sync\"\n\t\"testing\"\n)\n\nfunc TestStorePutThenList(t *testing.T) {\n\tstore := NewStore()\n\tstore.Put(Product{ID: \"a\", Name: \"Anchor\", Price: 3.5})\n\tif len(store.List()) != 1 {\n\t\tt.Fatal(\"expected one product\")\n\t}\n}\n\n// Identifiers:\n// symbol: TestStorePutThenList\n// params: t, testing, T\n// types: TestStorePutThenList, NewStore, Put, Product, ID, Name, Anchor, Price, List, Fatal\n// calls: t, len\n"
+  },
+  {
+    "end_offset": 1372,
+    "index": 11,
+    "start_offset": 1185,
+    "text": "File: github://acme/widgets/internal/catalog/server.go@main\npath: github://acme/widgets/internal/catalog/server.go@main\nLanguage: go\nsymbol: TestStorePutThenList\nSymbol: TestStorePutThenList\nkind: Function\nSignature: func TestStorePutThenList(t *testing.T)\n [skeleton]\nfunc TestStorePutThenList(t *testing.T)\n\n// Key identifiers:\n// defined: TestStorePutThenList\n// params: t, testing, T\n// types: TestStorePutThenList, NewStore, Put, Product, ID\n"
+  },
+  {
+    "end_offset": 1372,
+    "index": 12,
+    "start_offset": 495,
+    "text": "path: github://acme/widgets/internal/catalog/server.go@main\nkind: api_surface\n\n// Public API:\n\n// NewStore creates an empty store.\nfunc NewStore() *Store\n\n// Put inserts or replaces a product.\nfunc (s *Store) Put(product Product)\n\n// List returns every product.\nfunc (s *Store) List() []Product\n\nfunc TestStorePutThenList(t *testing.T)\n\n"
+  },
+  {
+    "end_offset": 74,
+    "index": 13,
+    "start_offset": 0,
+    "text": "File: github://acme/widgets/internal/catalog/server.go@main\npath: github://acme/widgets/internal/catalog/server.go@main\nLanguage: go\nkind: top_level\n\n// Package catalog serves the product catalog over HTTP.\npackage catalog\n"
+  },
+  {
+    "end_offset": 167,
+    "index": 14,
+    "start_offset": 134,
+    "text": "File: github://acme/widgets/internal/catalog/server.go@main\npath: github://acme/widgets/internal/catalog/server.go@main\nLanguage: go\nkind: top_level\n\n// Product is one catalog entry."
+  },
+  {
+    "end_offset": 495,
+    "index": 15,
+    "start_offset": 459,
+    "text": "File: github://acme/widgets/internal/catalog/server.go@main\npath: github://acme/widgets/internal/catalog/server.go@main\nLanguage: go\nkind: top_level\n\n// NewStore creates an empty store."
+  },
+  {
+    "end_offset": 612,
+    "index": 16,
+    "start_offset": 574,
+    "text": "File: github://acme/widgets/internal/catalog/server.go@main\npath: github://acme/widgets/internal/catalog/server.go@main\nLanguage: go\nkind: top_level\n\n// Put inserts or replaces a product."
+  },
+  {
+    "end_offset": 753,
+    "index": 17,
+    "start_offset": 722,
+    "text": "File: github://acme/widgets/internal/catalog/server.go@main\npath: github://acme/widgets/internal/catalog/server.go@main\nLanguage: go\nkind: top_level\n\n// List returns every product."
+  }
+]

@@ -1,0 +1,434 @@
+[
+  {
+    "chunk_type": "FileHeader",
+    "end_offset": 149,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 0,
+    "metadata": {
+      "content_hash": "9eb21896c0554bc0",
+      "end_byte": 149,
+      "is_generated": false,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/Http/ProductController.php@main",
+      "start_byte": 33,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 33,
+    "text": "path: github://acme/widgets/src/Http/ProductController.php@main\nkind: file_header\n\nnamespace Acme\\Widgets\\Http;\nuse Acme\\Widgets\\Repository\\ProductRepository;\nuse Psr\\Http\\Message\\ResponseInterface;"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 238,
+    "identifiers": {
+      "defined_symbol": "Controller",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "handle"
+      ],
+      "referenced_types": [
+        "Controller",
+        "ResponseInterface"
+      ]
+    },
+    "index": 1,
+    "metadata": {
+      "content_hash": "2c00ff9d87cd1e36",
+      "end_byte": 238,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Interface",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/Http/ProductController.php@main",
+      "start_byte": 151,
+      "symbol": "Controller",
+      "visibility": "Private"
+    },
+    "start_offset": 151,
+    "text": "File: github://acme/widgets/src/Http/ProductController.php@main\npath: github://acme/widgets/src/Http/ProductController.php@main\nLanguage: php\nsymbol: Controller\nSymbol: Controller\nkind: Interface\nSignature: interface Controller\n\n// Imports:\nuse Psr\\Http\\Message\\ResponseInterface;\n\ninterface Controller\n{\n    public function handle(array $request): ResponseInterface;\n}\n\n// Identifiers:\n// symbol: Controller\n// types: Controller, ResponseInterface\n// calls: handle\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 822,
+    "identifiers": {
+      "defined_symbol": "ProductController",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "__construct",
+        "handle",
+        "page",
+        "max",
+        "json",
+        "json_encode"
+      ],
+      "referenced_types": [
+        "ProductController",
+        "Controller",
+        "PAGE_SIZE",
+        "ProductRepository",
+        "ResponseInterface",
+        "JsonResponse",
+        "JSON_THROW_ON_ERROR"
+      ]
+    },
+    "index": 2,
+    "metadata": {
+      "content_hash": "ad5c242c5320006d",
+      "end_byte": 822,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Class",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/Http/ProductController.php@main",
+      "start_byte": 240,
+      "symbol": "ProductController",
+      "visibility": "Private"
+    },
+    "start_offset": 240,
+    "text": "File: github://acme/widgets/src/Http/ProductController.php@main\npath: github://acme/widgets/src/Http/ProductController.php@main\nLanguage: php\nsymbol: ProductController\nSymbol: ProductController\nkind: Class\nSignature: final class ProductController implements Controller\n\n// Imports:\nuse Acme\\Widgets\\Repository\\ProductRepository;\nuse Psr\\Http\\Message\\ResponseInterface;\n\nfinal class ProductController implements Controller\n{\n    private const PAGE_SIZE = 25;\n\n    public function __construct(private ProductRepository $products)\n    {\n    }\n\n    public function handle(array $request): ResponseInterface\n    {\n        $page = max(1, (int) ($request['page'] ?? 1));\n        $items = $this->products->page($page, self::PAGE_SIZE);\n        return $this->json(['page' => $page, 'items' => $items]);\n    }\n\n    private function json(array $payload): ResponseInterface\n    {\n        return new JsonResponse(json_encode($payload, JSON_THROW_ON_ERROR));\n    }\n}\n\n// Identifiers:\n// symbol: ProductController\n// types: ProductController, Controller, PAGE_SIZE, ProductRepository, ResponseInterface, JsonResponse, JSON_THROW_ON_ERROR\n// calls: __construct, handle, page, max, json, json_encode\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 409,
+    "identifiers": {
+      "defined_symbol": "__construct",
+      "key_strings": [],
+      "parameters": [
+        "private",
+        "ProductRepository",
+        "products"
+      ],
+      "referenced_functions": [
+        "__construct"
+      ],
+      "referenced_types": [
+        "ProductRepository"
+      ]
+    },
+    "index": 3,
+    "metadata": {
+      "content_hash": "2bd057d4559dc7ba",
+      "end_byte": 409,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "ProductController"
+      ],
+      "path": "github://acme/widgets/src/Http/ProductController.php@main",
+      "start_byte": 333,
+      "symbol": "__construct",
+      "visibility": "Private"
+    },
+    "start_offset": 333,
+    "text": "File: github://acme/widgets/src/Http/ProductController.php@main\npath: github://acme/widgets/src/Http/ProductController.php@main\nLanguage: php\nsymbol: ProductController.__construct\nSymbol: ProductController.__construct\nkind: Method\nParent: ProductController\nparents: ProductController\nSignature: public function __construct(private ProductRepository $products)\n\n// Imports:\nuse Acme\\Widgets\\Repository\\ProductRepository;\n\npublic function __construct(private ProductRepository $products)\n    {\n    }\n\n// Identifiers:\n// symbol: __construct\n// params: private, ProductRepository, products\n// types: ProductRepository\n// calls: __construct\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 409,
+    "identifiers": {
+      "defined_symbol": "__construct",
+      "key_strings": [],
+      "parameters": [
+        "private",
+        "ProductRepository",
+        "products"
+      ],
+      "referenced_functions": [
+        "__construct"
+      ],
+      "referenced_types": [
+        "ProductRepository"
+      ]
+    },
+    "index": 4,
+    "metadata": {
+      "content_hash": "35e3ee0e8f308cd6",
+      "end_byte": 409,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "ProductController"
+      ],
+      "path": "github://acme/widgets/src/Http/ProductController.php@main",
+      "start_byte": 333,
+      "symbol": "__construct",
+      "visibility": "Private"
+    },
+    "start_offset": 333,
+    "text": "File: github://acme/widgets/src/Http/ProductController.php@main\npath: github://acme/widgets/src/Http/ProductController.php@main\nLanguage: php\nsymbol: ProductController.__construct\nSymbol: ProductController.__construct\nkind: Method\nParent: ProductController\nparents: ProductController\nSignature: public function __construct(private ProductRepository $products)\n [skeleton]\npublic function __construct(private ProductRepository $products)\n\n// Key identifiers:\n// defined: __construct\n// params: private, ProductRepository, products\n// types: ProductRepository\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 669,
+    "identifiers": {
+      "defined_symbol": "handle",
+      "key_strings": [],
+      "parameters": [
+        "array",
+        "request"
+      ],
+      "referenced_functions": [
+        "handle",
+        "page",
+        "max",
+        "json"
+      ],
+      "referenced_types": [
+        "ResponseInterface",
+        "PAGE_SIZE"
+      ]
+    },
+    "index": 5,
+    "metadata": {
+      "content_hash": "dae6b54e6f00ec4c",
+      "end_byte": 669,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "ProductController"
+      ],
+      "path": "github://acme/widgets/src/Http/ProductController.php@main",
+      "start_byte": 415,
+      "symbol": "handle",
+      "visibility": "Private"
+    },
+    "start_offset": 415,
+    "text": "File: github://acme/widgets/src/Http/ProductController.php@main\npath: github://acme/widgets/src/Http/ProductController.php@main\nLanguage: php\nsymbol: ProductController.handle\nSymbol: ProductController.handle\nkind: Method\nParent: ProductController\nparents: ProductController\nSignature: public function handle(array $request): ResponseInterface\n\n// Imports:\nuse Psr\\Http\\Message\\ResponseInterface;\n\npublic function handle(array $request): ResponseInterface\n    {\n        $page = max(1, (int) ($request['page'] ?? 1));\n        $items = $this->products->page($page, self::PAGE_SIZE);\n        return $this->json(['page' => $page, 'items' => $items]);\n    }\n\n// Identifiers:\n// symbol: handle\n// params: array, request\n// types: ResponseInterface, PAGE_SIZE\n// calls: handle, page, max, json\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 669,
+    "identifiers": {
+      "defined_symbol": "handle",
+      "key_strings": [],
+      "parameters": [
+        "array",
+        "request"
+      ],
+      "referenced_functions": [
+        "handle",
+        "page",
+        "max",
+        "json"
+      ],
+      "referenced_types": [
+        "ResponseInterface",
+        "PAGE_SIZE"
+      ]
+    },
+    "index": 6,
+    "metadata": {
+      "content_hash": "7397853bb2746101",
+      "end_byte": 669,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "ProductController"
+      ],
+      "path": "github://acme/widgets/src/Http/ProductController.php@main",
+      "start_byte": 415,
+      "symbol": "handle",
+      "visibility": "Private"
+    },
+    "start_offset": 415,
+    "text": "File: github://acme/widgets/src/Http/ProductController.php@main\npath: github://acme/widgets/src/Http/ProductController.php@main\nLanguage: php\nsymbol: ProductController.handle\nSymbol: ProductController.handle\nkind: Method\nParent: ProductController\nparents: ProductController\nSignature: public function handle(array $request): ResponseInterface\n [skeleton]\npublic function handle(array $request): ResponseInterface\n\n// Key identifiers:\n// defined: handle\n// params: array, request\n// types: ResponseInterface, PAGE_SIZE\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 820,
+    "identifiers": {
+      "defined_symbol": "json",
+      "key_strings": [],
+      "parameters": [
+        "array",
+        "payload"
+      ],
+      "referenced_functions": [
+        "json",
+        "json_encode"
+      ],
+      "referenced_types": [
+        "ResponseInterface",
+        "JsonResponse",
+        "JSON_THROW_ON_ERROR"
+      ]
+    },
+    "index": 7,
+    "metadata": {
+      "content_hash": "7da593eccf334eec",
+      "end_byte": 820,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "ProductController"
+      ],
+      "path": "github://acme/widgets/src/Http/ProductController.php@main",
+      "start_byte": 675,
+      "symbol": "json",
+      "visibility": "Private"
+    },
+    "start_offset": 675,
+    "text": "File: github://acme/widgets/src/Http/ProductController.php@main\npath: github://acme/widgets/src/Http/ProductController.php@main\nLanguage: php\nsymbol: ProductController.json\nSymbol: ProductController.json\nkind: Method\nParent: ProductController\nparents: ProductController\nSignature: private function json(array $payload): ResponseInterface\n\n// Imports:\nuse Psr\\Http\\Message\\ResponseInterface;\n\nprivate function json(array $payload): ResponseInterface\n    {\n        return new JsonResponse(json_encode($payload, JSON_THROW_ON_ERROR));\n    }\n\n// Identifiers:\n// symbol: json\n// params: array, payload\n// types: ResponseInterface, JsonResponse, JSON_THROW_ON_ERROR\n// calls: json, json_encode\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 820,
+    "identifiers": {
+      "defined_symbol": "json",
+      "key_strings": [],
+      "parameters": [
+        "array",
+        "payload"
+      ],
+      "referenced_functions": [
+        "json",
+        "json_encode"
+      ],
+      "referenced_types": [
+        "ResponseInterface",
+        "JsonResponse",
+        "JSON_THROW_ON_ERROR"
+      ]
+    },
+    "index": 8,
+    "metadata": {
+      "content_hash": "87382078b1a4c387",
+      "end_byte": 820,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "ProductController"
+      ],
+      "path": "github://acme/widgets/src/Http/ProductController.php@main",
+      "start_byte": 675,
+      "symbol": "json",
+      "visibility": "Private"
+    },
+    "start_offset": 675,
+    "text": "File: github://acme/widgets/src/Http/ProductController.php@main\npath: github://acme/widgets/src/Http/ProductController.php@main\nLanguage: php\nsymbol: ProductController.json\nSymbol: ProductController.json\nkind: Method\nParent: ProductController\nparents: ProductController\nSignature: private function json(array $payload): ResponseInterface\n [skeleton]\nprivate function json(array $payload): ResponseInterface\n\n// Key identifiers:\n// defined: json\n// params: array, payload\n// types: ResponseInterface, JsonResponse, JSON_THROW_ON_ERROR\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 935,
+    "identifiers": {
+      "defined_symbol": "format_price",
+      "key_strings": [
+        "%d.%02d"
+      ],
+      "parameters": [
+        "int",
+        "cents"
+      ],
+      "referenced_functions": [
+        "format_price",
+        "sprintf",
+        "intdiv"
+      ],
+      "referenced_types": []
+    },
+    "index": 9,
+    "metadata": {
+      "content_hash": "221933823ac701b6",
+      "end_byte": 935,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/Http/ProductController.php@main",
+      "start_byte": 824,
+      "symbol": "format_price",
+      "visibility": "Private"
+    },
+    "start_offset": 824,
+    "text": "File: github://acme/widgets/src/Http/ProductController.php@main\npath: github://acme/widgets/src/Http/ProductController.php@main\nLanguage: php\nsymbol: format_price\nSymbol: format_price\nkind: Function\nSignature: function format_price(int $cents): string\n\n// Imports:\nnamespace Acme\\Widgets\\Http;\nuse Acme\\Widgets\\Repository\\ProductRepository;\nuse Psr\\Http\\Message\\ResponseInterface;\n\nfunction format_price(int $cents): string\n{\n    return sprintf('%d.%02d', intdiv($cents, 100), $cents % 100);\n}\n\n// Identifiers:\n// symbol: format_price\n// params: int, cents\n// calls: format_price, sprintf, intdiv\n// keys: %d.%02d\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 935,
+    "identifiers": {
+      "defined_symbol": "format_price",
+      "key_strings": [
+        "%d.%02d"
+      ],
+      "parameters": [
+        "int",
+        "cents"
+      ],
+      "referenced_functions": [
+        "format_price",
+        "sprintf",
+        "intdiv"
+      ],
+      "referenced_types": []
+    },
+    "index": 10,
+    "metadata": {
+      "content_hash": "6ab23d3b0a688149",
+      "end_byte": 935,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/Http/ProductController.php@main",
+      "start_byte": 824,
+      "symbol": "format_price",
+      "visibility": "Private"
+    },
+    "start_offset": 824,
+    "text": "File: github://acme/widgets/src/Http/ProductController.php@main\npath: github://acme/widgets/src/Http/ProductController.php@main\nLanguage: php\nsymbol: format_price\nSymbol: format_price\nkind: Function\nSignature: function format_price(int $cents): string\n [skeleton]\nfunction format_price(int $cents): string\n\n// Key identifiers:\n// defined: format_price\n// params: int, cents\n"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 33,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 11,
+    "metadata": {
+      "content_hash": "d6dcc11a615b0ed9",
+      "end_byte": 33,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/Http/ProductController.php@main",
+      "start_byte": 0,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 0,
+    "text": "File: github://acme/widgets/src/Http/ProductController.php@main\npath: github://acme/widgets/src/Http/ProductController.php@main\nLanguage: php\nkind: top_level\n\n<?php\n\ndeclare(strict_types=1);\n"
+  }
+]

@@ -1,0 +1,561 @@
+[
+  {
+    "chunk_type": "FileHeader",
+    "end_offset": 29,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 0,
+    "metadata": {
+      "content_hash": "919880779e6e942f",
+      "end_byte": 29,
+      "is_generated": false,
+      "is_test": false,
+      "kind": null,
+      "module": "package com.acme.widgets.data",
+      "parents": [],
+      "path": "github://acme/widgets/app/src/main/kotlin/NoteRepository.kt@main",
+      "start_byte": 0,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 0,
+    "text": "path: github://acme/widgets/app/src/main/kotlin/NoteRepository.kt@main\nkind: file_header\n\npackage com.acme.widgets.data\npackage com.acme.widgets.data"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 269,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [
+        "id",
+        "Long",
+        "title",
+        "String",
+        "body"
+      ],
+      "referenced_functions": [],
+      "referenced_types": [
+        "Note",
+        "Long",
+        "String",
+        "NoteSource",
+        "Long",
+        "Note"
+      ]
+    },
+    "index": 1,
+    "metadata": {
+      "content_hash": "06e3ad2e2a09b4ad",
+      "end_byte": 269,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/app/src/main/kotlin/NoteRepository.kt@main",
+      "start_byte": 138,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 138,
+    "text": "data class Note(val id: Long, val title: String, val body: String)\n\ninterface NoteSource {\n    suspend fun fetch(id: Long): Note?\n}"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 802,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [
+        "source",
+        "NoteSource"
+      ],
+      "referenced_functions": [
+        "emptyList",
+        "load",
+        "fetch",
+        "toList",
+        "observe",
+        "clear"
+      ],
+      "referenced_types": [
+        "NoteRepository",
+        "NoteSource",
+        "Long",
+        "Note",
+        "MutableStateFlow",
+        "List",
+        "Flow"
+      ]
+    },
+    "index": 2,
+    "metadata": {
+      "content_hash": "ba9d330ba1512df2",
+      "end_byte": 802,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Class",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/app/src/main/kotlin/NoteRepository.kt@main",
+      "start_byte": 271,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 271,
+    "text": "File: github://acme/widgets/app/src/main/kotlin/NoteRepository.kt@main\npath: github://acme/widgets/app/src/main/kotlin/NoteRepository.kt@main\nLanguage: kotlin\nkind: Class\nSignature: class NoteRepository(private val source: NoteSource)\n\n// Imports:\npackage com.acme.widgets.data\n\nclass NoteRepository(private val source: NoteSource) {\n    private val cache = mutableMapOf<Long, Note>()\n    private val updates = MutableStateFlow<List<Note>>(emptyList())\n\n    suspend fun load(id: Long): Note? {\n        cache[id]?.let { return it }\n        val note = source.fetch(id) ?: return null\n        cache[id] = note\n        updates.value = cache.values.toList()\n        return note\n    }\n\n    fun observe(): Flow<List<Note>> = updates\n\n    fun clear() {\n        cache.clear()\n        updates.value = emptyList()\n    }\n}\n\n// Identifiers:\n// params: source, NoteSource\n// types: NoteRepository, NoteSource, Long, Note, MutableStateFlow, List, Flow\n// calls: emptyList, load, fetch, toList, observe, clear\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 444,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [
+        "emptyList"
+      ],
+      "referenced_functions": [],
+      "referenced_types": [
+        "Long",
+        "Note",
+        "MutableStateFlow",
+        "List",
+        "Note"
+      ]
+    },
+    "index": 3,
+    "metadata": {
+      "content_hash": "0296bd0df85581a9",
+      "end_byte": 444,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/app/src/main/kotlin/NoteRepository.kt@main",
+      "start_byte": 330,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 330,
+    "text": "private val cache = mutableMapOf<Long, Note>()\n\nprivate val updates = MutableStateFlow<List<Note>>(emptyList())"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 670,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [
+        "id",
+        "Long"
+      ],
+      "referenced_functions": [
+        "load",
+        "fetch",
+        "toList"
+      ],
+      "referenced_types": [
+        "Long",
+        "Note"
+      ]
+    },
+    "index": 4,
+    "metadata": {
+      "content_hash": "dc45980eba5d3636",
+      "end_byte": 670,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/app/src/main/kotlin/NoteRepository.kt@main",
+      "start_byte": 450,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 450,
+    "text": "File: github://acme/widgets/app/src/main/kotlin/NoteRepository.kt@main\npath: github://acme/widgets/app/src/main/kotlin/NoteRepository.kt@main\nLanguage: kotlin\nkind: Function\nSignature: suspend fun load(id: Long): Note?\n\n// Imports:\npackage com.acme.widgets.data\n\nsuspend fun load(id: Long): Note? {\n        cache[id]?.let { return it }\n        val note = source.fetch(id) ?: return null\n        cache[id] = note\n        updates.value = cache.values.toList()\n        return note\n    }\n\n// Identifiers:\n// params: id, Long\n// types: Long, Note\n// calls: load, fetch, toList\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 670,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [
+        "id",
+        "Long"
+      ],
+      "referenced_functions": [
+        "load",
+        "fetch",
+        "toList"
+      ],
+      "referenced_types": [
+        "Long",
+        "Note"
+      ]
+    },
+    "index": 5,
+    "metadata": {
+      "content_hash": "2a6f08d2261243ad",
+      "end_byte": 670,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/app/src/main/kotlin/NoteRepository.kt@main",
+      "start_byte": 450,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 450,
+    "text": "File: github://acme/widgets/app/src/main/kotlin/NoteRepository.kt@main\npath: github://acme/widgets/app/src/main/kotlin/NoteRepository.kt@main\nLanguage: kotlin\nkind: Function\nSignature: suspend fun load(id: Long): Note?\n [skeleton]\nsuspend fun load(id: Long): Note?\n\n// Key identifiers:\n// params: id, Long\n// types: Long, Note\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 573,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [
+        "id"
+      ],
+      "referenced_functions": [
+        "fetch"
+      ],
+      "referenced_types": []
+    },
+    "index": 6,
+    "metadata": {
+      "content_hash": "910dec06ea1cf848",
+      "end_byte": 573,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Variable",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/app/src/main/kotlin/NoteRepository.kt@main",
+      "start_byte": 531,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 531,
+    "text": "File: github://acme/widgets/app/src/main/kotlin/NoteRepository.kt@main\npath: github://acme/widgets/app/src/main/kotlin/NoteRepository.kt@main\nLanguage: kotlin\nkind: Variable\nSignature: val note = source.fetch(id) ?: return null\n\n// Imports:\npackage com.acme.widgets.data\n\nval note = source.fetch(id) ?: return null\n\n// Identifiers:\n// params: id\n// calls: fetch\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 800,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": [
+        "Flow",
+        "List",
+        "Note"
+      ]
+    },
+    "index": 7,
+    "metadata": {
+      "content_hash": "1c4ff65c5b878d51",
+      "end_byte": 800,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/app/src/main/kotlin/NoteRepository.kt@main",
+      "start_byte": 676,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 676,
+    "text": "fun observe(): Flow<List<Note>> = updates\n\nfun clear() {\n        cache.clear()\n        updates.value = emptyList()\n    }"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 904,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "blank"
+      ],
+      "referenced_types": [
+        "NoteDefaults",
+        "MAXIMUM_TITLE",
+        "Long",
+        "Note"
+      ]
+    },
+    "index": 8,
+    "metadata": {
+      "content_hash": "c12372e21e89001d",
+      "end_byte": 904,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Class",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/app/src/main/kotlin/NoteRepository.kt@main",
+      "start_byte": 804,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 804,
+    "text": "File: github://acme/widgets/app/src/main/kotlin/NoteRepository.kt@main\npath: github://acme/widgets/app/src/main/kotlin/NoteRepository.kt@main\nLanguage: kotlin\nkind: Class\nSignature: object NoteDefaults\n\n// Imports:\npackage com.acme.widgets.data\n\nobject NoteDefaults {\n    const val MAXIMUM_TITLE = 120\n    fun blank(id: Long) = Note(id, \"\", \"\")\n}\n\n// Identifiers:\n// types: NoteDefaults, MAXIMUM_TITLE, Long, Note\n// calls: blank\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1147,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "testClearEmptiesCache",
+        "fetch",
+        "clear"
+      ],
+      "referenced_types": [
+        "NoteRepositoryTest",
+        "Test",
+        "NoteRepository",
+        "NoteSource",
+        "Long",
+        "Note"
+      ]
+    },
+    "index": 9,
+    "metadata": {
+      "content_hash": "4d24ad5a3b6788f0",
+      "end_byte": 1147,
+      "is_generated": false,
+      "is_test": true,
+      "kind": "Class",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/app/src/main/kotlin/NoteRepository.kt@main",
+      "start_byte": 906,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 906,
+    "text": "File: github://acme/widgets/app/src/main/kotlin/NoteRepository.kt@main\npath: github://acme/widgets/app/src/main/kotlin/NoteRepository.kt@main\nLanguage: kotlin\nkind: Class\nSignature: class NoteRepositoryTest\n\n// Imports:\npackage com.acme.widgets.data\n\nclass NoteRepositoryTest {\n    @Test\n    fun testClearEmptiesCache() {\n        val repository = NoteRepository(object : NoteSource {\n            override suspend fun fetch(id: Long): Note? = null\n        })\n        repository.clear()\n    }\n}\n\n// Identifiers:\n// types: NoteRepositoryTest, Test, NoteRepository, NoteSource, Long, Note\n// calls: testClearEmptiesCache, fetch, clear\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1145,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "testClearEmptiesCache",
+        "fetch",
+        "clear"
+      ],
+      "referenced_types": [
+        "Test",
+        "NoteRepository",
+        "NoteSource",
+        "Long",
+        "Note"
+      ]
+    },
+    "index": 10,
+    "metadata": {
+      "content_hash": "40f120373aba3d67",
+      "end_byte": 1145,
+      "is_generated": false,
+      "is_test": true,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/app/src/main/kotlin/NoteRepository.kt@main",
+      "start_byte": 937,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 937,
+    "text": "File: github://acme/widgets/app/src/main/kotlin/NoteRepository.kt@main\npath: github://acme/widgets/app/src/main/kotlin/NoteRepository.kt@main\nLanguage: kotlin\nkind: Function\nSignature: @Test\n    fun testClearEmptiesCache()\n\n// Imports:\npackage com.acme.widgets.data\n\n@Test\n    fun testClearEmptiesCache() {\n        val repository = NoteRepository(object : NoteSource {\n            override suspend fun fetch(id: Long): Note? = null\n        })\n        repository.clear()\n    }\n\n// Identifiers:\n// types: Test, NoteRepository, NoteSource, Long, Note\n// calls: testClearEmptiesCache, fetch, clear\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 1145,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "testClearEmptiesCache",
+        "fetch",
+        "clear"
+      ],
+      "referenced_types": [
+        "Test",
+        "NoteRepository",
+        "NoteSource",
+        "Long",
+        "Note"
+      ]
+    },
+    "index": 11,
+    "metadata": {
+      "content_hash": "5966cbb08042cf05",
+      "end_byte": 1145,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/app/src/main/kotlin/NoteRepository.kt@main",
+      "start_byte": 937,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 937,
+    "text": "File: github://acme/widgets/app/src/main/kotlin/NoteRepository.kt@main\npath: github://acme/widgets/app/src/main/kotlin/NoteRepository.kt@main\nLanguage: kotlin\nkind: Function\nSignature: @Test\n    fun testClearEmptiesCache()\n [skeleton]\n@Test\n    fun testClearEmptiesCache()\n\n// Key identifiers:\n// types: Test, NoteRepository, NoteSource, Long, Note\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1112,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "fetch"
+      ],
+      "referenced_types": [
+        "NoteRepository",
+        "NoteSource",
+        "Long",
+        "Note"
+      ]
+    },
+    "index": 12,
+    "metadata": {
+      "content_hash": "0f0c580ea2b22df5",
+      "end_byte": 1112,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Variable",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/app/src/main/kotlin/NoteRepository.kt@main",
+      "start_byte": 985,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 985,
+    "text": "File: github://acme/widgets/app/src/main/kotlin/NoteRepository.kt@main\npath: github://acme/widgets/app/src/main/kotlin/NoteRepository.kt@main\nLanguage: kotlin\nkind: Variable\nSignature: val repository = NoteRepository(object : NoteSource\n\n// Imports:\npackage com.acme.widgets.data\n\nval repository = NoteRepository(object : NoteSource {\n            override suspend fun fetch(id: Long): Note? = null\n        })\n\n// Identifiers:\n// types: NoteRepository, NoteSource, Long, Note\n// calls: fetch\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 1112,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "fetch"
+      ],
+      "referenced_types": [
+        "NoteRepository",
+        "NoteSource",
+        "Long",
+        "Note"
+      ]
+    },
+    "index": 13,
+    "metadata": {
+      "content_hash": "a3b530a2ff36f1db",
+      "end_byte": 1112,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Variable",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/app/src/main/kotlin/NoteRepository.kt@main",
+      "start_byte": 985,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 985,
+    "text": "File: github://acme/widgets/app/src/main/kotlin/NoteRepository.kt@main\npath: github://acme/widgets/app/src/main/kotlin/NoteRepository.kt@main\nLanguage: kotlin\nkind: Variable\nSignature: val repository = NoteRepository(object : NoteSource\n [skeleton]\nval repository = NoteRepository(object : NoteSource\n\n// Key identifiers:\n// types: NoteRepository, NoteSource, Long, Note\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1101,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [
+        "id",
+        "Long"
+      ],
+      "referenced_functions": [
+        "fetch"
+      ],
+      "referenced_types": [
+        "Long",
+        "Note"
+      ]
+    },
+    "index": 14,
+    "metadata": {
+      "content_hash": "7aad03dce1a98ffe",
+      "end_byte": 1101,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/app/src/main/kotlin/NoteRepository.kt@main",
+      "start_byte": 1051,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 1051,
+    "text": "File: github://acme/widgets/app/src/main/kotlin/NoteRepository.kt@main\npath: github://acme/widgets/app/src/main/kotlin/NoteRepository.kt@main\nLanguage: kotlin\nkind: Function\nSignature: override suspend fun fetch(id: Long): Note? = null\n\n// Imports:\npackage com.acme.widgets.data\n\noverride suspend fun fetch(id: Long): Note? = null\n\n// Identifiers:\n// params: id, Long\n// types: Long, Note\n// calls: fetch\n"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 138,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 15,
+    "metadata": {
+      "content_hash": "98c586b7f3f913c2",
+      "end_byte": 138,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/app/src/main/kotlin/NoteRepository.kt@main",
+      "start_byte": 31,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 31,
+    "text": "File: github://acme/widgets/app/src/main/kotlin/NoteRepository.kt@main\npath: github://acme/widgets/app/src/main/kotlin/NoteRepository.kt@main\nLanguage: kotlin\nkind: top_level\n\nimport kotlinx.coroutines.flow.Flow\nimport kotlinx.coroutines.flow.MutableStateFlow\nimport org.junit.Test\n"
+  }
+]

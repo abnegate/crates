@@ -1,0 +1,174 @@
+[
+  {
+    "chunk_type": "Body",
+    "end_offset": 193,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "A",
+        "B",
+        "C",
+        "D",
+        "Small",
+        "Tiny",
+        "Unit",
+        "Marker",
+        "Flag",
+        "E"
+      ],
+      "referenced_types": [
+        "Small",
+        "Tiny",
+        "Unit",
+        "Marker",
+        "Flag",
+        "On",
+        "Off"
+      ]
+    },
+    "index": 0,
+    "metadata": {
+      "content_hash": "6c12928e2b228043",
+      "end_byte": 193,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/constants.rs@main",
+      "start_byte": 0,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 0,
+    "text": "pub const A: u8 = 1;\n\npub const B: u8 = 2;\n\nconst C: u8 = 3;\n\nstatic D: u8 = 4;\n\npub type Small = u8;\n\ntype Tiny = u16;\n\npub struct Unit;\n\nstruct Marker;\n\npub enum Flag { On, Off }\n\nconst E: &str = \"e\";"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 236,
+    "identifiers": {
+      "defined_symbol": "named_helper",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "named_helper"
+      ],
+      "referenced_types": []
+    },
+    "index": 1,
+    "metadata": {
+      "content_hash": "4e7adb349fe148f5",
+      "end_byte": 236,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/constants.rs@main",
+      "start_byte": 195,
+      "symbol": "named_helper",
+      "visibility": "Public"
+    },
+    "start_offset": 195,
+    "text": "File: github://acme/widgets/src/constants.rs@main\npath: github://acme/widgets/src/constants.rs@main\nLanguage: rust\nsymbol: named_helper\nSymbol: named_helper\nkind: Function\nSignature: pub fn named_helper() -> u8\n\npub fn named_helper() -> u8 {\n    A + B\n}\n\n// Identifiers:\n// symbol: named_helper\n// calls: named_helper\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 236,
+    "identifiers": {
+      "defined_symbol": "named_helper",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "named_helper"
+      ],
+      "referenced_types": []
+    },
+    "index": 2,
+    "metadata": {
+      "content_hash": "605c573ca584cf2b",
+      "end_byte": 236,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/constants.rs@main",
+      "start_byte": 195,
+      "symbol": "named_helper",
+      "visibility": "Public"
+    },
+    "start_offset": 195,
+    "text": "File: github://acme/widgets/src/constants.rs@main\npath: github://acme/widgets/src/constants.rs@main\nLanguage: rust\nsymbol: named_helper\nSymbol: named_helper\nkind: Function\nSignature: pub fn named_helper() -> u8\n [skeleton]\npub fn named_helper() -> u8\n\n// Key identifiers:\n// defined: named_helper\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 298,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "AFTER_FUNCTION",
+        "ALSO_AFTER"
+      ],
+      "referenced_types": [
+        "AFTER_FUNCTION",
+        "ALSO_AFTER"
+      ]
+    },
+    "index": 3,
+    "metadata": {
+      "content_hash": "a0b3631c80526460",
+      "end_byte": 298,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/constants.rs@main",
+      "start_byte": 238,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 238,
+    "text": "pub const AFTER_FUNCTION: u8 = 9;\n\nconst ALSO_AFTER: u8 = 10;"
+  },
+  {
+    "chunk_type": "ApiSurface",
+    "end_offset": 271,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": [
+        "A",
+        "B",
+        "Small",
+        "Unit",
+        "Flag",
+        "named_helper",
+        "AFTER_FUNCTION"
+      ]
+    },
+    "index": 4,
+    "metadata": {
+      "content_hash": "f98631fa3951951a",
+      "end_byte": 271,
+      "is_generated": false,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/constants.rs@main",
+      "start_byte": 0,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 0,
+    "text": "path: github://acme/widgets/src/constants.rs@main\nkind: api_surface\n\n// Public API:\n\npub const A: u8 = 1;\n\npub const B: u8 = 2;\n\npub type Small = u8;\n\npub struct Unit;\n\npub enum Flag\n\npub fn named_helper() -> u8\n\npub const AFTER_FUNCTION: u8 = 9;\n\n"
+  }
+]

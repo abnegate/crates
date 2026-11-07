@@ -1,0 +1,388 @@
+[
+  {
+    "chunk_type": "FileHeader",
+    "end_offset": 34,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 0,
+    "metadata": {
+      "content_hash": "5a2915443595b37e",
+      "end_byte": 34,
+      "is_generated": false,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/retry.ts@main",
+      "start_byte": 0,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 0,
+    "text": "path: github://acme/widgets/src/retry.ts@main\nkind: file_header\n\nimport { Logger } from \"./logger\";"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 597,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "constructor",
+        "task",
+        "warn",
+        "setTimeout"
+      ],
+      "referenced_types": [
+        "RetryPolicy",
+        "Promise",
+        "Logger"
+      ]
+    },
+    "index": 1,
+    "metadata": {
+      "content_hash": "a4560def75356707",
+      "end_byte": 597,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/retry.ts@main",
+      "start_byte": 38,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 38,
+    "text": "File: github://acme/widgets/src/retry.ts@main\npath: github://acme/widgets/src/retry.ts@main\nLanguage: typescript\nkind: Other\nSignature: export class RetryPolicy\n\n// Imports:\nimport { Logger } from \"./logger\";\n\nexport class RetryPolicy {\r\n  constructor(private readonly attempts: number, private readonly delayMs: number) {}\r\n\r\n  async run<T>(task: () => Promise<T>, logger: Logger): Promise<T> {\r\n    let lastError: unknown;\r\n    for (let attempt = 1; attempt <= this.attempts; attempt++) {\r\n      try {\r\n        return await task();\r\n      } catch (error) {\r\n        lastError = error;\r\n        logger.warn(`attempt ${attempt} failed`);\r\n        await new Promise((resolve) => setTimeout(resolve, this.delayMs * attempt));\r\n      }\r\n    }\r\n    throw lastError;\r\n  }\r\n}\n\n// Identifiers:\n// types: RetryPolicy, Promise, Logger\n// calls: constructor, task, warn, setTimeout\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 597,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "constructor",
+        "task",
+        "warn",
+        "setTimeout"
+      ],
+      "referenced_types": [
+        "RetryPolicy",
+        "Promise",
+        "Logger"
+      ]
+    },
+    "index": 2,
+    "metadata": {
+      "content_hash": "da1cbabaf300812e",
+      "end_byte": 597,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/retry.ts@main",
+      "start_byte": 38,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 38,
+    "text": "File: github://acme/widgets/src/retry.ts@main\npath: github://acme/widgets/src/retry.ts@main\nLanguage: typescript\nkind: Other\nSignature: export class RetryPolicy\n [skeleton]\nexport class RetryPolicy\n\n// Key identifiers:\n// types: RetryPolicy, Promise, Logger\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 597,
+    "identifiers": {
+      "defined_symbol": "RetryPolicy",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "constructor",
+        "task",
+        "warn",
+        "setTimeout"
+      ],
+      "referenced_types": [
+        "RetryPolicy",
+        "Promise",
+        "Logger"
+      ]
+    },
+    "index": 3,
+    "metadata": {
+      "content_hash": "aab24537ed345311",
+      "end_byte": 597,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Class",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/retry.ts@main",
+      "start_byte": 45,
+      "symbol": "RetryPolicy",
+      "visibility": "Private"
+    },
+    "start_offset": 45,
+    "text": "File: github://acme/widgets/src/retry.ts@main\npath: github://acme/widgets/src/retry.ts@main\nLanguage: typescript\nsymbol: RetryPolicy\nSymbol: RetryPolicy\nkind: Class\nSignature: class RetryPolicy\n\n// Imports:\nimport { Logger } from \"./logger\";\n\nclass RetryPolicy {\r\n  constructor(private readonly attempts: number, private readonly delayMs: number) {}\r\n\r\n  async run<T>(task: () => Promise<T>, logger: Logger): Promise<T> {\r\n    let lastError: unknown;\r\n    for (let attempt = 1; attempt <= this.attempts; attempt++) {\r\n      try {\r\n        return await task();\r\n      } catch (error) {\r\n        lastError = error;\r\n        logger.warn(`attempt ${attempt} failed`);\r\n        await new Promise((resolve) => setTimeout(resolve, this.delayMs * attempt));\r\n      }\r\n    }\r\n    throw lastError;\r\n  }\r\n}\n\n// Identifiers:\n// symbol: RetryPolicy\n// types: RetryPolicy, Promise, Logger\n// calls: constructor, task, warn, setTimeout\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 151,
+    "identifiers": {
+      "defined_symbol": "constructor",
+      "key_strings": [],
+      "parameters": [
+        "private",
+        "readonly",
+        "attempts",
+        "number",
+        "delayMs"
+      ],
+      "referenced_functions": [
+        "constructor"
+      ],
+      "referenced_types": []
+    },
+    "index": 4,
+    "metadata": {
+      "content_hash": "f07fa76a9119cd44",
+      "end_byte": 151,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "RetryPolicy"
+      ],
+      "path": "github://acme/widgets/src/retry.ts@main",
+      "start_byte": 68,
+      "symbol": "constructor",
+      "visibility": "Private"
+    },
+    "start_offset": 68,
+    "text": "File: github://acme/widgets/src/retry.ts@main\npath: github://acme/widgets/src/retry.ts@main\nLanguage: typescript\nsymbol: RetryPolicy.constructor\nSymbol: RetryPolicy.constructor\nkind: Method\nParent: RetryPolicy\nparents: RetryPolicy\nSignature: constructor(private readonly attempts: number, private readonly delayMs: number)\n\n// Imports:\nimport { Logger } from \"./logger\";\n\nconstructor(private readonly attempts: number, private readonly delayMs: number) {}\n\n// Identifiers:\n// symbol: constructor\n// params: private, readonly, attempts, number, delayMs\n// calls: constructor\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 151,
+    "identifiers": {
+      "defined_symbol": "constructor",
+      "key_strings": [],
+      "parameters": [
+        "private",
+        "readonly",
+        "attempts",
+        "number",
+        "delayMs"
+      ],
+      "referenced_functions": [
+        "constructor"
+      ],
+      "referenced_types": []
+    },
+    "index": 5,
+    "metadata": {
+      "content_hash": "1519770d0f6cb272",
+      "end_byte": 151,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "RetryPolicy"
+      ],
+      "path": "github://acme/widgets/src/retry.ts@main",
+      "start_byte": 68,
+      "symbol": "constructor",
+      "visibility": "Private"
+    },
+    "start_offset": 68,
+    "text": "File: github://acme/widgets/src/retry.ts@main\npath: github://acme/widgets/src/retry.ts@main\nLanguage: typescript\nsymbol: RetryPolicy.constructor\nSymbol: RetryPolicy.constructor\nkind: Method\nParent: RetryPolicy\nparents: RetryPolicy\nSignature: constructor(private readonly attempts: number, private readonly delayMs: number)\n [skeleton]\nconstructor(private readonly attempts: number, private readonly delayMs: number)\n\n// Key identifiers:\n// defined: constructor\n// params: private, readonly, attempts, number, delayMs\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 594,
+    "identifiers": {
+      "defined_symbol": "run",
+      "key_strings": [],
+      "parameters": [
+        "task",
+        "Promise",
+        "T",
+        "logger",
+        "Logger"
+      ],
+      "referenced_functions": [
+        "task",
+        "warn",
+        "setTimeout"
+      ],
+      "referenced_types": [
+        "Promise",
+        "Logger"
+      ]
+    },
+    "index": 6,
+    "metadata": {
+      "content_hash": "75b13e2724e71e12",
+      "end_byte": 594,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "RetryPolicy"
+      ],
+      "path": "github://acme/widgets/src/retry.ts@main",
+      "start_byte": 157,
+      "symbol": "run",
+      "visibility": "Private"
+    },
+    "start_offset": 157,
+    "text": "File: github://acme/widgets/src/retry.ts@main\npath: github://acme/widgets/src/retry.ts@main\nLanguage: typescript\nsymbol: RetryPolicy.run\nSymbol: RetryPolicy.run\nkind: Method\nParent: RetryPolicy\nparents: RetryPolicy\nSignature: async run<T>(task: () => Promise<T>, logger: Logger): Promise<T>\n\n// Imports:\nimport { Logger } from \"./logger\";\n\nasync run<T>(task: () => Promise<T>, logger: Logger): Promise<T> {\r\n    let lastError: unknown;\r\n    for (let attempt = 1; attempt <= this.attempts; attempt++) {\r\n      try {\r\n        return await task();\r\n      } catch (error) {\r\n        lastError = error;\r\n        logger.warn(`attempt ${attempt} failed`);\r\n        await new Promise((resolve) => setTimeout(resolve, this.delayMs * attempt));\r\n      }\r\n    }\r\n    throw lastError;\r\n  }\n\n// Identifiers:\n// symbol: run\n// params: task, Promise, T, logger, Logger\n// types: Promise, Logger\n// calls: task, warn, setTimeout\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 594,
+    "identifiers": {
+      "defined_symbol": "run",
+      "key_strings": [],
+      "parameters": [
+        "task",
+        "Promise",
+        "T",
+        "logger",
+        "Logger"
+      ],
+      "referenced_functions": [
+        "task",
+        "warn",
+        "setTimeout"
+      ],
+      "referenced_types": [
+        "Promise",
+        "Logger"
+      ]
+    },
+    "index": 7,
+    "metadata": {
+      "content_hash": "fe8e357d62c48185",
+      "end_byte": 594,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "RetryPolicy"
+      ],
+      "path": "github://acme/widgets/src/retry.ts@main",
+      "start_byte": 157,
+      "symbol": "run",
+      "visibility": "Private"
+    },
+    "start_offset": 157,
+    "text": "File: github://acme/widgets/src/retry.ts@main\npath: github://acme/widgets/src/retry.ts@main\nLanguage: typescript\nsymbol: RetryPolicy.run\nSymbol: RetryPolicy.run\nkind: Method\nParent: RetryPolicy\nparents: RetryPolicy\nSignature: async run<T>(task: () => Promise<T>, logger: Logger): Promise<T>\n [skeleton]\nasync run<T>(task: () => Promise<T>, logger: Logger): Promise<T>\n\n// Key identifiers:\n// defined: run\n// params: task, Promise, T, logger, Logger\n// types: Promise, Logger\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 549,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [
+        "resolve",
+        "setTimeout",
+        "delayMs",
+        "attempt"
+      ],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 8,
+    "metadata": {
+      "content_hash": "cc45c0f3d6f57296",
+      "end_byte": 549,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "RetryPolicy",
+        "run"
+      ],
+      "path": "github://acme/widgets/src/retry.ts@main",
+      "start_byte": 229,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 229,
+    "text": "let lastError: unknown;\n\nlet attempt = 1;\n\n(resolve) => setTimeout(resolve, this.delayMs * attempt)"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 677,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "noRetry"
+      ],
+      "referenced_types": [
+        "RetryPolicy"
+      ]
+    },
+    "index": 9,
+    "metadata": {
+      "content_hash": "16458edc75fe3fb0",
+      "end_byte": 677,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/retry.ts@main",
+      "start_byte": 601,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 601,
+    "text": "File: github://acme/widgets/src/retry.ts@main\npath: github://acme/widgets/src/retry.ts@main\nLanguage: typescript\nkind: Other\nSignature: export function noRetry(): RetryPolicy\n\n// Imports:\nimport { Logger } from \"./logger\";\n\nexport function noRetry(): RetryPolicy {\r\n  return new RetryPolicy(1, 0);\r\n}\n\n// Identifiers:\n// types: RetryPolicy\n// calls: noRetry\n"
+  },
+  {
+    "chunk_type": "ApiSurface",
+    "end_offset": 677,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 10,
+    "metadata": {
+      "content_hash": "d3f0d7d3eb3f7236",
+      "end_byte": 677,
+      "is_generated": false,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/retry.ts@main",
+      "start_byte": 38,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 38,
+    "text": "path: github://acme/widgets/src/retry.ts@main\nkind: api_surface\n\n// Public API:\n\nexport class RetryPolicy\n\nexport function noRetry(): RetryPolicy\n\n"
+  }
+]

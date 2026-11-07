@@ -1,0 +1,341 @@
+[
+  {
+    "chunk_type": "FileHeader",
+    "end_offset": 72,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 0,
+    "metadata": {
+      "content_hash": "73bc537511eab9c0",
+      "end_byte": 72,
+      "is_generated": false,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/tests/test_parser.py@main",
+      "start_byte": 0,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 0,
+    "text": "path: github://acme/widgets/tests/test_parser.py@main\nkind: file_header\n\nimport pytest\nimport unittest\nfrom widgets.parser import parse_quantity"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 317,
+    "identifiers": {
+      "defined_symbol": "TestParseQuantity",
+      "key_strings": [],
+      "parameters": [
+        "unittest",
+        "TestCase"
+      ],
+      "referenced_functions": [
+        "test_reads_integers",
+        "assertEqual",
+        "parse_quantity",
+        "test_rejects_negative",
+        "assertRaises"
+      ],
+      "referenced_types": [
+        "TestParseQuantity",
+        "TestCase",
+        "ValueError"
+      ]
+    },
+    "index": 1,
+    "metadata": {
+      "content_hash": "fe74653e104e633a",
+      "end_byte": 317,
+      "is_generated": false,
+      "is_test": true,
+      "kind": "Class",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/tests/test_parser.py@main",
+      "start_byte": 75,
+      "symbol": "TestParseQuantity",
+      "visibility": "Private"
+    },
+    "start_offset": 75,
+    "text": "File: github://acme/widgets/tests/test_parser.py@main\npath: github://acme/widgets/tests/test_parser.py@main\nLanguage: python\nsymbol: TestParseQuantity\nSymbol: TestParseQuantity\nkind: Class\nSignature: class TestParseQuantity(unittest.TestCase):\n\n// Imports:\nimport pytest\nimport unittest\nfrom widgets.parser import parse_quantity\n\nclass TestParseQuantity(unittest.TestCase):\n    def test_reads_integers(self):\n        self.assertEqual(parse_quantity(\"4\"), 4)\n\n    def test_rejects_negative(self):\n        with self.assertRaises(ValueError):\n            parse_quantity(\"-1\")\n\n// Identifiers:\n// symbol: TestParseQuantity\n// params: unittest, TestCase\n// types: TestParseQuantity, TestCase, ValueError\n// calls: test_reads_integers, assertEqual, parse_quantity, test_rejects_negative, assertRaises\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 202,
+    "identifiers": {
+      "defined_symbol": "test_reads_integers",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "test_reads_integers",
+        "assertEqual",
+        "parse_quantity"
+      ],
+      "referenced_types": []
+    },
+    "index": 2,
+    "metadata": {
+      "content_hash": "8401890ef948d537",
+      "end_byte": 202,
+      "is_generated": false,
+      "is_test": true,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "TestParseQuantity"
+      ],
+      "path": "github://acme/widgets/tests/test_parser.py@main",
+      "start_byte": 123,
+      "symbol": "test_reads_integers",
+      "visibility": "Private"
+    },
+    "start_offset": 123,
+    "text": "File: github://acme/widgets/tests/test_parser.py@main\npath: github://acme/widgets/tests/test_parser.py@main\nLanguage: python\nsymbol: TestParseQuantity.test_reads_integers\nSymbol: TestParseQuantity.test_reads_integers\nkind: Method\nParent: TestParseQuantity\nparents: TestParseQuantity\nSignature: def test_reads_integers(self):\n\n// Imports:\nimport pytest\nimport unittest\nfrom widgets.parser import parse_quantity\n\ndef test_reads_integers(self):\n        self.assertEqual(parse_quantity(\"4\"), 4)\n\n// Identifiers:\n// symbol: test_reads_integers\n// calls: test_reads_integers, assertEqual, parse_quantity\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 202,
+    "identifiers": {
+      "defined_symbol": "test_reads_integers",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "test_reads_integers",
+        "assertEqual",
+        "parse_quantity"
+      ],
+      "referenced_types": []
+    },
+    "index": 3,
+    "metadata": {
+      "content_hash": "56a164908c2830c2",
+      "end_byte": 202,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "TestParseQuantity"
+      ],
+      "path": "github://acme/widgets/tests/test_parser.py@main",
+      "start_byte": 123,
+      "symbol": "test_reads_integers",
+      "visibility": "Private"
+    },
+    "start_offset": 123,
+    "text": "File: github://acme/widgets/tests/test_parser.py@main\npath: github://acme/widgets/tests/test_parser.py@main\nLanguage: python\nsymbol: TestParseQuantity.test_reads_integers\nSymbol: TestParseQuantity.test_reads_integers\nkind: Method\nParent: TestParseQuantity\nparents: TestParseQuantity\nSignature: def test_reads_integers(self):\n [skeleton]\ndef test_reads_integers(self):\n\n// Key identifiers:\n// defined: test_reads_integers\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 317,
+    "identifiers": {
+      "defined_symbol": "test_rejects_negative",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "test_rejects_negative",
+        "assertRaises",
+        "parse_quantity"
+      ],
+      "referenced_types": [
+        "ValueError"
+      ]
+    },
+    "index": 4,
+    "metadata": {
+      "content_hash": "52257a79748e03da",
+      "end_byte": 317,
+      "is_generated": false,
+      "is_test": true,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "TestParseQuantity"
+      ],
+      "path": "github://acme/widgets/tests/test_parser.py@main",
+      "start_byte": 208,
+      "symbol": "test_rejects_negative",
+      "visibility": "Private"
+    },
+    "start_offset": 208,
+    "text": "File: github://acme/widgets/tests/test_parser.py@main\npath: github://acme/widgets/tests/test_parser.py@main\nLanguage: python\nsymbol: TestParseQuantity.test_rejects_negative\nSymbol: TestParseQuantity.test_rejects_negative\nkind: Method\nParent: TestParseQuantity\nparents: TestParseQuantity\nSignature: def test_rejects_negative(self):\n\n// Imports:\nimport pytest\nimport unittest\nfrom widgets.parser import parse_quantity\n\ndef test_rejects_negative(self):\n        with self.assertRaises(ValueError):\n            parse_quantity(\"-1\")\n\n// Identifiers:\n// symbol: test_rejects_negative\n// types: ValueError\n// calls: test_rejects_negative, assertRaises, parse_quantity\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 317,
+    "identifiers": {
+      "defined_symbol": "test_rejects_negative",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "test_rejects_negative",
+        "assertRaises",
+        "parse_quantity"
+      ],
+      "referenced_types": [
+        "ValueError"
+      ]
+    },
+    "index": 5,
+    "metadata": {
+      "content_hash": "d566bb2f5f017ba2",
+      "end_byte": 317,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "TestParseQuantity"
+      ],
+      "path": "github://acme/widgets/tests/test_parser.py@main",
+      "start_byte": 208,
+      "symbol": "test_rejects_negative",
+      "visibility": "Private"
+    },
+    "start_offset": 208,
+    "text": "File: github://acme/widgets/tests/test_parser.py@main\npath: github://acme/widgets/tests/test_parser.py@main\nLanguage: python\nsymbol: TestParseQuantity.test_rejects_negative\nSymbol: TestParseQuantity.test_rejects_negative\nkind: Method\nParent: TestParseQuantity\nparents: TestParseQuantity\nSignature: def test_rejects_negative(self):\n [skeleton]\ndef test_rejects_negative(self):\n\n// Key identifiers:\n// defined: test_rejects_negative\n// types: ValueError\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 465,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [
+        "raw",
+        "expected",
+        "test_parametrized"
+      ],
+      "referenced_functions": [
+        "parametrize",
+        "test_parametrized",
+        "parse_quantity"
+      ],
+      "referenced_types": []
+    },
+    "index": 6,
+    "metadata": {
+      "content_hash": "a0c24be27d0af446",
+      "end_byte": 465,
+      "is_generated": false,
+      "is_test": true,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/tests/test_parser.py@main",
+      "start_byte": 320,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 320,
+    "text": "File: github://acme/widgets/tests/test_parser.py@main\npath: github://acme/widgets/tests/test_parser.py@main\nLanguage: python\nkind: Other\nSignature: @pytest.mark.parametrize(\"raw,expected\", [(\"1\", 1), (\"10\", 10)])\ndef test_parametrized(raw, expected):\n\n// Imports:\nimport pytest\nimport unittest\nfrom widgets.parser import parse_quantity\n\n@pytest.mark.parametrize(\"raw,expected\", [(\"1\", 1), (\"10\", 10)])\ndef test_parametrized(raw, expected):\n    assert parse_quantity(raw) == expected\n\n// Identifiers:\n// params: raw, expected, test_parametrized\n// calls: parametrize, test_parametrized, parse_quantity\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 465,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [
+        "raw",
+        "expected",
+        "test_parametrized"
+      ],
+      "referenced_functions": [
+        "parametrize",
+        "test_parametrized",
+        "parse_quantity"
+      ],
+      "referenced_types": []
+    },
+    "index": 7,
+    "metadata": {
+      "content_hash": "a5d5cb658608043d",
+      "end_byte": 465,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/tests/test_parser.py@main",
+      "start_byte": 320,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 320,
+    "text": "File: github://acme/widgets/tests/test_parser.py@main\npath: github://acme/widgets/tests/test_parser.py@main\nLanguage: python\nkind: Other\nSignature: @pytest.mark.parametrize(\"raw,expected\", [(\"1\", 1), (\"10\", 10)])\ndef test_parametrized(raw, expected):\n [skeleton]\n@pytest.mark.parametrize(\"raw,expected\", [(\"1\", 1), (\"10\", 10)])\ndef test_parametrized(raw, expected):\n\n// Key identifiers:\n// params: raw, expected, test_parametrized\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 465,
+    "identifiers": {
+      "defined_symbol": "test_parametrized",
+      "key_strings": [],
+      "parameters": [
+        "raw",
+        "expected"
+      ],
+      "referenced_functions": [
+        "test_parametrized",
+        "parse_quantity"
+      ],
+      "referenced_types": []
+    },
+    "index": 8,
+    "metadata": {
+      "content_hash": "dc67dd5a94e156c3",
+      "end_byte": 465,
+      "is_generated": false,
+      "is_test": true,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/tests/test_parser.py@main",
+      "start_byte": 385,
+      "symbol": "test_parametrized",
+      "visibility": "Private"
+    },
+    "start_offset": 385,
+    "text": "File: github://acme/widgets/tests/test_parser.py@main\npath: github://acme/widgets/tests/test_parser.py@main\nLanguage: python\nsymbol: test_parametrized\nSymbol: test_parametrized\nkind: Function\nSignature: def test_parametrized(raw, expected):\n\n// Imports:\nimport pytest\nimport unittest\nfrom widgets.parser import parse_quantity\n\ndef test_parametrized(raw, expected):\n    assert parse_quantity(raw) == expected\n\n// Identifiers:\n// symbol: test_parametrized\n// params: raw, expected\n// calls: test_parametrized, parse_quantity\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 465,
+    "identifiers": {
+      "defined_symbol": "test_parametrized",
+      "key_strings": [],
+      "parameters": [
+        "raw",
+        "expected"
+      ],
+      "referenced_functions": [
+        "test_parametrized",
+        "parse_quantity"
+      ],
+      "referenced_types": []
+    },
+    "index": 9,
+    "metadata": {
+      "content_hash": "f8faabeb604228f2",
+      "end_byte": 465,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/tests/test_parser.py@main",
+      "start_byte": 385,
+      "symbol": "test_parametrized",
+      "visibility": "Private"
+    },
+    "start_offset": 385,
+    "text": "File: github://acme/widgets/tests/test_parser.py@main\npath: github://acme/widgets/tests/test_parser.py@main\nLanguage: python\nsymbol: test_parametrized\nSymbol: test_parametrized\nkind: Function\nSignature: def test_parametrized(raw, expected):\n [skeleton]\ndef test_parametrized(raw, expected):\n\n// Key identifiers:\n// defined: test_parametrized\n// params: raw, expected\n"
+  }
+]
