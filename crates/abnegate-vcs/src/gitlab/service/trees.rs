@@ -2,8 +2,8 @@ use super::*;
 use crate::gitlab::listed_entry::ListedEntry;
 use crate::object_id::ObjectId;
 use crate::parse_error::ParseError;
+use crate::remote_branch_name::RemoteBranchName;
 use crate::repository_path::RepositoryPath;
-use crate::tag_name::TagName;
 use crate::tree_entry::TreeEntry;
 use reqwest::header::LINK;
 use std::collections::HashSet;
@@ -61,15 +61,16 @@ impl GitLabService {
     /// an instance whose own idea of its URL differs from the one configured,
     /// behind a proxy or on a LAN address, still pages, and the token never
     /// travels anywhere else. A next link that names a page already read, has
-    /// no query, or comes with a page of no entries is
+    /// no query or an empty one, or comes with a page of no entries is
     /// [`GitLabError::GitLabApi`], and is never followed. GitLab reports no
     /// size for an entry, so each has none.
     ///
-    /// `reference` is held to the rules git holds a ref's name to, `HEAD`
-    /// aside, and `@` is refused: one that breaks them is
-    /// [`GitLabError::Parse`], and nothing is sent. An entry whose object
-    /// name is not a full one is [`GitLabError::Parse`] too, and no part of
-    /// the tree is returned.
+    /// `reference` is held to the rules `git check-ref-format` holds a name
+    /// under `refs/heads/` to, and `@` is refused: one that breaks them is
+    /// [`GitLabError::Parse`], and nothing is sent. A name only a command
+    /// line would misread, such as `-dash`, is read like any other, because
+    /// it never reaches one. An entry whose object name is not a full one is
+    /// [`GitLabError::Parse`] too, and no part of the tree is returned.
     pub async fn fetch_tree_at(
         &self,
         project: &Project,
@@ -77,7 +78,7 @@ impl GitLabService {
         reference: &str,
         path: Option<&RepositoryPath>,
     ) -> GitLabResult<Vec<TreeEntry>> {
-        if !TagName::accepts_reference(reference) {
+        if RemoteBranchName::refuses_reference(reference) {
             return Err(ParseError::BranchName(reference.to_string()).into());
         }
         let mut url = self.project_endpoint(project, &["repository", "tree"]);
@@ -124,7 +125,7 @@ impl GitLabService {
 /// last page: `requested`, the URL just asked for, with the query of the
 /// link in place of its own. The link's scheme, host and path are never
 /// used. A header or link this crate cannot read, or a next link with no
-/// query, is [`GitLabError::GitLabApi`].
+/// query or an empty one, is [`GitLabError::GitLabApi`].
 fn next_page(response: &Response, requested: &Url) -> GitLabResult<Option<Url>> {
     for value in response.headers().get_all(LINK) {
         let value = value.to_str().map_err(|_| unreadable())?;
@@ -132,7 +133,10 @@ fn next_page(response: &Response, requested: &Url) -> GitLabResult<Option<Url>> 
             continue;
         };
         let link = requested.join(target).map_err(|_| unreadable())?;
-        let query = link.query().ok_or_else(unreadable)?;
+        let query = link
+            .query()
+            .filter(|query| !query.is_empty())
+            .ok_or_else(unreadable)?;
         let mut next = requested.clone();
         next.set_query(Some(query));
         return Ok(Some(next));
@@ -653,6 +657,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_next_link_with_an_empty_query_is_unreadable_and_never_followed() {
+        for link in ["?".to_string(), format!("{}?", route())] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path(route()))
+                .respond_with(linking(&format!("<{link}>; rel=\"next\""), listing()))
+                .mount(&server)
+                .await;
+
+            let failure = tree_at(&server, "main", None).await.unwrap_err();
+
+            assert!(
+                matches!(&failure, GitLabError::GitLabApi(reason) if reason == UNREADABLE),
+                "{link}: {failure:?}"
+            );
+            assert_eq!(
+                server.received_requests().await.unwrap().len(),
+                1,
+                "{link} was followed"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn a_next_page_already_read_is_refused_rather_than_walked_forever() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -754,7 +782,7 @@ mod tests {
     async fn a_reference_git_would_refuse_is_refused_unsent() {
         let server = serving(listing()).await;
 
-        for refused in ["", "a..b", "@", "a b", "-x", "refs/heads/x.lock"] {
+        for refused in ["", "a..b", "@", "a b", "refs/heads/x.lock"] {
             let failure = tree_at(&server, refused, None).await.unwrap_err();
 
             assert!(
@@ -768,7 +796,15 @@ mod tests {
     #[tokio::test]
     async fn head_and_any_ref_git_accepts_are_sent() {
         let commit = object('a');
-        for accepted in ["HEAD", "main", "v1.2.3", "+release", commit.as_str()] {
+        for accepted in [
+            "HEAD",
+            "main",
+            "v1.2.3",
+            "+release",
+            "-dash",
+            "--upload-pack=evil",
+            commit.as_str(),
+        ] {
             let server = serving(listing()).await;
 
             tree_at(&server, accepted, None).await.unwrap();

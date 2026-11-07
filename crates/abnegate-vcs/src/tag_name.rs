@@ -1,21 +1,18 @@
 #[cfg(feature = "github")]
 use crate::parse_error::ParseError;
+#[cfg(feature = "github")]
+use crate::remote_branch_name::CURRENT;
 use crate::remote_branch_name::RemoteBranchName;
 
 /// The name `git tag` refuses, since git reads it as the checked-out commit.
 const HEAD: &str = "HEAD";
 
-/// Git's shorthand for `HEAD`, a revision expression rather than a name,
-/// though git accepts it as a tag.
-#[cfg(any(feature = "github", feature = "gitlab"))]
-const CURRENT: &str = "@";
-
 /// A tag name git accepts: one `git check-ref-format` accepts under
 /// `refs/tags/`, and that `git tag` does not refuse for being `HEAD` or for
 /// being led by `-`.
 ///
-/// Every branch name git accepts is one too, so these are the rules any name
-/// of a ref under `refs/` is held to before it is sent as a path segment.
+/// Every name `git branch` accepts is one too, so these are the rules a commit
+/// is resolved by before its name is sent as a path segment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TagName(String);
 
@@ -41,7 +38,7 @@ impl TagName {
     /// Whether `value` may be sent as a ref: `HEAD`, the tip of the default
     /// branch, or a name git accepts as a tag other than `@`, git's
     /// shorthand for `HEAD`.
-    #[cfg(any(feature = "github", feature = "gitlab"))]
+    #[cfg(feature = "github")]
     pub(crate) fn accepts_reference(value: &str) -> bool {
         value == HEAD || (value != CURRENT && !Self::refuses(value))
     }
@@ -108,7 +105,7 @@ mod tests {
         }
     }
 
-    #[cfg(any(feature = "github", feature = "gitlab"))]
+    #[cfg(feature = "github")]
     #[test]
     fn a_reference_is_head_or_a_tag_name_other_than_its_shorthand() {
         for (value, accepted) in [
@@ -117,6 +114,7 @@ mod tests {
             ("feature/x", true),
             ("v1.2.3", true),
             ("@", false),
+            ("-dash", false),
             ("a..b", false),
             ("", false),
         ] {

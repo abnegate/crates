@@ -138,7 +138,7 @@ pub(super) const MAXIMUM_ANSWER_BYTES: usize = 16 * 1024 * 1024;
 /// parser's own message, which quotes the answer.
 const UNREADABLE: &str = "GitHub answered in a form this crate cannot read";
 
-/// What an answer longer than [`MAXIMUM_ANSWER_BYTES`] is reported as.
+/// What an answer longer than the bound it is read within is reported as.
 const OVERSIZED: &str = "GitHub's answer was larger than this crate reads";
 
 /// What a request that is not a read is reported as when GitHub answers it
@@ -274,6 +274,8 @@ const GIT_SUFFIX: &str = ".git";
 /// [`Page::next`](crate::pull_request::Page::next) which page follows. Every JSON answer,
 /// each page included, is read up to 16 MiB and never parsed in part, so a
 /// longer page is [`PullRequestError::GitHubApi`] rather than a shorter list.
+/// A git tree alone is read up to 128 MiB, because a recursive one outgrows
+/// that bound, and is refused past it the same way.
 /// [`Self::fetch_diff`], [`Self::fetch_file`] and [`Self::fetch_blob`] read
 /// only as far as the limit their caller passes, and [`Self::fetch_blob`]
 /// reports a blob past it as [`PullRequestError::TooLarge`].

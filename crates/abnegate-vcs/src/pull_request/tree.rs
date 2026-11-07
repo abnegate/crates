@@ -5,7 +5,9 @@ use crate::tree_entry::TreeEntry;
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Tree {
-    /// The tree's own object name.
+    /// The object GitHub resolved the reference to: a commit when the tree
+    /// was read by a branch or a commit, and the tree itself only when it was
+    /// read by its own name.
     pub sha: ObjectId,
     /// Its entries, in the order GitHub listed them.
     pub entries: Vec<TreeEntry>,
@@ -15,8 +17,8 @@ pub struct Tree {
 }
 
 impl Tree {
-    /// The tree `sha` names, holding `entries`, every one of them listed until
-    /// [`Self::with_truncated`] says otherwise.
+    /// The tree GitHub resolved to `sha`, holding `entries`, every one of them
+    /// listed until [`Self::with_truncated`] says otherwise.
     pub fn new(sha: ObjectId, entries: Vec<TreeEntry>) -> Self {
         Self {
             sha,

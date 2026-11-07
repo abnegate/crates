@@ -5,12 +5,17 @@ use crate::parse_error::ParseError;
 use crate::pull_request::Tree;
 use crate::pull_request::github_tree::GitHubTree;
 use crate::pull_request::github_tree_entry::GitHubTreeEntry;
-use crate::tag_name::TagName;
+use crate::remote_branch_name::RemoteBranchName;
 use crate::tree_entry::TreeEntry;
 
 /// The query parameter that asks GitHub for every entry beneath a tree, and
 /// the value that turns it on.
 const RECURSIVE: (&str, &str) = ("recursive", "1");
+
+/// Most bytes of a tree read, past the [`MAXIMUM_ANSWER_BYTES`] other answers
+/// are held to. GitHub documents up to 100,000 entries of a recursive tree,
+/// about 31 MiB at the density of a large repository, and long paths add more.
+const MAXIMUM_TREE_BYTES: usize = 128 * 1024 * 1024;
 
 impl PullRequestService {
     /// A git tree's entries, read without following the trees within it
@@ -23,7 +28,8 @@ impl PullRequestService {
     /// entry it passes on the way, as one refusing symbolic links and
     /// submodules must. [`Tree::truncated`] says whether GitHub cut the list
     /// short; a caller that needs every entry must not take a truncated tree
-    /// for a whole one.
+    /// for a whole one. The answer is read up to 128 MiB, past the bound on
+    /// other answers, and a longer one is [`PullRequestError::GitHubApi`].
     ///
     /// A tree or entry whose object name is not a full one is
     /// [`PullRequestError::Parse`]; no part of the tree is returned.
@@ -42,11 +48,13 @@ impl PullRequestService {
     /// the tip of the default branch, read without following the trees within
     /// it unless `recursive` asks to.
     ///
-    /// `reference` is held to git's rules for a tag name, which every branch
-    /// name git accepts meets too, `HEAD` aside, and is
-    /// [`PullRequestError::Parse`] with [`ParseError::BranchName`] before
-    /// anything is sent when it breaks them, or when it is `@`, git's
-    /// shorthand for `HEAD`. It travels as one path segment, so a `/` in it
+    /// `reference` is held to the rules `git check-ref-format` holds a name
+    /// under `refs/heads/` to, and is [`PullRequestError::Parse`] with
+    /// [`ParseError::BranchName`] before anything is sent when it breaks
+    /// them, or when it is `@`, git's shorthand for `HEAD`. A name only a
+    /// command line would misread, such as `-dash`, which
+    /// [`Self::list_branches`] can return, is read like any other, because
+    /// it never reaches one. It travels as one path segment, so a `/` in it
     /// is sent as `%2F`. The answer is read as [`Self::fetch_tree`] reads
     /// one, [`Tree::truncated`] included.
     pub async fn fetch_tree_at(
@@ -56,7 +64,7 @@ impl PullRequestService {
         reference: &str,
         recursive: bool,
     ) -> PullRequestResult<Tree> {
-        if !TagName::accepts_reference(reference) {
+        if RemoteBranchName::refuses_reference(reference) {
             return Err(ParseError::BranchName(reference.to_string()).into());
         }
         let url = self.tree_endpoint(repository, reference, recursive)?;
@@ -114,7 +122,10 @@ impl PullRequestService {
 
     /// The tree GitHub answers `url` with, every object name parsed.
     async fn tree(&self, url: Url, token: &SecretValue) -> PullRequestResult<Tree> {
-        let answer: GitHubTree = self.get(url, token).await?;
+        let response = self
+            .answered(self.request(Method::GET, url, token, ACCEPT)?)
+            .await?;
+        let answer: GitHubTree = decode_within(response, MAXIMUM_TREE_BYTES).await?;
         let entries = answer
             .tree
             .into_iter()
@@ -612,7 +623,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_tree_at_a_reference_named_by_a_short_sha_is_refused() {
+    async fn a_tree_answered_with_a_short_sha_is_refused() {
         let mut answer = nested();
         answer["sha"] = json!("abc123");
         let server = serving_at("main", recursive(), answer).await;
@@ -623,5 +634,57 @@ mod tests {
             matches!(&failure, PullRequestError::Parse(ParseError::ObjectId(value)) if value == "abc123"),
             "{failure:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_tree_past_the_bound_on_other_answers_is_read_by_sha_and_by_reference() {
+        let mut padded = nested().to_string();
+        padded.push_str(&" ".repeat(MAXIMUM_ANSWER_BYTES + 1 - padded.len()));
+        assert_eq!(padded.len(), MAXIMUM_ANSWER_BYTES + 1);
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(padded))
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let by_sha = tree_of(&server, true).await.unwrap();
+        let by_reference = tree_at(&server, "main", true).await.unwrap();
+
+        assert_eq!(by_sha.entries, nested_entries());
+        assert_eq!(by_reference.entries, nested_entries());
+    }
+
+    #[tokio::test]
+    async fn a_tree_declared_past_its_own_bound_is_refused_before_it_is_read() {
+        let service = hanging_up(|_| {
+            Box::leak(
+                format!(
+                    "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    MAXIMUM_TREE_BYTES + 1
+                )
+                .into_boxed_str(),
+            )
+        })
+        .await;
+
+        let failure = service
+            .fetch_tree(&project(&service), &token(), &object('a'), true)
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(&failure, PullRequestError::GitHubApi(text) if text == OVERSIZED),
+            "{failure:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_branch_led_by_a_dash_is_read_as_github_lists_it() {
+        let server = serving_at("-dash", recursive(), nested()).await;
+
+        let tree = tree_at(&server, "-dash", true).await.unwrap();
+
+        assert_eq!(tree.entries, nested_entries());
     }
 }

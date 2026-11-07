@@ -4,8 +4,8 @@ use crate::parse_error::ParseError;
 use crate::pull_request::Contents;
 use crate::pull_request::Excerpt;
 use crate::pull_request::github_contents_answer::GitHubContentsAnswer;
+use crate::remote_branch_name::RemoteBranchName;
 use crate::repository_path::RepositoryPath;
-use crate::tag_name::TagName;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use std::str;
@@ -108,7 +108,7 @@ impl PullRequestService {
         path: &RepositoryPath,
         reference: &str,
     ) -> PullRequestResult<Contents> {
-        if !TagName::accepts_reference(reference) {
+        if RemoteBranchName::refuses_reference(reference) {
             return Err(ParseError::BranchName(reference.to_string()).into());
         }
         let segments: Vec<&str> = ["contents"].into_iter().chain(path.segments()).collect();
@@ -844,6 +844,15 @@ mod tests {
                 "{reference:?}: {failure:?}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_file_on_a_branch_led_by_a_dash_is_described_as_github_lists_it() {
+        let server = describing(README, "-dash", described("README.md", Some(""))).await;
+
+        let contents = contents_of(&server, "README.md", "-dash").await.unwrap();
+
+        assert_eq!(contents.content, Some(Vec::new()));
     }
 
     #[tokio::test]
