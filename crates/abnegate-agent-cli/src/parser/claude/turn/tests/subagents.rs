@@ -1091,7 +1091,7 @@ const TRAILER: &str = "agentId: a1 (use SendMessage with to: 'a1', summary: '<5-
 
 const CUT_OFF: &str = "Agent terminated early due to an API error: You've hit your session limit \u{b7} resets 5pm (error type rate_limit, HTTP 429, request id req_0123456789, model sent to the API: claude-sonnet-5)\n\nEverything below is PARTIAL output recovered from the agent before it was cut off. The agent did NOT finish its task \u{2014} treat these results as incomplete.";
 
-/// What the Agents box shows of a subagent whose call returned `text`.
+/// The summary a caller is told of a subagent whose call returned `text`.
 fn summary_of(text: &str) -> Option<String> {
     let events = interpret_all(&stream(&[
         delegated("sonnet").to_string(),
@@ -1210,6 +1210,9 @@ fn a_report_that_quotes_or_mentions_the_frame_is_unchanged() {
         format!("{FRAME}\n  One indented line.\nThen one at column zero."),
         "It starts with [Subagent hand-back] and ends there.".to_string(),
         "[Subagent hand-back] is how claude opens the frame.".to_string(),
+        "[Subagent hand-back] is how claude opens its frame, ending The report follows:"
+            .to_string(),
+        "[Subagent hand-back] quoted here. The report follows:\n  a quoted line".to_string(),
     ] {
         assert_eq!(summary_of(&quoted).as_deref(), Some(quoted.as_str()));
     }
@@ -1288,4 +1291,62 @@ fn the_calls_output_stays_what_the_main_agent_read_back() {
         "{}",
         framed.text
     );
+}
+
+#[test]
+fn a_partial_notice_survives_an_internal_note_above_or_beside_it() {
+    assert_eq!(
+        summary_of(&format!(
+            "  <tools-used-before-summary>Read</tools-used-before-summary>\n  Everything below is PARTIAL output recovered.\n{FRAME}\n  Half.\n{TRAILER}"
+        ))
+        .as_deref(),
+        Some("Everything below is PARTIAL output recovered.\n\nHalf.")
+    );
+
+    let notice = CUT_OFF
+        .lines()
+        .map(|line| format!("  {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(
+        summary_of(&format!(
+            "  <tools-used-before-summary>Read</tools-used-before-summary>\n  \n{notice}\n{FRAME}\n  Half.\n{TRAILER}"
+        )),
+        Some(format!("{CUT_OFF}\n\nHalf."))
+    );
+}
+
+#[test]
+fn words_at_column_zero_below_the_trailer_leave_the_text_unchanged() {
+    let unknown = format!("{FRAME}\n  The report.\nagentId: a1\nA paragraph at column zero.");
+
+    assert_eq!(summary_of(&unknown).as_deref(), Some(unknown.as_str()));
+}
+
+#[test]
+fn only_its_usage_may_follow_a_framed_report() {
+    assert_eq!(
+        summary_of(&format!(
+            "{FRAME}\n  The report.\n<usage>subagent_tokens: 700\ntool_uses: 0\nduration_ms: 300</usage>"
+        ))
+        .as_deref(),
+        Some("The report.")
+    );
+}
+
+#[test]
+fn a_framed_report_with_no_account_of_the_call_is_still_shown_without_its_frame() {
+    let events = interpret_all(&stream(&[
+        delegated("sonnet").to_string(),
+        returned_to(
+            AGENT_CALL,
+            &format!("{FRAME}\n  The report.\n{TRAILER}"),
+            false,
+            &Value::Null,
+        ),
+    ]));
+
+    let update = last_update(&events, AGENT_CALL).expect("an update");
+    assert_eq!(update.summary.as_deref(), Some("The report."));
+    assert_eq!(update.status, Some(SubagentStatus::Completed));
 }

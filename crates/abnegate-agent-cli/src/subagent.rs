@@ -53,8 +53,9 @@ pub struct Subagent {
     /// What it reported, or how it says its work is going: its full report
     /// once its call returns one, which later, shorter summaries never
     /// replace. A report is as the subagent wrote it, without the frame claude
-    /// hands it back to the main agent in, but with any notice above that
-    /// frame that it was cut off and is only partial.
+    /// hands it back to the main agent in, but with any note above that frame
+    /// that is not only for the main agent, such as that it was cut off and
+    /// is only partial.
     pub summary: Option<String>,
     /// Why it failed, in its own words.
     pub error: Option<String>,

@@ -307,9 +307,10 @@ in the stream until it is read, a tool's output keeps at most
 what the tool printed: its start and its end, around a line saying how much was
 left out. The limit does not reach the call's arguments, which are handed on
 whole. A subagent's summary is its report as it wrote it, without the frame
-Claude hands it back to the main agent in, though with any notice above that
-frame that it was cut off and is only partial; the call's `AgentEvent::Output`
-keeps the frame, as the main agent read it. Nothing renders either event: a
+Claude hands it back to the main agent in, though with any note above that
+frame that is not only for the main agent, such as that it was cut off and is
+only partial; the call's `AgentEvent::Output` keeps the frame, as the main agent
+read it. Nothing renders either event: a
 caller that lists a subagent's calls as it lists the main agent's renders each
 step itself, with `Subagent::activity` for instance, and counts it toward
 whatever budget it keeps.
