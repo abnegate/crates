@@ -85,6 +85,8 @@ mod parse_error;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub mod pull_request;
+#[cfg(any(feature = "github", feature = "gitlab"))]
+mod redirect;
 mod remote_branch_name;
 mod repository_url;
 pub mod resolution;

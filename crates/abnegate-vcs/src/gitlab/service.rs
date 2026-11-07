@@ -2,6 +2,7 @@ use crate::gitlab::GitLabError;
 use crate::gitlab::GitLabResult;
 use crate::gitlab::Project;
 use crate::gitlab::origin::Origin;
+use crate::redirect::within_origin;
 use abnegate_http::metadata::MetadataResolver;
 use abnegate_secret::SecretValue;
 use reqwest::Client;
@@ -9,7 +10,6 @@ use reqwest::RequestBuilder;
 use reqwest::Response;
 use reqwest::StatusCode;
 use reqwest::header::HeaderValue;
-use reqwest::redirect::Policy;
 use serde::de::DeserializeOwned;
 use std::time::Duration;
 use url::Url;
@@ -34,9 +34,6 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Longest a connection may take to open.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// Redirects within the origin a request follows before it stops.
-const MAXIMUM_REDIRECTS: usize = 10;
 
 /// Most bytes of a JSON answer read. A longer one is refused whole, never
 /// parsed in part.
@@ -217,22 +214,6 @@ fn client(https_only: bool) -> GitLabResult<Client> {
         .dns_resolver(MetadataResolver::new())
         .redirect(within_origin())
         .build()?)
-}
-
-/// Follow a redirect only while it stays on the origin the request was sent
-/// to, and for no more than [`MAXIMUM_REDIRECTS`] hops.
-fn within_origin() -> Policy {
-    Policy::custom(|attempt| {
-        let previous = attempt.previous();
-        let within = previous
-            .first()
-            .is_some_and(|sent| sent.origin() == attempt.url().origin());
-        if within && previous.len() <= MAXIMUM_REDIRECTS {
-            attempt.follow()
-        } else {
-            attempt.stop()
-        }
-    })
 }
 
 /// What a status that is not a success means.
