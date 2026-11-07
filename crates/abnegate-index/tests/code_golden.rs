@@ -360,6 +360,15 @@ fn nested_arrow_functions(depth: usize) -> String {
     )
 }
 
+fn nested_arrow_functions_among_small_siblings(depth: usize) -> String {
+    format!(
+        "{}{}{}",
+        "const small = 1;\nconst f = () => {\n".repeat(depth),
+        "  const value = compute(input);\n".repeat(80),
+        "};\nconst after = 2;\n".repeat(depth)
+    )
+}
+
 #[test]
 fn nested_symbols_over_the_token_budget_match_the_donor_digests() {
     let cases = [
@@ -386,6 +395,18 @@ fn nested_symbols_over_the_token_budget_match_the_donor_digests() {
             CodeLanguage::TypeScript,
             5,
             "2e3fc6e51e43e170c43b5d074ccdd3346702d3e3839ebc12171640b39ea1bc64",
+        ),
+        (
+            nested_arrow_functions_among_small_siblings(3),
+            CodeLanguage::TypeScript,
+            7,
+            "59a4f3859aebc34997bdcaaf21eb719a28143e1f84cae4305c599e77158771f0",
+        ),
+        (
+            nested_arrow_functions_among_small_siblings(5),
+            CodeLanguage::TypeScript,
+            7,
+            "638b22ff4fbb89dc556715c290b9bac01ab77962378609d56ae18b3943f01651",
         ),
     ];
     for (source, language, count, digest) in cases {

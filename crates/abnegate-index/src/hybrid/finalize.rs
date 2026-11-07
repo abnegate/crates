@@ -25,6 +25,10 @@ const SAME_CRATE_AFFINITY: f32 = 0.12;
 /// Rerank `results` for `query` with [`apply_local_rerank`], drop fixtures,
 /// and keep at most `limit` rows with at most two chunks per file through
 /// [`cap_per_file`].
+///
+/// # Panics
+///
+/// See [`apply_local_rerank`].
 pub fn finalize_ranking<Id: Clone + Eq + Hash>(
     ranker: &LinearRanker,
     results: Vec<HybridSearchResult<Id>>,
@@ -45,6 +49,13 @@ pub fn finalize_ranking<Id: Clone + Eq + Hash>(
 /// chunks near a definition of one of the question's identifiers gain 0.22
 /// in the same directory or 0.12 in the same crate, and the results end in
 /// [`prefer_definition_chunks`] order.
+///
+/// # Panics
+///
+/// Unlike [`prefer_definition_chunks`], this keeps the standard library's sort
+/// even when a score is NaN, so it can panic if the sort notices the comparison
+/// is not a total order. That needs a NaN score and more than 20 rows. Screen out
+/// NaN scores first to rule it out.
 pub fn apply_local_rerank<Id>(
     ranker: &LinearRanker,
     query: &str,
@@ -70,7 +81,7 @@ pub fn apply_local_rerank<Id>(
     sort_by_score(&mut results);
     boost_implementation_neighbors(query, &mut results);
     sort_by_score(&mut results);
-    prefer_definition_chunks(query, &mut results);
+    sort_ranked_by_definition(query, &mut results);
     results
 }
 
@@ -84,8 +95,29 @@ pub fn apply_local_rerank<Id>(
 /// the sort finds it. The order of a list holding one is stable and repeatable
 /// but not meaningful, and it never panics.
 pub fn prefer_definition_chunks<Id>(query: &str, results: &mut [HybridSearchResult<Id>]) {
+    let keys = definition_keys(query, results);
+    let mut order: Vec<usize> = (0..results.len()).collect();
+    let comparison_is_total = !results.iter().any(|result| result.score.is_nan())
+        && !keys.iter().any(|(_, _, coverage)| coverage.is_nan());
+    let compare = |left: &usize, right: &usize| compare_definitions(&keys, results, *left, *right);
+    if comparison_is_total {
+        order.sort_by(compare);
+    } else {
+        insertion_sort_by(&mut order, compare);
+    }
+    reorder(results, &order);
+}
+
+fn sort_ranked_by_definition<Id>(query: &str, results: &mut [HybridSearchResult<Id>]) {
+    let keys = definition_keys(query, results);
+    let mut order: Vec<usize> = (0..results.len()).collect();
+    order.sort_by(|left, right| compare_definitions(&keys, results, *left, *right));
+    reorder(results, &order);
+}
+
+fn definition_keys<Id>(query: &str, results: &[HybridSearchResult<Id>]) -> Vec<(u8, u8, f32)> {
     let identifiers = rewrite_query(query).identifiers;
-    let keys: Vec<(u8, u8, f32)> = results
+    results
         .iter()
         .map(|result| {
             (
@@ -94,34 +126,31 @@ pub fn prefer_definition_chunks<Id>(query: &str, results: &mut [HybridSearchResu
                 identifier_part_coverage(&result.chunk_text, &identifiers),
             )
         })
-        .collect();
-    let compare = |&left: &usize, &right: &usize| {
-        let (left_tier, left_role, left_coverage) = keys[left];
-        let (right_tier, right_role, right_coverage) = keys[right];
-        right_tier
-            .cmp(&left_tier)
-            .then_with(|| right_role.cmp(&left_role))
-            .then_with(|| {
-                right_coverage
-                    .partial_cmp(&left_coverage)
-                    .unwrap_or(Ordering::Equal)
-            })
-            .then_with(|| {
-                results[right]
-                    .score
-                    .partial_cmp(&results[left].score)
-                    .unwrap_or(Ordering::Equal)
-            })
-    };
-    let mut order: Vec<usize> = (0..results.len()).collect();
-    let comparison_is_total = !results.iter().any(|result| result.score.is_nan())
-        && !keys.iter().any(|(_, _, coverage)| coverage.is_nan());
-    if comparison_is_total {
-        order.sort_by(compare);
-    } else {
-        insertion_sort_by(&mut order, compare);
-    }
-    reorder(results, &order);
+        .collect()
+}
+
+fn compare_definitions<Id>(
+    keys: &[(u8, u8, f32)],
+    results: &[HybridSearchResult<Id>],
+    left: usize,
+    right: usize,
+) -> Ordering {
+    let (left_tier, left_role, left_coverage) = keys[left];
+    let (right_tier, right_role, right_coverage) = keys[right];
+    right_tier
+        .cmp(&left_tier)
+        .then_with(|| right_role.cmp(&left_role))
+        .then_with(|| {
+            right_coverage
+                .partial_cmp(&left_coverage)
+                .unwrap_or(Ordering::Equal)
+        })
+        .then_with(|| {
+            results[right]
+                .score
+                .partial_cmp(&results[left].score)
+                .unwrap_or(Ordering::Equal)
+        })
 }
 
 /// Stable-sort `results` by descending score, NaN last.

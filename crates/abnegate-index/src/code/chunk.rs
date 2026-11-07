@@ -28,7 +28,8 @@ pub struct CodeChunk {
 }
 
 impl CodeChunk {
-    /// A chunk at position `index` with no metadata or identifiers.
+    /// A chunk at position `index` with default metadata, so an empty
+    /// `content_hash`, and no identifiers.
     pub fn new(
         index: usize,
         chunk_type: CodeChunkType,
@@ -63,6 +64,8 @@ impl CodeChunk {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::code::symbol_kind::SymbolKind;
+    use crate::code::visibility::Visibility;
 
     #[test]
     fn new_starts_with_empty_metadata_and_identifiers() {
@@ -79,16 +82,45 @@ mod tests {
     #[test]
     fn builders_replace_the_fields_they_name() {
         let chunk = CodeChunk::new(0, CodeChunkType::Body, "", 0, 0)
-            .with_metadata(ChunkMetadata {
-                is_test: true,
-                ..ChunkMetadata::default()
-            })
-            .with_identifiers(IdentifierBag {
-                key_strings: vec!["key".to_string()],
-                ..IdentifierBag::default()
-            });
+            .with_metadata(
+                ChunkMetadata::default()
+                    .with_path("src/lib.rs")
+                    .with_symbol("run")
+                    .with_kind(SymbolKind::Function)
+                    .with_visibility(Visibility::Public)
+                    .with_parents(vec!["outer".to_string()])
+                    .with_module("widgets")
+                    .with_is_test(true)
+                    .with_is_generated(true)
+                    .with_start_byte(10)
+                    .with_end_byte(21)
+                    .with_content_hash("abc"),
+            )
+            .with_identifiers(
+                IdentifierBag::default()
+                    .with_defined_symbol("run")
+                    .with_parameters(vec!["input".to_string()])
+                    .with_referenced_types(vec!["Widget".to_string()])
+                    .with_referenced_functions(vec!["load".to_string()])
+                    .with_key_strings(vec!["key".to_string()]),
+            );
 
-        assert!(chunk.metadata.is_test);
-        assert_eq!(chunk.identifiers.key_strings, ["key"]);
+        let metadata = &chunk.metadata;
+        assert_eq!(metadata.path.as_deref(), Some("src/lib.rs"));
+        assert_eq!(metadata.symbol.as_deref(), Some("run"));
+        assert_eq!(metadata.kind, Some(SymbolKind::Function));
+        assert_eq!(metadata.visibility, Visibility::Public);
+        assert_eq!(metadata.parents, ["outer"]);
+        assert_eq!(metadata.module.as_deref(), Some("widgets"));
+        assert!(metadata.is_test);
+        assert!(metadata.is_generated);
+        assert_eq!((metadata.start_byte, metadata.end_byte), (10, 21));
+        assert_eq!(metadata.content_hash, "abc");
+        let identifiers = &chunk.identifiers;
+        assert_eq!(identifiers.defined_symbol.as_deref(), Some("run"));
+        assert_eq!(identifiers.parameters, ["input"]);
+        assert_eq!(identifiers.referenced_types, ["Widget"]);
+        assert_eq!(identifiers.referenced_functions, ["load"]);
+        assert_eq!(identifiers.key_strings, ["key"]);
     }
 }

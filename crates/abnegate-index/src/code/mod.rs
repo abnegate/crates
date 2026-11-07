@@ -57,8 +57,9 @@ const OVERLAP_DIVISOR: usize = 10;
 /// Chunk `content` as `language` with the default [`ChunkConfig`] and a budget
 /// of `maximum_tokens` tokens a chunk.
 ///
-/// The budget is a target: a chunk's header counts towards it and is never cut,
-/// so a small budget can be exceeded.
+/// The budget is a target, not a limit: a chunk can be over it, up to the larger
+/// of 6 characters a token and 512 characters, past which it is cut into text
+/// windows.
 pub fn chunk_code(content: &str, language: CodeLanguage, maximum_tokens: usize) -> Vec<CodeChunk> {
     chunk_code_with_config(
         content,

@@ -38,9 +38,10 @@
 //! window.
 //!
 //! With the `code-chunking` feature, [`chunk_code`] parses source with
-//! tree-sitter and splits it on symbol boundaries. Only content too large for
-//! its budget, too large to parse, or generated is cut into text windows.
-//! Each symbol gets a body chunk and a skeleton of its signature; the file
+//! tree-sitter and splits it on symbol boundaries. Content in no known language,
+//! too large to parse, or generated, and any chunk far over its budget, is cut
+//! into text windows instead. A symbol usually gets a body chunk and a skeleton
+//! of its signature, small symbols are merged and large ones split; the file
 //! gets a header chunk with its imports and an API surface chunk with its
 //! public signatures. Every [`CodeChunk`] carries the identifiers it defines
 //! and references, so keyword and vector search see the same names.

@@ -27,7 +27,7 @@ const SPLIT_OVERLAP_RESERVE_TOKENS: usize = 50;
 
 const SPLIT_OVERLAP_LINES: usize = 2;
 
-/// The chunks of `symbols`, in source order.
+/// The chunks of `symbols`.
 ///
 /// `expanded` holds the symbols already split for being over the token budget.
 /// A symbol is reached once through its parent's split and again through its

@@ -1,4 +1,4 @@
-//! How the keyword and semantic legs are filtered and weighed.
+//! How the keyword and semantic legs are weighed, and the floors a host applies.
 
 use crate::query::rewrite_query;
 
@@ -12,8 +12,8 @@ const MINIMUM_KEYWORD_SCORE: f32 = 0.0;
 
 const MINIMUM_SEMANTIC_SCORE: f32 = 0.35;
 
-/// How the keyword and semantic legs of a hybrid search are filtered and
-/// weighed in reciprocal rank fusion.
+/// How the keyword and semantic legs of a hybrid search are weighed in reciprocal
+/// rank fusion, and the score floors a host applies to them.
 ///
 /// The default weighs the semantic leg 0.7, uses the fusion constant 60 from
 /// the literature, sets no floor on keyword hits, and sets a floor of 0.35 on
@@ -73,13 +73,13 @@ impl HybridSearchConfig {
         self
     }
 
-    /// Set the keyword score under which keyword hits are dropped.
+    /// Set the keyword score a host's keyword leg should require.
     pub fn with_minimum_keyword_score(mut self, minimum_keyword_score: f32) -> Self {
         self.minimum_keyword_score = minimum_keyword_score;
         self
     }
 
-    /// Set the similarity under which semantic hits are dropped.
+    /// Set the similarity a host's semantic leg should require.
     pub fn with_minimum_semantic_score(mut self, minimum_semantic_score: f32) -> Self {
         self.minimum_semantic_score = minimum_semantic_score;
         self

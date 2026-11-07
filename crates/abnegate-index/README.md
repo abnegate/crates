@@ -72,9 +72,10 @@ assert_eq!(chunks.len(), 1);
 assert_eq!(chunks[0].text, text);
 ```
 
-With `code-chunking`, `chunk_code` splits source on symbol boundaries. Only
-content too large for its budget, too large to parse, or generated is cut into
-text windows. Each symbol gets a body chunk and a skeleton of its signature;
+With `code-chunking`, `chunk_code` splits source on symbol boundaries. Content
+in no known language, too large to parse, or generated, and any chunk far over
+its budget, is cut into text windows instead. A symbol usually gets a body chunk
+and a skeleton of its signature, small symbols are merged and large ones split;
 the file gets a header chunk with its imports and an API surface chunk with its
 public signatures. Every `CodeChunk` carries the identifiers it defines and
 references, so keyword and vector search see the same names. `smart_chunk` uses
