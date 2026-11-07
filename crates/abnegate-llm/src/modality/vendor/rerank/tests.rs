@@ -17,6 +17,7 @@ use super::*;
 const MODEL: &str = "bge-reranker-v2-m3";
 const RERANK: &str = "/v1/rerank";
 const KEY: &str = "sk-litellm-master-0123456789";
+const SHAPELESS_KEY: &str = "gateway-hunter-2024";
 const QUERY: &str = "What does should_skip_blob do?";
 
 fn documents(values: &[&str]) -> Vec<String> {
@@ -77,6 +78,15 @@ async fn refusal(status: u16, body: &str) -> ProviderError {
     )
     .await;
     provider(HttpRerankConfig::new(url(&server), MODEL).with_api_key(KEY))
+        .rerank(QUERY, &documents(&["fn should_skip_blob()"]))
+        .await
+        .unwrap_err()
+}
+
+async fn answered_with_shapeless_key(response: ResponseTemplate) -> ProviderError {
+    let server = MockServer::start().await;
+    serve(&server, response).await;
+    provider(HttpRerankConfig::new(url(&server), MODEL).with_api_key(SHAPELESS_KEY))
         .rerank(QUERY, &documents(&["fn should_skip_blob()"]))
         .await
         .unwrap_err()
@@ -486,18 +496,116 @@ async fn a_redirect_is_not_followed_and_surfaces_its_status() {
 #[tokio::test]
 async fn a_key_echoed_in_a_refusal_is_redacted() {
     let body = format!(
-        r#"{{"error":{{"message":"Authentication Error, Invalid proxy server token passed. Received API Key = {KEY}"}}}}"#
+        r#"{{"error":{{"message":"Authentication Error, Invalid proxy server token passed. Received API Key = {SHAPELESS_KEY}"}}}}"#
     );
 
-    let error = refusal(401, &body).await;
+    let error = answered_with_shapeless_key(ResponseTemplate::new(401).set_body_string(body)).await;
     let rendered = error.to_string();
 
-    assert!(!rendered.contains(KEY), "{rendered}");
+    assert!(
+        matches!(error, ProviderError::Api { status: 401, .. }),
+        "{error:?}"
+    );
+    assert!(!rendered.contains(SHAPELESS_KEY), "{rendered}");
     assert!(rendered.contains(REDACTED), "{rendered}");
     assert!(
         rendered.contains("Invalid proxy server token"),
         "{rendered}"
     );
+}
+
+#[tokio::test]
+async fn a_key_echoed_in_an_answer_that_does_not_decode_is_redacted() {
+    let body = json!({ "results": format!("rejected caller {SHAPELESS_KEY}") });
+
+    let error = answered_with_shapeless_key(ResponseTemplate::new(200).set_body_json(body)).await;
+    let rendered = error.to_string();
+
+    assert!(matches!(error, ProviderError::Parse { .. }), "{error:?}");
+    assert!(!rendered.contains(SHAPELESS_KEY), "{rendered}");
+    assert!(rendered.contains(REDACTED), "{rendered}");
+}
+
+#[tokio::test]
+async fn an_answer_that_scores_no_document_is_a_parse_error() {
+    for results in [
+        json!([{ "index": 0 }, { "index": 1 }]),
+        json!([{ "relevance_score": 0.9 }, { "relevance_score": 0.1 }]),
+        json!([hit(9, 0.9)]),
+        json!([{ "index": 0, "rank_score": 0.9 }]),
+    ] {
+        let error = scores_for(answer(results.clone()), &["first", "second"])
+            .await
+            .unwrap_err();
+
+        assert!(
+            is_parse_error_saying(&error, "rerank response scored no document"),
+            "{results}: {error:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn score_refuses_an_answer_that_scores_no_document() {
+    let server = MockServer::start().await;
+    serve(&server, answer(json!([hit(7, 0.9)]))).await;
+
+    let error = provider(HttpRerankConfig::new(url(&server), MODEL))
+        .score(QUERY, "fn should_skip_blob()")
+        .await
+        .unwrap_err();
+
+    assert!(
+        is_parse_error_saying(&error, "rerank response scored no document"),
+        "{error:?}"
+    );
+}
+
+#[tokio::test]
+async fn negative_scores_pass_through_on_the_model_scale() {
+    let scores = scores_for(answer(json!([hit(0, -3.2)])), &["first", "second"])
+        .await
+        .unwrap();
+
+    assert_eq!(scores, vec![-3.2, 0.0]);
+}
+
+#[tokio::test]
+async fn a_hit_without_an_index_is_not_placed_by_its_position() {
+    let scores = scores_for(
+        answer(json!([{ "relevance_score": 0.7 }, hit(1, 0.6)])),
+        &["first", "second"],
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(scores, vec![0.0, 0.6]);
+}
+
+#[tokio::test]
+async fn the_query_string_of_the_url_is_kept() {
+    let server = MockServer::start().await;
+    serve(&server, answer(json!([hit(0, 0.9)]))).await;
+
+    provider(HttpRerankConfig::new(
+        format!("{}?api-version=1", url(&server)),
+        MODEL,
+    ))
+    .rerank(QUERY, &documents(&["first"]))
+    .await
+    .unwrap();
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests[0].url.query(), Some("api-version=1"));
+}
+
+#[tokio::test]
+async fn a_success_with_no_body_is_a_parse_error() {
+    for response in [ResponseTemplate::new(200), ResponseTemplate::new(204)] {
+        let error = scores_for(response, &["first"]).await.unwrap_err();
+
+        assert!(matches!(error, ProviderError::Parse { .. }), "{error:?}");
+    }
 }
 
 #[test]

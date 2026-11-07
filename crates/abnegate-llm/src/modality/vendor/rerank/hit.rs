@@ -10,7 +10,7 @@ pub(super) struct Hit {
 }
 
 impl Hit {
-    pub(super) fn score(&self) -> f32 {
-        self.relevance_score.or(self.score).unwrap_or(UNSCORED)
+    pub(super) fn score(&self) -> Option<f32> {
+        self.relevance_score.or(self.score)
     }
 }

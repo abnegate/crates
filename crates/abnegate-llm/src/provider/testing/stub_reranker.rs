@@ -48,7 +48,8 @@ impl StubReranker {
     }
 
     /// How many calls to [`RerankProvider::rerank`] and
-    /// [`RerankProvider::score`] the stub has been handed.
+    /// [`RerankProvider::score`] the stub has been handed, not counting an
+    /// empty batch.
     pub fn calls(&self) -> usize {
         self.calls.load(Ordering::SeqCst)
     }
@@ -77,6 +78,9 @@ impl RerankProvider for StubReranker {
     }
 
     async fn rerank(&self, query: &str, documents: &[String]) -> Result<Vec<f32>, ProviderError> {
+        if documents.is_empty() {
+            return Ok(Vec::new());
+        }
         let scorer = self.scorer()?;
         Ok(documents
             .iter()
@@ -129,6 +133,23 @@ mod tests {
             );
         }
         assert_eq!(stub.calls(), 2);
+    }
+
+    #[tokio::test]
+    async fn an_empty_batch_asks_nothing_of_the_stub() {
+        let failing = StubReranker::failing("stub", "connection refused");
+        let scoring = StubReranker::new("stub", overlap);
+
+        assert_eq!(
+            failing.rerank("query", &[]).await.unwrap(),
+            Vec::<f32>::new()
+        );
+        assert_eq!(
+            scoring.rerank("query", &[]).await.unwrap(),
+            Vec::<f32>::new()
+        );
+        assert_eq!(failing.calls(), 0);
+        assert_eq!(scoring.calls(), 0);
     }
 
     #[test]

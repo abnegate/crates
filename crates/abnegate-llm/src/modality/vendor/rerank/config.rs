@@ -7,11 +7,12 @@ const DEFAULT_MAXIMUM_DOCUMENT_CHARACTERS: usize = 1200;
 
 /// How to reach a rerank endpoint that takes `{model, query, documents}` and
 /// answers `{results: [{index, relevance_score}]}`, as Cohere-style rerank
-/// APIs, a TEI or Infinity server, and a LiteLLM or vLLM `/rerank` route do.
+/// APIs, an Infinity server, and a LiteLLM or vLLM `/rerank` route do.
 ///
 /// `url` is the whole endpoint, such as `http://localhost:8080/v1/rerank`;
-/// nothing is appended to it, and a trailing `/` is dropped. Printing a
-/// config never shows its key.
+/// nothing is appended to it. Trailing slashes on its path and any fragment are
+/// dropped, and a query string is kept. Printing a config never shows its key,
+/// though it does show the URL, so put no credential in the URL.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct HttpRerankConfig {

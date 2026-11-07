@@ -67,8 +67,8 @@
 //! - `ollama`: an Ollama server's native `/api/embeddings` API behind
 //!   [`EmbeddingProvider`].
 //! - `rerank`: `HttpRerankProvider`, any HTTP rerank endpoint taking
-//!   `{model, query, documents}` (a Cohere-style API, TEI, Infinity, a LiteLLM
-//!   or vLLM `/rerank` route) behind [`RerankProvider`].
+//!   `{model, query, documents}` (a Cohere-style API, Infinity, a LiteLLM or
+//!   vLLM `/rerank` route) behind [`RerankProvider`].
 //! - `catalog`: browse the Ollama library, HuggingFace, GPT4All and OpenRouter
 //!   catalogues through one `catalog::ModelProvider` trait.
 //! - `download`: resumable file downloads that only splice a resume onto the

@@ -8,7 +8,8 @@ use crate::provider::ProviderError;
 /// A higher score is a better match. The scale is the model's own: a
 /// caller blending these scores with another signal normalises them first.
 /// A failure is passed on as it happened; whether to fall back to a fixed
-/// score is the caller's policy.
+/// score, and whether to check first that a provider ranks usefully, are the
+/// caller's policy.
 #[async_trait]
 pub trait RerankProvider: Send + Sync {
     /// The provider's name, as errors and logs report it.

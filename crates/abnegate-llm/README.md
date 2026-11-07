@@ -22,7 +22,7 @@ choices are made from.
 - `openai-compatible`: `OpenAiCompatibleEmbeddingProvider`, any OpenAI-compatible embeddings endpoint (LiteLLM, vLLM, Ollama's `/v1`, a gateway) behind `EmbeddingProvider`.
 - `fastembed`: local ONNX embeddings behind `EmbeddingProvider`.
 - `ollama`: an Ollama server's native `/api/embeddings` API behind `EmbeddingProvider`.
-- `rerank`: `HttpRerankProvider`, any HTTP rerank endpoint taking `{model, query, documents}` (a Cohere-style API, TEI, Infinity, a LiteLLM or vLLM `/rerank` route) behind `RerankProvider`.
+- `rerank`: `HttpRerankProvider`, any HTTP rerank endpoint taking `{model, query, documents}` (a Cohere-style API, Infinity, a LiteLLM or vLLM `/rerank` route) behind `RerankProvider`.
 - `catalog`: browse the Ollama library, HuggingFace, GPT4All and OpenRouter catalogues through one `catalog::ModelProvider` trait.
 - `download`: resumable file downloads that only splice a resume onto the same upstream file and verify a SHA-256 when one is given.
 - `testing`: `provider::testing::StubProvider`, a completion provider whose answers a test decides, and `provider::testing::StubReranker`, a `RerankProvider` whose scores a test decides.
