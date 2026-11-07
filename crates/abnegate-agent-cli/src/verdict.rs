@@ -11,13 +11,16 @@ pub(crate) enum Verdict {
     Failed(String),
     /// A diagnostic tripped the caller's tripwire.
     Tripped(String),
+    /// A turn began after a finished one settled a run that waits on
+    /// background work, so the run waits again.
+    Reopened,
 }
 
 impl Verdict {
     /// The failure this verdict settled the run with, if it failed it.
     pub(crate) fn failure(self) -> Option<String> {
         match self {
-            Self::Finished => None,
+            Self::Finished | Self::Reopened => None,
             Self::Failed(reason) | Self::Tripped(reason) => Some(reason),
         }
     }

@@ -17,6 +17,7 @@ use tokio::time::Instant;
 use tokio::time::timeout;
 use tokio::time::timeout_at;
 
+use crate::CUT_SHORT;
 use crate::cleanup::Cleanup;
 use crate::event::AgentEvent;
 use crate::execution::Execution;
@@ -101,21 +102,14 @@ impl Run {
     /// stopped, or whose diagnostics tripped its tripwire, reads nothing,
     /// whether or not the agent also reported a failure of its own.
     pub(crate) async fn finish(mut self) -> Result<Execution, ExecutionError> {
-        let deadline = self.deadline;
-        let expiry = async move {
-            match deadline {
-                Some(deadline) => tokio::time::sleep_until(deadline).await,
-                None => std::future::pending().await,
+        let settlement = loop {
+            let outcome = self.outcome().await;
+            match self.settle(outcome).await {
+                Ok(None) => {}
+                Ok(Some(settlement)) => break Ok(settlement),
+                Err(error) => break Err(error),
             }
         };
-        let outcome = tokio::select! {
-            biased;
-            exit = exited(&mut self.child, self.reaper.group()) => Outcome::Exited(exit),
-            Some(verdict) = self.settled.recv() => Outcome::Settled(verdict),
-            () = expiry => Outcome::TimedOut,
-        };
-
-        let settlement = self.settle(outcome).await;
         let unstopped = settlement
             .as_ref()
             .is_ok_and(|settled| settled.stopped.is_none());
@@ -151,6 +145,15 @@ impl Run {
                 ));
             }
         };
+        if stopped.as_deref() == Some(OUTLASTED)
+            && stdout.finish_reason.as_deref() != Some(CUT_SHORT)
+        {
+            let cut_short = AgentEvent::finished(Some(CUT_SHORT.to_string()));
+            if let Some(forward) = &self.forward {
+                let _ = forward.send(cut_short.clone());
+            }
+            stdout.record(cut_short);
+        }
         let stderr = match drain(&mut self.diagnostics, self.reaper.group(), &self.draining).await {
             Ok(stderr) => stderr,
             Err(message) => {
@@ -250,19 +253,37 @@ impl Run {
         })
     }
 
+    /// Whatever ends the wait first: the agent's exit, a verdict on its
+    /// output, or the run's deadline.
+    async fn outcome(&mut self) -> Outcome {
+        let deadline = self.deadline;
+        let expiry = async move {
+            match deadline {
+                Some(deadline) => tokio::time::sleep_until(deadline).await,
+                None => std::future::pending().await,
+            }
+        };
+        tokio::select! {
+            biased;
+            exit = exited(&mut self.child, self.reaper.group()) => Outcome::Exited(exit),
+            Some(verdict) = self.settled.recv() => Outcome::Settled(verdict),
+            () = expiry => Outcome::TimedOut,
+        }
+    }
+
     /// Carry the wait through to the agent's exit, stopping the agent when
     /// the wait ended without one, and say why it was stopped when it was,
     /// what failure settled the run when one did, and the status it exited
     /// with when it exited by itself. The agent is left unreaped.
-    async fn settle(&mut self, outcome: Outcome) -> Result<Settlement, ProviderError> {
+    async fn settle(&mut self, outcome: Outcome) -> Result<Option<Settlement>, ProviderError> {
         let verdict = match outcome {
             Outcome::Exited(Ok(exit)) => {
-                return Ok(Settlement {
+                return Ok(Some(Settlement {
                     stopped: None,
                     failure: None,
                     tripped: false,
                     exit,
-                });
+                }));
             }
             Outcome::Exited(Err(error)) => {
                 self.journal
@@ -281,15 +302,16 @@ impl Run {
                 tracing::warn!(provider = %self.name, label = %self.label, "agent timed out; stopping its process group");
                 stop_agent(&mut self.child, self.reaper.group()).await;
                 if *self.answered.borrow() {
-                    return Ok(Settlement {
+                    return Ok(Some(Settlement {
                         stopped: Some(OUTLASTED.to_string()),
                         failure: None,
                         tripped: false,
                         exit: None,
-                    });
+                    }));
                 }
                 return Err(ProviderError::timeout(&self.name, self.timeout));
             }
+            Outcome::Settled(Verdict::Reopened) => return Ok(None),
             Outcome::Settled(verdict) => verdict,
         };
 
@@ -308,24 +330,27 @@ impl Run {
 
         let grace = Instant::now() + GRACE_PERIOD;
         let patience = self.deadline.map_or(grace, |deadline| deadline.min(grace));
-        if let Ok(Ok(exit)) =
-            timeout_at(patience, exited(&mut self.child, self.reaper.group())).await
-        {
-            return Ok(Settlement {
+        let exited_in_grace = tokio::select! {
+            biased;
+            exit = timeout_at(patience, exited(&mut self.child, self.reaper.group())) => exit.ok().and_then(Result::ok),
+            Some(Verdict::Reopened) = self.settled.recv() => return Ok(None),
+        };
+        if let Some(exit) = exited_in_grace {
+            return Ok(Some(Settlement {
                 stopped: None,
                 failure,
                 tripped,
                 exit,
-            });
+            }));
         }
 
         stop_agent(&mut self.child, self.reaper.group()).await;
-        Ok(Settlement {
+        Ok(Some(Settlement {
             stopped: Some(reason),
             failure,
             tripped,
             exit: None,
-        })
+        }))
     }
 
     /// Release the agent's group, which no kill reaches from here on, and

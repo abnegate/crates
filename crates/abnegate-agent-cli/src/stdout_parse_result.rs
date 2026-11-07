@@ -342,6 +342,44 @@ mod tests {
     }
 
     #[test]
+    fn each_finished_turn_adds_its_own_usage_turns_and_answer() {
+        let result: StdoutParseResult = [
+            AgentEvent::Usage(Usage::new(5, 1)),
+            AgentEvent::Usage(Usage::new(20, 10)),
+            AgentEvent::Turns(2),
+            AgentEvent::Answer("First.".to_string()),
+            AgentEvent::finished(Some("success".to_string())),
+            AgentEvent::Usage(Usage::new(4, 1)),
+            AgentEvent::Usage(Usage::new(10, 5)),
+            AgentEvent::Turns(1),
+            AgentEvent::Answer("Second.".to_string()),
+            AgentEvent::finished(Some("success".to_string())),
+        ]
+        .into_iter()
+        .collect();
+
+        let usage = result.usage.expect("the run's usage");
+        assert_eq!((usage.prompt_tokens, usage.completion_tokens), (30, 15));
+        assert_eq!(result.turns, Some(3));
+        assert_eq!(result.answer.as_deref(), Some("First.\n\nSecond."));
+    }
+
+    #[test]
+    fn a_turn_still_open_counts_its_latest_progress_over_the_finished_ones() {
+        let result: StdoutParseResult = [
+            AgentEvent::Usage(Usage::new(20, 10)),
+            AgentEvent::finished(Some("success".to_string())),
+            AgentEvent::Usage(Usage::new(3, 1)),
+            AgentEvent::Usage(Usage::new(6, 2)),
+        ]
+        .into_iter()
+        .collect();
+
+        let usage = result.usage.expect("the run's usage");
+        assert_eq!((usage.prompt_tokens, usage.completion_tokens), (26, 12));
+    }
+
+    #[test]
     fn the_first_failure_is_kept_and_finishes_the_run() {
         let result: StdoutParseResult = [
             AgentEvent::Failed("You have hit your usage limit.".to_string()),

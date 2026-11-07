@@ -140,14 +140,23 @@ pub struct Turn {
     roster: Roster,
     /// The tasks the latest notice of what runs in the background listed.
     running: Vec<Option<String>>,
+    /// Every task any such notice has listed.
+    listed: BTreeSet<String>,
     /// The turns claude still owes: one for each listed task that ended and
     /// each wakeup that fired, paid as each turn's `init` line begins it.
     owed: usize,
     /// The main agent's calls that set a wakeup still to fire.
     wakeups: BTreeSet<String>,
+    /// How many turns an `init` line has begun.
+    begun: u64,
 }
 
 impl Turn {
+    /// How many turns an `init` line has begun.
+    pub(crate) fn turns_begun(&self) -> u64 {
+        self.begun
+    }
+
     /// Whether work runs in the background, a wakeup has yet to fire, or a
     /// turn either of them led to has yet to begin.
     pub(crate) fn background_running(&self) -> bool {
@@ -278,6 +287,7 @@ impl Turn {
             return;
         };
         if subtype == INIT_SUBTYPE {
+            self.begun += 1;
             self.owed = self.owed.saturating_sub(1);
             self.announce(Some(INIT_SUBTYPE), notice.session_id, events);
             return;
@@ -285,6 +295,7 @@ impl Turn {
         if subtype == BACKGROUND_TASKS_SUBTYPE {
             if let Some(tasks) = notice.tasks {
                 self.running = tasks.into_iter().map(|task| task.task_id).collect();
+                self.listed.extend(self.running.iter().flatten().cloned());
             }
             return;
         }
@@ -292,8 +303,10 @@ impl Turn {
             return;
         };
         if event == TaskEvent::Notification
-            && notice.task_id.is_some()
-            && self.running.contains(&notice.task_id)
+            && notice
+                .task_id
+                .as_ref()
+                .is_some_and(|task| self.listed.contains(task))
         {
             self.owed += 1;
         }

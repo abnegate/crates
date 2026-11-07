@@ -33,6 +33,15 @@ impl Turn {
         }
     }
 
+    /// How many turns the agent has begun, as far as it says: Codex says
+    /// nothing of it.
+    pub(crate) fn turns_begun(&self) -> u64 {
+        match self.agent {
+            AgentKind::Claude => self.claude.turns_begun(),
+            AgentKind::Codex => 0,
+        }
+    }
+
     /// Whether work the agent sent to the background is running, a wakeup it
     /// set has yet to fire, or a turn either led to has yet to begin, as of
     /// the last line that said so.
@@ -126,6 +135,23 @@ mod tests {
         assert!(turn.background_running(), "one turn is still owed");
         turn.interpret(TURN, &mut events);
         assert!(!turn.background_running(), "every turn owed has begun");
+    }
+
+    #[test]
+    fn a_task_listed_and_dropped_before_its_notice_is_still_owed_a_turn() {
+        const LISTED: &str =
+            r#"{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"b1"}]}"#;
+        const NOTHING: &str =
+            r#"{"type":"system","subtype":"background_tasks_changed","tasks":[]}"#;
+        const ENDED: &str = r#"{"type":"system","subtype":"task_notification","task_id":"b1","status":"completed"}"#;
+        let mut turn = AgentKind::Claude.turn();
+        let mut events = Vec::new();
+
+        for line in [LISTED, NOTHING, ENDED] {
+            turn.interpret(line, &mut events);
+        }
+
+        assert!(turn.background_running(), "the turn b1 ended into is owed");
     }
 
     #[test]

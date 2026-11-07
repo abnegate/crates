@@ -8,7 +8,8 @@ use crate::stdout_parse_result::StdoutParseResult;
 /// One run of an agent, before it is judged a success or a failure.
 ///
 /// [`CliProvider::execute`](crate::CliProvider::execute) returns this for any
-/// run that ended on its own or was stopped after its output had settled it,
+/// run that ended on its own, was stopped after its output had settled it, or
+/// outlasted its timeout after answering while it waited on background work,
 /// so a caller that needs more than a [`Completion`](abnegate_llm::Completion)
 /// — the schema-shaped answer, the cost, the session to resume — can read it
 /// and decide for itself.
@@ -26,9 +27,11 @@ pub struct Execution {
     pub status: ExitStatus,
     /// Why the agent was stopped rather than left to exit, when it was: the
     /// failure it reported, the diagnostic that tripped
-    /// [`CliSettings::tripwire`](crate::CliSettings::tripwire), or a finished
-    /// turn followed by a process that would not exit. `status` is then the
-    /// stop's, not the agent's.
+    /// [`CliSettings::tripwire`](crate::CliSettings::tripwire), a finished
+    /// turn followed by a process that would not exit, or, for a run
+    /// [awaiting background work](crate::CliSettings::await_background), a
+    /// timeout that came after it had answered. `status` is then the stop's,
+    /// not the agent's.
     pub stopped: Option<String>,
     /// The failure that settled the run while the agent was still running —
     /// the failure it reported, or the diagnostic that tripped

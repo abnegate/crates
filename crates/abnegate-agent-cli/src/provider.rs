@@ -3541,51 +3541,156 @@ sleep 120"#,
     }
 
     /// A self-pacing loop or a server left running never lets the run settle,
-    /// but it has answered: the timeout costs what it was still waiting for.
+    /// but it has answered: the timeout costs only what it was still waiting
+    /// for, and says so.
     #[tokio::test]
-    async fn background_work_outliving_the_timeout_keeps_the_answer() {
+    async fn background_work_outliving_the_timeout_keeps_the_answer_marked_cut_short() {
         let directory = TempDir::new().expect("a temporary directory");
-        let script = r#"echo '{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"b1"}]}'
-echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Kept."}]}}'
-echo '{"type":"result","subtype":"success","is_error":false,"result":"Kept."}'
-sleep 120"#;
-        let settings = settings(&directory, script)
-            .await_background()
-            .with_timeout(Duration::from_secs(3));
-        let provider = CliProvider::agent(AgentKind::Claude, settings);
+        let provider = CliProvider::agent(AgentKind::Claude, outliving_its_timeout(&directory));
 
         let execution = execute(&provider, &[Message::user("hi")]).await;
-
-        assert!(execution.stopped.is_some(), "{execution:?}");
-        assert_eq!(execution.failure, None, "{execution:?}");
         let completion = run(&provider, &[Message::user("hi")])
             .await
             .expect("the answer it gave");
+
+        assert!(execution.stopped.is_some(), "{execution:?}");
+        assert_eq!(execution.failure, None, "{execution:?}");
         assert_eq!(completion.message.content.as_deref(), Some("Kept."));
+        assert_eq!(completion.finish_reason.as_deref(), Some(crate::CUT_SHORT));
     }
 
     #[tokio::test]
-    async fn a_stream_outliving_its_timeout_after_answering_ends_without_an_error() {
+    async fn a_stream_outliving_its_timeout_after_answering_ends_marked_cut_short() {
         let directory = TempDir::new().expect("a temporary directory");
-        let script = r#"echo '{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"b1"}]}'
-echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Kept."}]}}'
-echo '{"type":"result","subtype":"success","is_error":false,"result":"Kept."}'
-sleep 120"#;
-        let settings = settings(&directory, script)
-            .await_background()
-            .with_timeout(Duration::from_secs(3));
-        let provider = CliProvider::agent(AgentKind::Claude, settings);
+        let provider = CliProvider::agent(AgentKind::Claude, outliving_its_timeout(&directory));
 
         let events = streamed(&provider, &[Message::user("hi")]).await;
         let (events, failure, _) = collected(events).await;
 
         assert!(failure.is_none(), "{failure:?}");
         assert!(
-            events
-                .iter()
-                .any(|event| matches!(event, AgentEvent::Finished { .. })),
+            matches!(
+                events.last(),
+                Some(AgentEvent::Finished { finish_reason }) if finish_reason.as_deref() == Some(crate::CUT_SHORT)
+            ),
             "{events:?}"
         );
+    }
+
+    fn outliving_its_timeout(directory: &TempDir) -> CliSettings {
+        let script = r#"echo '{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"b1"}]}'
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Kept."}]}}'
+echo '{"type":"result","subtype":"success","is_error":false,"result":"Kept."}'
+sleep 120"#;
+        settings(directory, script)
+            .await_background()
+            .with_timeout(Duration::from_secs(6))
+    }
+
+    /// A `Monitor` line starts a turn of its own with nothing listed to owe it,
+    /// after a result that settled the run.
+    const UNOWED_TURN: &str = r#"echo '{"type":"system","subtype":"init","session_id":"s"}'
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Watching."}]}}'
+echo '{"type":"result","subtype":"success","is_error":false,"result":"Watching."}'
+echo '{"type":"system","subtype":"init","session_id":"s"}'
+sleep 8
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"It ticked."}]}}'
+echo '{"type":"result","subtype":"success","is_error":false,"result":"It ticked."}'"#;
+
+    #[tokio::test]
+    async fn a_turn_that_begins_after_the_run_settled_reopens_the_wait() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let provider = CliProvider::agent(
+            AgentKind::Claude,
+            settings(&directory, UNOWED_TURN).await_background(),
+        );
+
+        let completion = run(&provider, &[Message::user("hi")])
+            .await
+            .expect("both turns");
+
+        assert_eq!(
+            completion.message.content.as_deref(),
+            Some("Watching.\n\nIt ticked.")
+        );
+        assert_ne!(completion.finish_reason.as_deref(), Some(crate::CUT_SHORT));
+    }
+
+    /// Without the setting the cutoff stands, and the turn it cut off says so.
+    #[tokio::test]
+    async fn a_run_not_awaiting_background_work_marks_the_turn_its_cutoff_ended() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let provider = CliProvider::agent(AgentKind::Claude, settings(&directory, UNOWED_TURN));
+
+        let execution = execute(&provider, &[Message::user("hi")]).await;
+        let completion = assemble("claude", execution).expect("the first turn's answer");
+
+        assert_eq!(completion.message.content.as_deref(), Some("Watching."));
+        assert_eq!(completion.finish_reason.as_deref(), Some(crate::CUT_SHORT));
+    }
+
+    /// Each turn that begins in the grace reopens the wait, and the run's
+    /// timeout still ends it.
+    #[tokio::test]
+    async fn an_agent_that_keeps_beginning_turns_is_bounded_by_the_timeout() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let started = directory.path().join("started");
+        let script = format!(
+            r#"touch '{started}'
+echo '{{"type":"result","subtype":"success","is_error":false,"result":"Again."}}'
+while true; do
+  sleep 2
+  echo '{{"type":"system","subtype":"init","session_id":"s"}}'
+  echo '{{"type":"result","subtype":"success","is_error":false,"result":"Again."}}'
+done"#,
+            started = started.display(),
+        );
+        let timeout = Duration::from_secs(10);
+        let provider = CliProvider::agent(
+            AgentKind::Claude,
+            settings(&directory, &script)
+                .await_background()
+                .with_timeout(timeout),
+        );
+
+        let (completion, waited) = timed(run(&provider, &[Message::user("hi")]), &started).await;
+
+        let completion = completion.expect("the answers it gave");
+        assert!(
+            waited < timeout + Duration::from_secs(5),
+            "waited {waited:?}"
+        );
+        assert!(
+            completion
+                .message
+                .content
+                .as_deref()
+                .is_some_and(|content| content.matches("Again.").count() > 1),
+            "{completion:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_later_turn_the_agent_exits_part_way_through_keeps_the_earlier_answer_marked() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = r#"echo '{"type":"system","subtype":"init","session_id":"s"}'
+echo '{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"b1"}]}'
+echo '{"type":"result","subtype":"success","is_error":false,"result":"Started."}'
+echo '{"type":"system","subtype":"task_notification","task_id":"b1","status":"completed"}'
+echo '{"type":"system","subtype":"background_tasks_changed","tasks":[]}'
+echo '{"type":"system","subtype":"init","session_id":"s"}'
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"The build fai"}]}}'"#;
+        let provider = CliProvider::agent(
+            AgentKind::Claude,
+            settings(&directory, script).await_background(),
+        );
+
+        let completion = run(&provider, &[Message::user("hi")])
+            .await
+            .expect("the earlier turn's answer");
+
+        assert_eq!(completion.message.content.as_deref(), Some("Started."));
+        assert_eq!(completion.finish_reason.as_deref(), Some(crate::CUT_SHORT));
     }
 
     /// Nothing has answered yet, so running out of time is still a failure.

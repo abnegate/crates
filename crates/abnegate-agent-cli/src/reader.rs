@@ -10,6 +10,7 @@ use tokio::process::ChildStdout;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 
+use crate::CUT_SHORT;
 use crate::activity::ELLIPSIS;
 use crate::drain::Drain;
 use crate::event::AgentEvent;
@@ -65,7 +66,12 @@ const BUFFER: usize = 8 * 1024;
 ///
 /// When [awaiting background work](Reader::awaiting_background), a finished
 /// turn settles nothing while the agent reports work running in the background,
-/// and the turn that work leads to is read like the first.
+/// and the turn that work leads to is read like the first. A turn that begins
+/// after a finished one settled the run reopens it, so the run waits again.
+///
+/// A turn that begins after one finished, and is still unfinished when the
+/// output ends, ends the stream with a [`CUT_SHORT`] finish, keeping what the
+/// finished turns said.
 ///
 /// Once the run starts to [`Drain`] it, the reader still takes everything the
 /// pipe holds, and stops when the drain ends.
@@ -86,6 +92,13 @@ pub(crate) struct Reader {
     drain: Drain,
     await_background: bool,
     answered: watch::Sender<bool>,
+    /// Whether a verdict has settled the run, and whether that verdict was a
+    /// finished turn a later one may reopen.
+    settled: bool,
+    reopenable: bool,
+    /// Whether any turn has finished, and whether one begun since has not.
+    finished: bool,
+    turn_open: bool,
     count: u64,
     partials: u64,
     events: Vec<AgentEvent>,
@@ -120,6 +133,10 @@ impl Reader {
             drain: Drain::new(draining),
             await_background: false,
             answered: watch::Sender::new(false),
+            settled: false,
+            reopenable: false,
+            finished: false,
+            turn_open: false,
             count: 0,
             partials: 0,
             events: Vec::new(),
@@ -166,6 +183,11 @@ impl Reader {
         stdout: Option<ChildStdout>,
     ) -> Result<StdoutParseResult, String> {
         let outcome = self.read(stdout).await;
+        if self.turn_open && self.result.failure.is_none() {
+            let cut_short = AgentEvent::finished(Some(CUT_SHORT.to_string()));
+            self.hand_on(&cut_short);
+            self.result.record(cut_short);
+        }
         self.result.conclude();
         if let Err(reason) = &outcome {
             self.settle(Verdict::Failed(reason.clone()));
@@ -253,7 +275,12 @@ impl Reader {
                 .await;
         }
 
+        let begun = self.turn.turns_begun();
         self.turn.interpret(&line, &mut self.events);
+        if self.turn.turns_begun() > begun {
+            self.turn_open = self.finished;
+            self.reopen();
+        }
         let events = std::mem::take(&mut self.events);
         for event in events {
             let event = match self.paragraphs.separated(event) {
@@ -293,9 +320,12 @@ impl Reader {
                     AgentEvent::Diagnostic(message)
                 }
                 AgentEvent::Finished { finish_reason } => {
-                    if self.await_background && self.turn.background_running() {
+                    self.finished = true;
+                    self.turn_open = false;
+                    if self.await_background {
                         self.answered.send_replace(true);
-                    } else {
+                    }
+                    if !(self.await_background && self.turn.background_running()) {
                         self.settle(Verdict::Finished);
                     }
                     AgentEvent::finished(finish_reason)
@@ -338,8 +368,31 @@ impl Reader {
     }
 
     fn settle(&mut self, verdict: Verdict) {
-        if let Some(verdicts) = self.verdicts.take() {
+        if self.settled {
+            return;
+        }
+        self.settled = true;
+        self.reopenable = self.await_background && verdict == Verdict::Finished;
+        let verdicts = if self.await_background {
+            self.verdicts.clone()
+        } else {
+            self.verdicts.take()
+        };
+        if let Some(verdicts) = verdicts {
             let _ = verdicts.try_send(verdict);
+        }
+    }
+
+    /// Say the run must wait again, when a finished turn settled it and the
+    /// agent has begun another.
+    fn reopen(&mut self) {
+        if !self.reopenable {
+            return;
+        }
+        self.settled = false;
+        self.reopenable = false;
+        if let Some(verdicts) = &self.verdicts {
+            let _ = verdicts.try_send(Verdict::Reopened);
         }
     }
 }

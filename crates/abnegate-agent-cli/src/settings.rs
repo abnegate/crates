@@ -500,19 +500,22 @@ pub struct CliSettings {
     /// Keep reading while work the agent sent to the background still runs,
     /// rather than stopping the agent shortly after its first result.
     ///
-    /// Claude ends a turn with a result while a background command, monitor
-    /// or subagent runs on, or a wakeup it set with `ScheduleWakeup` has yet
-    /// to fire, then writes a further turn once it ends or fires. Without
-    /// this, the run settles on that first result and an agent still running
-    /// moments later is stopped, the work and the turn it would have led to
-    /// with it. With it, a result settles the run only once Claude has no
-    /// listed task running, no wakeup to fire and no turn it owes for either.
+    /// Claude ends a turn with a result while a background command or monitor
+    /// runs on, or before a wakeup it set with `ScheduleWakeup` fires, then
+    /// writes a further turn once it ends or fires. A monitor's line can start
+    /// a turn of its own. Without this, the run settles on that first result
+    /// and an agent still running moments later is stopped, the work and the
+    /// turn it would have led to with it. With it, a result settles the run
+    /// only once Claude has no listed task running, no wakeup to fire and no
+    /// turn it owes for either, and a turn that begins while a settled run
+    /// waits for the agent to exit reopens the wait.
     ///
-    /// Work that never ends, or an agent that does not exit once its work is
-    /// done, holds the run until its [timeout](CliSettings::timeout), and a
-    /// run with none can wait forever. A run that has answered by then keeps
-    /// its answer, with [`Execution::stopped`](crate::Execution::stopped)
-    /// saying why it ended; one that has not fails with the timeout.
+    /// Work that never ends, or an agent that keeps beginning turns, holds the
+    /// run until its [timeout](CliSettings::timeout), and a run with none can
+    /// wait forever. A run that has answered by then keeps its answer, with
+    /// its finish reason [`CUT_SHORT`](crate::CUT_SHORT) and
+    /// [`Execution::stopped`](crate::Execution::stopped) saying why it ended;
+    /// one that has not fails with the timeout.
     ///
     /// A reported failure or limit still settles the run at once. A task from
     /// `CronCreate` is not waited for: it lives only as long as the session,
