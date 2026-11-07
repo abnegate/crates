@@ -17,6 +17,7 @@ use crate::parser::claude::cli_content_block::CliContentBlock;
 use crate::parser::claude::cli_message::CliMessage;
 use crate::parser::claude::cli_usage::CliUsage;
 use crate::parser::claude::credits_refusal::CreditsRefusal;
+use crate::parser::claude::lifecycle::Lifecycle;
 use crate::parser::claude::model_usage::ModelUsage;
 use crate::parser::claude::notice::Notice;
 use crate::parser::claude::rate_limit_report::OVERAGE_INCLUDED_WINDOW;
@@ -50,6 +51,19 @@ const INIT_SUBTYPE: &str = "init";
 
 /// The kind of line that tells of the session or of a task claude runs.
 const SYSTEM: &str = "system";
+
+/// The `system` line that lists all that runs in the background.
+const BACKGROUND_TASKS_SUBTYPE: &str = "background_tasks_changed";
+
+/// The kind of line that reports a command claude runs on its own account.
+const COMMAND_LIFECYCLE: &str = "command_lifecycle";
+
+/// The tool that sets, or with [`WAKEUP_STOP`] cancels, the wakeup that starts
+/// a later turn.
+const SCHEDULE_WAKEUP: &str = "ScheduleWakeup";
+
+/// The [`SCHEDULE_WAKEUP`] argument that cancels the wakeup.
+const WAKEUP_STOP: &str = "stop";
 
 /// The kind of line that hands the model back what its tools printed.
 const USER: &str = "user";
@@ -123,9 +137,18 @@ pub struct Turn {
     /// The calls waiting on their results and the subagents the main agent
     /// started.
     roster: Roster,
+    /// Whether the latest notice of what runs in the background listed any.
+    background: bool,
+    /// The main agent's call that set the wakeup still to fire.
+    wakeup: Option<String>,
 }
 
 impl Turn {
+    /// Whether work runs in the background or a wakeup has yet to fire.
+    pub(crate) fn background_running(&self) -> bool {
+        self.background || self.wakeup.is_some()
+    }
+
     /// Translate one line of the stream, appending whatever it means beside
     /// the lines before it.
     pub fn interpret(&mut self, line: &str, events: &mut Vec<AgentEvent>) {
@@ -139,13 +162,16 @@ impl Turn {
                 Err(_) => salvage(line, events),
             },
             Some(USER) => match serde_json::from_str::<Reply>(line) {
-                Ok(reply) => self.roster.returned(
-                    results(reply.message),
-                    reply.tool_use_result.as_ref(),
-                    events,
-                ),
+                Ok(reply) => {
+                    self.returned(reply.message, reply.tool_use_result.as_ref(), events);
+                }
                 Err(_) => salvage(line, events),
             },
+            Some(COMMAND_LIFECYCLE) => {
+                if serde_json::from_str::<Lifecycle>(line).is_ok_and(|lifecycle| lifecycle.woke()) {
+                    self.wakeup = None;
+                }
+            }
             _ => match serde_json::from_str::<StreamEvent>(line) {
                 Ok(event) => self.read(event, events),
                 Err(_) => salvage(line, events),
@@ -218,11 +244,27 @@ impl Turn {
                 tool_use_result,
             } => {
                 let report = tool_use_result.as_ref().and_then(Report::from_value);
-                self.roster
-                    .returned(results(message), report.as_ref(), events);
+                self.returned(message, report.as_ref(), events);
             }
             StreamEvent::Unknown => {}
         }
+    }
+
+    /// A `user` line's tool results, a wakeup that could not be set forgotten.
+    fn returned(
+        &mut self,
+        message: Option<CliMessage>,
+        report: Option<&Report>,
+        events: &mut Vec<AgentEvent>,
+    ) {
+        let results: Vec<(String, Value, bool)> = results(message).collect();
+        if results
+            .iter()
+            .any(|(id, _, failed)| *failed && self.wakeup.as_ref() == Some(id))
+        {
+            self.wakeup = None;
+        }
+        self.roster.returned(results, report, events);
     }
 
     /// A `system` line: the session's opening notice, or news of a task.
@@ -232,6 +274,12 @@ impl Turn {
         };
         if subtype == INIT_SUBTYPE {
             self.announce(Some(INIT_SUBTYPE), notice.session_id, events);
+            return;
+        }
+        if subtype == BACKGROUND_TASKS_SUBTYPE {
+            if let Some(tasks) = &notice.tasks {
+                self.background = !tasks.is_empty();
+            }
             return;
         }
         let Some(event) = TaskEvent::named(subtype) else {
@@ -252,6 +300,18 @@ impl Turn {
         if let Some(session) = session.filter(|session| !session.is_empty()) {
             self.announced = true;
             events.push(AgentEvent::Session(session));
+        }
+    }
+
+    /// Note a wakeup the main agent set or cancelled in `message`.
+    fn schedule(&mut self, message: &CliMessage) {
+        for block in &message.content {
+            if let CliContentBlock::ToolUse { id, name, input } = block
+                && name == SCHEDULE_WAKEUP
+            {
+                let cancelled = input.get(WAKEUP_STOP).and_then(Value::as_bool) == Some(true);
+                self.wakeup = (!cancelled).then(|| id.clone());
+            }
         }
     }
 
@@ -284,6 +344,7 @@ impl Turn {
         let Some(message) = message else {
             return;
         };
+        self.schedule(&message);
         if let Some(model) = message.model.filter(|model| !model.is_empty()) {
             if self.model.as_ref() != Some(&model) {
                 self.used = None;

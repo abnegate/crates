@@ -63,6 +63,10 @@ const BUFFER: usize = 8 * 1024;
 /// the first failure or usage limit the agent reports, which ends what is
 /// handed on and is never itself handed on: a stream reports it as its error.
 ///
+/// When [awaiting background work](Reader::awaiting_background), a finished
+/// turn settles nothing while the agent reports work running in the background,
+/// and the turn that work leads to is read like the first.
+///
 /// Once the run starts to [`Drain`] it, the reader still takes everything the
 /// pipe holds, and stops when the drain ends.
 pub(crate) struct Reader {
@@ -80,6 +84,7 @@ pub(crate) struct Reader {
     verdicts: Option<mpsc::Sender<Verdict>>,
     forward: Option<mpsc::UnboundedSender<AgentEvent>>,
     drain: Drain,
+    await_background: bool,
     count: u64,
     partials: u64,
     events: Vec<AgentEvent>,
@@ -112,6 +117,7 @@ impl Reader {
             verdicts: Some(verdicts),
             forward: None,
             drain: Drain::new(draining),
+            await_background: false,
             count: 0,
             partials: 0,
             events: Vec::new(),
@@ -122,6 +128,13 @@ impl Reader {
     /// Hand each event on to `forward` as it is read, when given.
     pub(crate) fn forwarding(mut self, forward: Option<mpsc::UnboundedSender<AgentEvent>>) -> Self {
         self.forward = forward;
+        self
+    }
+
+    /// Let a finished turn settle the run only once nothing the agent sent to
+    /// the background is running, when `awaited`.
+    pub(crate) fn awaiting_background(mut self, awaited: bool) -> Self {
+        self.await_background = awaited;
         self
     }
 
@@ -272,7 +285,9 @@ impl Reader {
                     AgentEvent::Diagnostic(message)
                 }
                 AgentEvent::Finished { finish_reason } => {
-                    self.settle(Verdict::Finished);
+                    if !(self.await_background && self.turn.background_running()) {
+                        self.settle(Verdict::Finished);
+                    }
                     AgentEvent::finished(finish_reason)
                 }
                 AgentEvent::Credits(window) => {

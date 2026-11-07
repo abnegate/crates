@@ -497,6 +497,24 @@ pub struct CliSettings {
     /// settings, so a Codex run ignores it, and a host can set it on every
     /// run whichever agent runs it.
     pub isolated: bool,
+    /// Keep reading while work the agent sent to the background still runs,
+    /// rather than stopping the agent shortly after its first result.
+    ///
+    /// Claude ends a turn with a result while a background command, monitor
+    /// or subagent runs on, or a wakeup it set with `ScheduleWakeup` has yet
+    /// to fire, then writes a further turn once it ends or fires. Without
+    /// this, the run settles on that first result and an agent still running
+    /// moments later is stopped, the work and the turn it would have led to
+    /// with it. With it, a result settles the run only once Claude says
+    /// nothing is left to come, so work that never ends holds the run until
+    /// its [timeout](CliSettings::timeout), and a run with none can wait
+    /// forever.
+    ///
+    /// A reported failure or limit still settles the run at once. A task from
+    /// `CronCreate` is not waited for: it lives only as long as the session,
+    /// and Claude exits without it. Codex reports no background work, so a
+    /// Codex run ignores this.
+    pub await_background: bool,
     /// Confine the run to an allowlist, so it cannot change the workspace or
     /// read outside it however it is asked to. Claude only.
     ///
@@ -605,6 +623,7 @@ impl Default for CliSettings {
             withhold_tools: false,
             permission_prompt: None,
             isolated: false,
+            await_background: false,
             read_only: false,
             web: false,
             mcp: McpConfig::default(),
@@ -817,6 +836,12 @@ impl CliSettings {
     /// Opt in to [`CliSettings::isolated`].
     pub fn isolate(mut self) -> Self {
         self.isolated = true;
+        self
+    }
+
+    /// Opt in to [`CliSettings::await_background`].
+    pub fn await_background(mut self) -> Self {
+        self.await_background = true;
         self
     }
 

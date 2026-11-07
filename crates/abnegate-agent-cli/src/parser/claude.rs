@@ -5,6 +5,7 @@ mod cli_message;
 mod cli_usage;
 mod credits_refusal;
 mod delegation;
+mod lifecycle;
 mod model_usage;
 mod notice;
 mod rate_limit_report;

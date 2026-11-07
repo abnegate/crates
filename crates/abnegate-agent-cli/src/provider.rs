@@ -438,6 +438,7 @@ impl CliProvider {
                 started.clone(),
             )
             .forwarding(events)
+            .awaiting_background(self.settings.await_background)
             .printing(self.settings.tool_output_limit)
             .in_directory(self.settings.working_directory.clone())
             .run(spawned.child.stdout.take()),
@@ -3259,6 +3260,173 @@ while [ ! -s '{marker}' ]; do sleep 0.1; done"#,
         assert!(
             waited < bound,
             "waited {waited:?}, past the grace and the drain's cutoff, on output written without end outside the group"
+        );
+    }
+
+    /// claude 2.1.318's own lines for a turn that leaves a command running in
+    /// the background: the first result, then a further turn once it ends.
+    const BACKGROUND_COMMAND: &str =
+        include_str!("../tests/fixtures/claude/background-command.jsonl");
+
+    const FIRST_ANSWER: &str = "STARTED the work is running in the background";
+    const LATER_ANSWER: &str = "FINAL after the background work";
+
+    /// claude 2.1.318's own lines for a turn that sets a wakeup, then the turn
+    /// the wakeup leads to.
+    const SCHEDULED_WAKEUP: &str = include_str!("../tests/fixtures/claude/scheduled-wakeup.jsonl");
+
+    /// A stand-in that replays `fixture`, whatever comes after the first
+    /// result taking longer than a settled run is given to exit.
+    fn replaying_turns(directory: &TempDir, fixture: &str) -> CliSettings {
+        let lines: Vec<&str> = fixture.lines().collect();
+        let first = lines
+            .iter()
+            .position(|line| line.contains(r#""type":"result""#))
+            .expect("the turn's first result");
+        let (started, ended) = lines.split_at(first + 1);
+        let path = |name: &str| directory.path().join(name);
+        std::fs::write(path("started.jsonl"), started.join("\n") + "\n").expect("the first turn");
+        std::fs::write(path("ended.jsonl"), ended.join("\n") + "\n").expect("the later turn");
+        let wait = abnegate_exec::executor::GRACE_PERIOD + Duration::from_secs(2);
+        let script = format!(
+            "cat '{started}'\nsleep {wait}\ncat '{ended}'",
+            started = path("started.jsonl").display(),
+            wait = wait.as_secs(),
+            ended = path("ended.jsonl").display(),
+        );
+        settings(directory, &script)
+    }
+
+    #[tokio::test]
+    async fn a_run_awaiting_background_work_reads_the_turn_it_leads_to() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let provider = CliProvider::agent(
+            AgentKind::Claude,
+            replaying_turns(&directory, BACKGROUND_COMMAND).await_background(),
+        );
+
+        let execution = execute(&provider, &[Message::user("hi")]).await;
+
+        assert_eq!(execution.stopped, None, "the agent was stopped mid-work");
+        assert_eq!(execution.status, ExitStatus::Code(0));
+        let stdout = &execution.stdout;
+        assert!(stdout.text.contains(FIRST_ANSWER), "{stdout:?}");
+        assert!(stdout.text.contains(LATER_ANSWER), "{stdout:?}");
+    }
+
+    #[tokio::test]
+    async fn a_run_awaiting_background_work_reads_the_turn_a_wakeup_leads_to() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let provider = CliProvider::agent(
+            AgentKind::Claude,
+            replaying_turns(&directory, SCHEDULED_WAKEUP).await_background(),
+        );
+
+        let execution = execute(&provider, &[Message::user("hi")]).await;
+
+        assert_eq!(
+            execution.stopped, None,
+            "the agent was stopped before waking"
+        );
+        let stdout = &execution.stdout;
+        assert_eq!(
+            stdout.text.matches(LATER_ANSWER).count(),
+            2,
+            "both turns' words: {stdout:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_run_not_awaiting_background_work_stops_after_the_first_result() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let provider = CliProvider::agent(
+            AgentKind::Claude,
+            replaying_turns(&directory, BACKGROUND_COMMAND),
+        );
+
+        let execution = execute(&provider, &[Message::user("hi")]).await;
+
+        assert!(execution.stopped.is_some(), "the agent was left to run on");
+        assert!(!execution.stdout.text.contains(LATER_ANSWER));
+    }
+
+    /// An agent that lingers once its work is done is still stopped, which is
+    /// what a settled run's cutoff is for.
+    #[tokio::test]
+    async fn a_run_awaiting_background_work_stops_an_agent_with_none_running() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let started = directory.path().join("started");
+        let script = format!(
+            r#"touch '{started}'
+echo '{{"type":"system","subtype":"background_tasks_changed","tasks":[{{"task_id":"b1"}}]}}'
+echo '{{"type":"system","subtype":"background_tasks_changed","tasks":[]}}'
+echo '{{"type":"result","subtype":"success","is_error":false,"result":"Kept."}}'
+sleep 120"#,
+            started = started.display(),
+        );
+        let provider = CliProvider::agent(
+            AgentKind::Claude,
+            settings(&directory, &script).await_background(),
+        );
+
+        let (execution, waited) = timed(
+            async { execute(&provider, &[Message::user("hi")]).await },
+            &started,
+        )
+        .await;
+
+        assert!(execution.stopped.is_some(), "the agent was never stopped");
+        let bound = abnegate_exec::executor::GRACE_PERIOD + Duration::from_secs(5);
+        assert!(waited < bound, "waited {waited:?} on an agent with no work");
+    }
+
+    #[tokio::test]
+    async fn a_failure_settles_a_run_with_background_work_running() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let started = directory.path().join("started");
+        let script = format!(
+            r#"touch '{started}'
+echo '{{"type":"system","subtype":"background_tasks_changed","tasks":[{{"task_id":"b1"}}]}}'
+echo '{{"type":"result","subtype":"error_during_execution","is_error":true,"result":"It broke."}}'
+sleep 120"#,
+            started = started.display(),
+        );
+        let provider = CliProvider::agent(
+            AgentKind::Claude,
+            settings(&directory, &script).await_background(),
+        );
+
+        let (execution, waited) = timed(
+            async { execute(&provider, &[Message::user("hi")]).await },
+            &started,
+        )
+        .await;
+
+        assert!(execution.stopped.is_some(), "the agent was never stopped");
+        assert!(execution.failure.is_some(), "{execution:?}");
+        let bound = abnegate_exec::executor::GRACE_PERIOD + Duration::from_secs(5);
+        assert!(waited < bound, "waited {waited:?} on a failed agent");
+    }
+
+    #[tokio::test]
+    async fn background_work_outliving_the_timeout_ends_the_run() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = r#"echo '{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"b1"}]}'
+echo '{"type":"result","subtype":"success","is_error":false,"result":"Kept."}'
+sleep 120"#;
+        let settings = settings(&directory, script)
+            .await_background()
+            .with_timeout(Duration::from_secs(8));
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        let failure = provider
+            .execute(request(&[Message::user("hi")]), "test-run")
+            .await
+            .expect_err("a run past its timeout");
+
+        assert!(
+            matches!(*failure.error, ProviderError::Timeout { .. }),
+            "{failure:?}"
         );
     }
 

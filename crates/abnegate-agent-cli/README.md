@@ -173,6 +173,15 @@ otherwise. An isolated read-only run loads no settings at all, where it would
 load the user's, and keeps every flag that confines it. Codex ignores it, so a
 host can set it on every run.
 
+A Claude turn can end with a result while a background command, monitor or
+subagent runs on, and Claude writes a further turn once it ends. A run settles
+on its first result and stops an agent still running moments later, unless
+`CliSettings::await_background` is set: a result then settles the run only once
+Claude reports nothing running in the background and no wakeup from
+`ScheduleWakeup` left to fire, up to the run's timeout. A failure or usage limit
+still settles it at once. A `CronCreate` task dies with the session, so it holds
+nothing. Codex ignores it.
+
 An `McpServer` also takes options Claude's own MCP entry has no key for, which
 never reach Claude's file or a log: `with_tool_timeout` (Codex's
 `tool_timeout_sec`, and for Claude the longest of the run's servers as
