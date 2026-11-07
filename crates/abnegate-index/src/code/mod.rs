@@ -1,9 +1,9 @@
 //! Code-aware chunking with tree-sitter.
 //!
 //! Source is split on symbol boundaries, with text windows only as a fallback.
-//! Each symbol gets one body chunk and, unless it is a container, a skeleton chunk; small
-//! siblings are merged and large symbols are split with header overlap. A file
-//! header chunk carries the imports, an API surface chunk lists the public
+//! Each symbol gets one body chunk and, unless it is a container, a skeleton
+//! chunk; small siblings are merged and large symbols are split with header
+//! overlap. A file header chunk carries the imports, an API surface chunk lists the public
 //! signatures, and source no symbol covers becomes top-level chunks. Every
 //! chunk carries an identifier bag so keyword and vector search see the same
 //! names.
@@ -57,9 +57,11 @@ const OVERLAP_DIVISOR: usize = 10;
 /// Chunk `content` as `language` with the default [`ChunkConfig`] and a budget
 /// of `maximum_tokens` tokens a chunk.
 ///
-/// The budget is a target, not a limit: a chunk can be over it. From a budget of
-/// 2 up, one over the larger of 6 characters a token and 512 characters is cut
-/// into text windows; below that, nothing is cut.
+/// The budget is a target, not a limit: a chunk can be over it. For parsed source
+/// from a budget of 2 up, a chunk over the larger of 6 characters a token and 512
+/// characters is cut into text windows; below that budget it is not. Fallback
+/// windows hold about 4 characters a token plus the path header, whatever that
+/// ceiling.
 pub fn chunk_code(content: &str, language: CodeLanguage, maximum_tokens: usize) -> Vec<CodeChunk> {
     chunk_code_with_config(
         content,
@@ -73,8 +75,10 @@ pub fn chunk_code(content: &str, language: CodeLanguage, maximum_tokens: usize) 
 
 /// Chunk `content` as `language` with `config`.
 ///
-/// Content that looks generated or minified, sits under a generated path, or
-/// does not parse falls back to plain text windows. Chunks with identical
+/// Content that looks generated or minified, sits under a generated path, has no
+/// grammar for `language`, is too large to parse, or yields no chunks falls back
+/// to plain text windows. A syntax error does not: tree-sitter still parses what
+/// it can. Chunks with identical
 /// text are emitted once, and indexes count from 0 in emission order.
 pub fn chunk_code_with_config(
     content: &str,
