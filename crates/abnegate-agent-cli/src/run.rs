@@ -145,17 +145,6 @@ impl Run {
                 ));
             }
         };
-        if stopped.as_deref() == Some(OUTLASTED)
-            && failure.is_none()
-            && stdout.failure.is_none()
-            && stdout.finish_reason.as_deref() != Some(CUT_SHORT)
-        {
-            let cut_short = AgentEvent::finished(Some(CUT_SHORT.to_string()));
-            if let Some(forward) = &self.forward {
-                let _ = forward.send(cut_short.clone());
-            }
-            stdout.record(cut_short);
-        }
         let stderr = match drain(&mut self.diagnostics, self.reaper.group(), &self.draining).await {
             Ok(stderr) => stderr,
             Err(message) => {
@@ -173,6 +162,16 @@ impl Run {
             if failure.is_none() {
                 failure = verdict.failure();
             }
+        }
+        if stopped.as_deref() == Some(OUTLASTED)
+            && failure.is_none()
+            && stdout.finish_reason.as_deref() != Some(CUT_SHORT)
+        {
+            let cut_short = AgentEvent::finished(Some(CUT_SHORT.to_string()));
+            if let Some(forward) = &self.forward {
+                let _ = forward.send(cut_short.clone());
+            }
+            stdout.record(cut_short);
         }
         let succeeded = stdout.finished
             && stdout.failure.is_none()
@@ -336,9 +335,6 @@ impl Run {
         let exited_in_grace = loop {
             tokio::select! {
                 biased;
-                exit = timeout_at(patience, exited(&mut self.child, self.reaper.group())) => {
-                    break exit.ok().and_then(Result::ok);
-                }
                 Some(later) = self.settled.recv() => match later {
                     Verdict::Reopened if finished && failure.is_none() && !tripped => {
                         return Ok(None);
@@ -351,6 +347,9 @@ impl Run {
                         }
                     }
                 },
+                exit = timeout_at(patience, exited(&mut self.child, self.reaper.group())) => {
+                    break exit.ok().and_then(Result::ok);
+                }
             }
         };
         if let Some(exit) = exited_in_grace {

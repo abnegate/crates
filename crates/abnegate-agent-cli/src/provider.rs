@@ -3584,6 +3584,103 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"Second."}'
         );
     }
 
+    /// A failure after a result that settled the run still fails it, and the
+    /// turn that begins next reopens nothing.
+    #[tokio::test]
+    async fn a_failure_after_a_settling_result_fails_the_run_at_once() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let started = directory.path().join("started");
+        let script = format!(
+            r#"touch '{started}'
+echo '{{"type":"system","subtype":"init","session_id":"s"}}'
+echo '{{"type":"result","subtype":"success","is_error":false,"result":"One."}}'
+echo '{{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Boom"}}'
+echo '{{"type":"system","subtype":"init","session_id":"s"}}'
+sleep 60"#,
+            started = started.display(),
+        );
+        let provider = CliProvider::agent(
+            AgentKind::Claude,
+            settings(&directory, &script)
+                .await_background()
+                .with_timeout(Duration::from_secs(15)),
+        );
+
+        let (execution, waited) = timed(
+            async { execute(&provider, &[Message::user("hi")]).await },
+            &started,
+        )
+        .await;
+
+        assert!(waited < Duration::from_secs(11), "waited {waited:?}");
+        assert!(
+            execution
+                .failure
+                .as_deref()
+                .is_some_and(|failure| failure.contains("Boom")),
+            "{execution:?}"
+        );
+    }
+
+    /// An agent that says something on its way out when the timeout stops it.
+    fn saying_on_its_way_out(directory: &TempDir, said: &str) -> CliSettings {
+        let script = format!(
+            r#"trap '{said}; exit 0' TERM
+echo '{{"type":"system","subtype":"background_tasks_changed","tasks":[{{"task_id":"b1"}}]}}'
+echo '{{"type":"result","subtype":"success","is_error":false,"result":"Kept."}}'
+sleep 120 &
+wait"#
+        );
+        settings(directory, &script)
+            .await_background()
+            .with_timeout(Duration::from_secs(6))
+    }
+
+    #[tokio::test]
+    async fn a_trip_on_the_way_out_is_never_marked_cut_short() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let settings =
+            saying_on_its_way_out(&directory, "echo \"API Error: 429 Too Many Requests\" >&2")
+                .with_tripwire(|line| line.contains("429"));
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        let execution = execute(&provider, &[Message::user("hi")]).await;
+
+        assert!(
+            execution
+                .failure
+                .as_deref()
+                .is_some_and(|failure| failure.contains("429")),
+            "{execution:?}"
+        );
+        assert_ne!(
+            execution.stdout.finish_reason.as_deref(),
+            Some(crate::CUT_SHORT),
+            "{execution:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failure_reported_on_the_way_out_is_never_marked_cut_short() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let provider = CliProvider::agent(
+            AgentKind::Claude,
+            saying_on_its_way_out(
+                &directory,
+                r#"echo "{\"type\":\"result\",\"subtype\":\"error_during_execution\",\"is_error\":true,\"result\":\"Stopped.\"}""#,
+            ),
+        );
+
+        let execution = execute(&provider, &[Message::user("hi")]).await;
+
+        assert!(execution.stdout.failure.is_some(), "{execution:?}");
+        assert_ne!(
+            execution.stdout.finish_reason.as_deref(),
+            Some(crate::CUT_SHORT),
+            "{execution:?}"
+        );
+    }
+
     /// A result, a turn and its result read in one go settle the run twice with
     /// a reopening between, none of which may be lost.
     #[tokio::test]

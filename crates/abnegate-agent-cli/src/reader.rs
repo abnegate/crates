@@ -319,6 +319,14 @@ impl Reader {
                 }
                 AgentEvent::Finished { finish_reason } => {
                     self.finished += 1;
+                    if self.agent == AgentKind::Claude && self.finished > self.turn.turns_begun() {
+                        tracing::debug!(
+                            agent = %self.agent,
+                            results = self.finished,
+                            begun = self.turn.turns_begun(),
+                            "more results than turns begun: claude wrote no init for one"
+                        );
+                    }
                     if self.await_background {
                         self.answered.send_replace(true);
                     }
@@ -367,7 +375,7 @@ impl Reader {
     }
 
     fn settle(&mut self, verdict: Verdict) {
-        if self.settled {
+        if self.settled && !(self.reopenable && verdict != Verdict::Finished) {
             return;
         }
         self.settled = true;
