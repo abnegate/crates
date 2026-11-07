@@ -9,13 +9,18 @@ use serde::de::Visitor;
 use serde::de::value::MapAccessDeserializer;
 use serde_json::Value;
 
+use crate::parser::claude::hand_back;
 use crate::parser::lenient;
+
+/// How claude opens what it writes in place of a result too large to hold.
+const WRAPPERS: &[&str] = &["<persisted-output>", "<truncated-output>"];
 
 /// The `tool_use_result` of a call that started a subagent: its report.
 ///
 /// Every tool writes an account of its call there in a shape of its own, so
 /// only an object is read as one, field by field and leniently, and every
-/// other field, the subagent's whole answer among them, is skipped unread.
+/// other field, the subagent's whole answer among them, is skipped unread
+/// unless the call's result is a wrapper around it.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub(crate) struct Report {
@@ -32,16 +37,60 @@ pub(crate) struct Report {
     /// The id of the task claude runs the subagent as.
     #[serde(rename = "agentId", deserialize_with = "lenient")]
     pub(crate) task: Option<String>,
+    #[serde(skip)]
+    answer: Option<String>,
 }
 
 impl Report {
     /// The report `account` holds, when it is an object.
     pub(crate) fn from_value(account: &Value) -> Option<Self> {
-        account
+        let mut report = account
             .is_object()
             .then(|| Self::deserialize(account).ok())
-            .flatten()
+            .flatten()?;
+        if report.task.is_some() {
+            report.answer = answer(account);
+        }
+        Some(report)
     }
+
+    /// Reads the subagent's whole answer out of `line`, the line this report
+    /// came from, when it holds a wrapper. Only a subagent's account has one:
+    /// every other tool's `content` is its own.
+    pub(crate) fn read_answer(&mut self, line: &str) {
+        if self.task.is_none() || !WRAPPERS.iter().any(|wrapper| line.contains(wrapper)) {
+            return;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            return;
+        };
+        self.answer = value
+            .get("tool_use_result")
+            .or_else(|| value.get("toolUseResult"))
+            .and_then(answer);
+    }
+
+    /// The subagent's whole answer, when `text`, its call's result, is a
+    /// wrapper in place of it.
+    pub(crate) fn replacing(&self, text: &str) -> Option<&str> {
+        self.answer
+            .as_deref()
+            .filter(|_| WRAPPERS.iter().any(|wrapper| text.starts_with(wrapper)))
+    }
+}
+
+/// The text of `account`'s blocks of content, without the notes claude writes
+/// among them for the main agent, when any is left.
+fn answer(account: &Value) -> Option<String> {
+    let blocks: Vec<&str> = account
+        .get("content")?
+        .as_array()?
+        .iter()
+        .filter_map(|block| block.get("text")?.as_str())
+        .map(hand_back::without_notes)
+        .filter(|block| !block.trim().is_empty())
+        .collect();
+    (!blocks.is_empty()).then(|| blocks.join("\n"))
 }
 
 /// A tool's account of its call, read as a [`Report`] when it is an object
@@ -137,6 +186,7 @@ mod tests {
         assert_eq!(report.tool_uses, Some(2));
         assert_eq!(report.duration_ms, None);
         assert_eq!(report.tokens, Some(18_200));
+        assert_eq!(report.answer, None);
         assert_eq!(line.after.as_deref(), Some("read on"));
     }
 

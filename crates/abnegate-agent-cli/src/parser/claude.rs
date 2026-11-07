@@ -6,6 +6,7 @@ mod cli_message;
 mod cli_usage;
 mod credits_refusal;
 mod delegation;
+mod hand_back;
 mod lifecycle;
 mod model_usage;
 mod notice;

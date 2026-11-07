@@ -176,7 +176,10 @@ impl Turn {
                 Err(_) => salvage(line, events),
             },
             Some(USER) => match serde_json::from_str::<Reply>(line) {
-                Ok(reply) => {
+                Ok(mut reply) => {
+                    if let Some(report) = reply.tool_use_result.as_mut() {
+                        report.read_answer(line);
+                    }
                     self.returned(reply.message, reply.tool_use_result.as_ref(), events);
                 }
                 Err(_) => salvage(line, events),
