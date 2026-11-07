@@ -78,6 +78,8 @@ pub struct StdoutParseResult {
     /// Whether the output ended with a turn begun after one finished and not
     /// finished itself.
     ended_mid_turn: bool,
+    /// Whether a turn had said anything by the time it finished.
+    answered: bool,
 }
 
 impl StdoutParseResult {
@@ -133,6 +135,7 @@ impl StdoutParseResult {
             AgentEvent::Finished { finish_reason } => {
                 self.finished = true;
                 self.finish_reason = finish_reason;
+                self.answered |= self.structured.is_some() || !self.reply().trim().is_empty();
                 self.earlier_usage = self.usage;
                 self.earlier_tokens.clone_from(&self.tokens);
                 self.earlier_answer.clone_from(&self.answer);
@@ -183,10 +186,11 @@ impl StdoutParseResult {
         self.ended_mid_turn
     }
 
-    /// Whether a finished turn said anything: an answer, prose, or a
-    /// schema-shaped answer.
+    /// Whether a turn had said anything by the time it finished: an answer,
+    /// prose, or a schema-shaped answer. Prose from a turn still unfinished
+    /// does not count.
     pub(crate) fn answered(&self) -> bool {
-        self.finished && (self.structured.is_some() || !self.reply().trim().is_empty())
+        self.answered
     }
 
     /// What the agent answered: its final [answer](StdoutParseResult::answer)

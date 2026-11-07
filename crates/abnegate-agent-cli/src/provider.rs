@@ -3935,6 +3935,35 @@ wait"#;
         );
     }
 
+    /// Prose from a turn that never finished is no answer, so the timeout
+    /// still fails a run whose finished turns said nothing.
+    #[tokio::test]
+    async fn prose_from_an_unfinished_turn_does_not_answer_a_timed_out_run() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = r#"echo '{"type":"system","subtype":"init","session_id":"s"}'
+echo '{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"b1"}]}'
+echo '{"type":"result","subtype":"success","is_error":false,"result":""}'
+echo '{"type":"system","subtype":"init","session_id":"s"}'
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Still looking."}]}}'
+sleep 120"#;
+        let provider = CliProvider::agent(
+            AgentKind::Claude,
+            settings(&directory, script)
+                .await_background()
+                .with_timeout(Duration::from_secs(6)),
+        );
+
+        let failure = provider
+            .execute(request(&[Message::user("hi")]), "test-run")
+            .await
+            .expect_err("a run whose finished turns said nothing");
+
+        assert!(
+            matches!(*failure.error, ProviderError::Timeout { .. }),
+            "{failure:?}"
+        );
+    }
+
     /// A schema-shaped answer is an answer, so the timeout keeps it.
     #[tokio::test]
     async fn a_structured_answer_outliving_the_timeout_is_kept() {
