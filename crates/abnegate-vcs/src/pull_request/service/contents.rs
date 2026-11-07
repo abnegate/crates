@@ -1,7 +1,13 @@
 use super::*;
 use crate::commit_sha::CommitSha;
+use crate::parse_error::ParseError;
+use crate::pull_request::Contents;
 use crate::pull_request::Excerpt;
-use crate::pull_request::RepositoryPath;
+use crate::pull_request::github_contents_answer::GitHubContentsAnswer;
+use crate::remote_branch_name::RemoteBranchName;
+use crate::repository_path::RepositoryPath;
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use std::str;
 
 /// The media type GitHub answers with a pull request's unified diff in.
@@ -18,6 +24,12 @@ const PARAMETERS: char = ';';
 /// What an answer describing a directory, or another entry that is not a
 /// file, is reported as.
 const NOT_A_FILE: &str = "The path names a directory or another entry that is not a file";
+
+/// The query parameter that names the ref a file is read at.
+const REFERENCE: &str = "ref";
+
+/// What GitHub breaks a file's base64 content into lines with.
+const LINE_BREAK: char = '\n';
 
 impl PullRequestService {
     /// The start of a pull request's unified diff, read no further than
@@ -61,7 +73,8 @@ impl PullRequestService {
     ) -> PullRequestResult<Excerpt> {
         let segments: Vec<&str> = ["contents"].into_iter().chain(path.segments()).collect();
         let mut url = self.repository_endpoint(repository, &segments)?;
-        url.query_pairs_mut().append_pair("ref", revision.as_str());
+        url.query_pairs_mut()
+            .append_pair(REFERENCE, revision.as_str());
 
         let response = self
             .answered(self.request(Method::GET, url, token, RAW)?)
@@ -71,6 +84,55 @@ impl PullRequestService {
         }
         excerpt(response, limit).await
     }
+
+    /// One file as it is at `reference`, a branch, a tag, a commit, or `HEAD`
+    /// for the tip of the default branch, as GitHub's contents API describes
+    /// it, its base64 content decoded to bytes.
+    ///
+    /// `reference` is held to the rules [`Self::fetch_tree_at`] holds it to,
+    /// and travels as the `ref` query value. Each segment of `path` travels
+    /// as one percent-encoded path segment, as for [`Self::fetch_file`]. The
+    /// answer is read no further than any other JSON answer is.
+    ///
+    /// A path that names a directory, which GitHub answers with a list of its
+    /// entries, is [`PullRequestError::GitHubApi`], and so is an answer this
+    /// crate cannot read, which is never quoted. Content that is not valid
+    /// base64 is [`PullRequestError::MalformedContent`]. Content GitHub left
+    /// out is `None`, and so is a size it left out. GitHub sends a file past a
+    /// megabyte as empty content, which reads as no bytes beside the size
+    /// GitHub reports, so [`Contents::size`] tells it from an empty file.
+    pub async fn fetch_contents(
+        &self,
+        repository: &Repository,
+        token: &SecretValue,
+        path: &RepositoryPath,
+        reference: &str,
+    ) -> PullRequestResult<Contents> {
+        if RemoteBranchName::refuses_reference(reference) {
+            return Err(ParseError::BranchName(reference.to_string()).into());
+        }
+        let segments: Vec<&str> = ["contents"].into_iter().chain(path.segments()).collect();
+        let mut url = self.repository_endpoint(repository, &segments)?;
+        url.query_pairs_mut().append_pair(REFERENCE, reference);
+
+        let described = match self.get(url, token).await? {
+            GitHubContentsAnswer::Listing(_) => {
+                return Err(PullRequestError::GitHubApi(NOT_A_FILE.to_string()));
+            }
+            GitHubContentsAnswer::File(described) => described,
+        };
+        let content = described.content.map(decoded).transpose()?;
+        Ok(Contents::new(content, described.size))
+    }
+}
+
+/// The bytes `encoded` holds, once the line breaks GitHub wraps base64 in are
+/// dropped from it in place.
+fn decoded(mut encoded: String) -> PullRequestResult<Vec<u8>> {
+    encoded.retain(|character| character != LINE_BREAK);
+    STANDARD
+        .decode(encoded)
+        .map_err(|_| PullRequestError::MalformedContent)
 }
 
 /// Whether an answer's `Content-Type` says it describes a directory's entries
@@ -128,14 +190,20 @@ fn complete(bytes: &[u8]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::object_id::ObjectId;
     use crate::pull_request::service::fixtures::commit;
     use crate::pull_request::service::fixtures::project;
+    use crate::pull_request::service::fixtures::query_is;
     use crate::pull_request::service::fixtures::seven;
     use crate::pull_request::service::fixtures::stand_in;
     use crate::pull_request::service::fixtures::token;
+    use reqwest::header::AUTHORIZATION;
+    use serde_json::Value;
+    use serde_json::json;
     use wiremock::Mock;
     use wiremock::MockServer;
     use wiremock::ResponseTemplate;
+    use wiremock::matchers::any;
     use wiremock::matchers::header;
     use wiremock::matchers::method;
     use wiremock::matchers::path;
@@ -513,6 +581,427 @@ mod tests {
         assert!(
             matches!(failure, PullRequestError::AuthenticationFailed),
             "{failure:?}"
+        );
+    }
+
+    const README: &str = "/repos/acme/project/contents/README.md";
+
+    /// `content` in base64 broken into lines of sixty characters, each ended
+    /// by a line break, as GitHub's contents API sends a file.
+    fn wrapped(content: &[u8]) -> String {
+        STANDARD
+            .encode(content)
+            .as_bytes()
+            .chunks(60)
+            .map(|line| format!("{}\n", str::from_utf8(line).unwrap()))
+            .collect()
+    }
+
+    fn described(name: &str, content: Option<&str>) -> Value {
+        let mut answer = json!({
+            "name": name,
+            "path": name,
+            "sha": commit('b').as_str(),
+            "size": 100,
+            "type": "file",
+            "encoding": "base64",
+        });
+        if let Some(content) = content {
+            answer["content"] = json!(content);
+        }
+        answer
+    }
+
+    async fn describing(route: &str, reference: &str, body: Value) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(route))
+            .and(query_is(&[("ref", reference)]))
+            .and(header("accept", ACCEPT))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .expect(1)
+            .mount(&server)
+            .await;
+        server
+    }
+
+    async fn contents_of(
+        server: &MockServer,
+        value: &str,
+        reference: &str,
+    ) -> PullRequestResult<Contents> {
+        let service = stand_in(server).await;
+        service
+            .fetch_contents(
+                &project(&service),
+                &token(),
+                &repository_path(value),
+                reference,
+            )
+            .await
+    }
+
+    #[tokio::test]
+    async fn a_file_s_base64_broken_into_lines_decodes_to_its_exact_bytes() {
+        let text = "# Notes\n\n".to_string() + &"Every line of this file is kept.\n".repeat(8);
+        let encoded = wrapped(text.as_bytes());
+        assert!(encoded.matches('\n').count() > 1, "{encoded:?}");
+        let server = describing(README, "main", described("README.md", Some(&encoded))).await;
+
+        let contents = contents_of(&server, "README.md", "main").await.unwrap();
+
+        assert_eq!(contents, Contents::new(Some(text.into_bytes()), Some(100)));
+    }
+
+    #[tokio::test]
+    async fn empty_content_is_a_file_of_no_bytes() {
+        let server = describing(README, "main", described("README.md", Some(""))).await;
+
+        let contents = contents_of(&server, "README.md", "main").await.unwrap();
+
+        assert_eq!(contents.content, Some(Vec::new()));
+    }
+
+    #[tokio::test]
+    async fn a_file_github_declined_to_inline_reads_as_no_bytes_of_the_size_it_reported() {
+        for (size, content) in [(2_000_000, ""), (0, "")] {
+            let server = describing(
+                README,
+                "main",
+                json!({
+                    "name": "README.md",
+                    "path": "README.md",
+                    "sha": commit('b').as_str(),
+                    "size": size,
+                    "type": "file",
+                    "content": content,
+                    "encoding": if size == 0 { "base64" } else { "none" },
+                }),
+            )
+            .await;
+
+            let contents = contents_of(&server, "README.md", "main").await.unwrap();
+
+            assert_eq!(
+                contents,
+                Contents::new(Some(Vec::new()), Some(size)),
+                "size {size}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_answer_without_content_holds_none() {
+        let server = describing(README, "main", described("README.md", None)).await;
+
+        let contents = contents_of(&server, "README.md", "main").await.unwrap();
+
+        assert_eq!(contents.content, None);
+    }
+
+    #[tokio::test]
+    async fn content_that_is_not_base64_is_malformed_and_never_repeated() {
+        let server = describing(
+            README,
+            "main",
+            described("README.md", Some("BASE64-SENTINEL!*")),
+        )
+        .await;
+
+        let failure = contents_of(&server, "README.md", "main").await.unwrap_err();
+
+        assert!(
+            matches!(failure, PullRequestError::MalformedContent),
+            "{failure:?}"
+        );
+        assert_eq!(
+            failure.to_string(),
+            "GitHub sent file content that is not valid base64"
+        );
+        assert!(
+            !format!("{failure} {failure:?}").contains("SENTINEL"),
+            "{failure:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_directory_s_listing_is_not_read_as_a_file() {
+        for listing in [
+            json!([{ "name": "LISTING-SENTINEL", "type": "file" }]),
+            json!(["LISTING-SENTINEL", 7]),
+            json!([]),
+        ] {
+            let server =
+                describing("/repos/acme/project/contents/src", "main", listing.clone()).await;
+
+            let failure = contents_of(&server, "src", "main").await.unwrap_err();
+
+            assert!(
+                matches!(failure, PullRequestError::GitHubApi(ref message) if message == NOT_A_FILE),
+                "{listing}: {failure:?}"
+            );
+            assert!(
+                !format!("{failure} {failure:?}").contains("SENTINEL"),
+                "{failure:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_answer_that_describes_no_file_is_unreadable_and_never_quoted() {
+        for answer in [
+            json!({ "content": 7, "name": "ANSWER-SENTINEL" }),
+            json!({ "content": "", "size": "ANSWER-SENTINEL" }),
+            json!({ "content": "", "size": -1, "name": "ANSWER-SENTINEL" }),
+            json!("ANSWER-SENTINEL"),
+        ] {
+            let server = describing(README, "main", answer.clone()).await;
+
+            let failure = contents_of(&server, "README.md", "main").await.unwrap_err();
+
+            assert!(
+                matches!(failure, PullRequestError::GitHubApi(ref message) if message == UNREADABLE),
+                "{answer}: {failure:?}"
+            );
+            assert!(
+                !format!("{failure} {failure:?}").contains("SENTINEL"),
+                "{failure:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_file_is_described_by_its_segments_at_the_ref_asked_for() {
+        let server = describing(
+            "/repos/acme/project/contents/src/lib.rs",
+            "main",
+            described("lib.rs", Some(&wrapped(b"pub fn run() {}\n"))),
+        )
+        .await;
+
+        let contents = contents_of(&server, "src/lib.rs", "main").await.unwrap();
+
+        assert_eq!(contents.content.as_deref(), Some(&b"pub fn run() {}\n"[..]));
+        let received = server.received_requests().await.unwrap();
+        assert_eq!(received[0].url.query(), Some("ref=main"));
+        assert_eq!(
+            received[0]
+                .headers
+                .get("accept")
+                .and_then(|value| value.to_str().ok()),
+            Some("application/vnd.github+json")
+        );
+        assert_eq!(
+            received[0]
+                .headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer token")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_segment_with_a_space_and_a_ref_with_a_query_s_marks_travel_encoded() {
+        let reference = "fix/bug-123&feature=new";
+        let server = describing(
+            "/repos/acme/project/contents/docs/my%20file.md",
+            reference,
+            described("my file.md", Some("")),
+        )
+        .await;
+
+        let contents = contents_of(&server, "docs/my file.md", reference)
+            .await
+            .unwrap();
+
+        assert_eq!(contents.content, Some(Vec::new()));
+        let received = server.received_requests().await.unwrap();
+        assert_eq!(
+            received[0].url.query(),
+            Some("ref=fix%2Fbug-123%26feature%3Dnew")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_ref_git_would_refuse_is_refused_before_a_file_is_described() {
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        for reference in ["", "a..b", "@"] {
+            let failure = contents_of(&server, "README.md", reference)
+                .await
+                .unwrap_err();
+
+            assert!(
+                matches!(
+                    &failure,
+                    PullRequestError::Parse(ParseError::BranchName(value)) if value == reference
+                ),
+                "{reference:?}: {failure:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_file_on_a_branch_led_by_a_dash_is_described_as_github_lists_it() {
+        let server = describing(README, "-dash", described("README.md", Some(""))).await;
+
+        let contents = contents_of(&server, "README.md", "-dash").await.unwrap();
+
+        assert_eq!(contents.content, Some(Vec::new()));
+    }
+
+    #[tokio::test]
+    async fn an_anonymous_file_read_carries_no_authorization() {
+        let server = describing(README, "HEAD", described("README.md", Some(""))).await;
+        let service = stand_in(&server).await.with_anonymous_reads();
+
+        let contents = service
+            .fetch_contents(
+                &project(&service),
+                &SecretValue::new(""),
+                &repository_path("README.md"),
+                "HEAD",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(contents.content, Some(Vec::new()));
+        let received = server.received_requests().await.unwrap();
+        assert!(
+            !received[0].headers.contains_key(AUTHORIZATION),
+            "an anonymous read carries no authorization"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_file_github_holds_nothing_for_is_not_found() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/project/contents/missing.rs"))
+            .respond_with(ResponseTemplate::new(404))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let failure = contents_of(&server, "missing.rs", "main")
+            .await
+            .unwrap_err();
+
+        assert!(matches!(failure, PullRequestError::NotFound), "{failure:?}");
+    }
+
+    #[tokio::test]
+    async fn an_answer_with_nothing_but_its_content_is_still_read() {
+        let server = describing(README, "main", json!({ "content": wrapped(b"bare") })).await;
+
+        let contents = contents_of(&server, "README.md", "main").await.unwrap();
+
+        assert_eq!(contents, Contents::new(Some(b"bare".to_vec()), None));
+    }
+
+    #[tokio::test]
+    async fn a_repository_is_read_from_its_default_branch_down_to_each_file_s_bytes() {
+        let readme = "# Test Repo\n\nThis is a test repository.";
+        let library = "pub fn hello() -> &'static str {\n    \"Hello, world!\"\n}";
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/project"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "name": "project",
+                "default_branch": "main",
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/project/git/trees/main"))
+            .and(query_is(&[("recursive", "1")]))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "sha": commit('a').as_str(),
+                "tree": [
+                    {
+                        "path": "README.md",
+                        "mode": "100644",
+                        "type": "blob",
+                        "size": 100,
+                        "sha": commit('b').as_str(),
+                    },
+                    {
+                        "path": "src/lib.rs",
+                        "mode": "100644",
+                        "type": "blob",
+                        "size": 500,
+                        "sha": commit('c').as_str(),
+                    },
+                    {
+                        "path": "image.png",
+                        "mode": "100644",
+                        "type": "blob",
+                        "size": 1000,
+                        "sha": commit('d').as_str(),
+                    },
+                ],
+                "truncated": false,
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        for (route, name, text) in [
+            (README, "README.md", readme),
+            ("/repos/acme/project/contents/src/lib.rs", "lib.rs", library),
+        ] {
+            Mock::given(method("GET"))
+                .and(path(route))
+                .and(query_is(&[("ref", "main")]))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(described(name, Some(&STANDARD.encode(text)))),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        let service = stand_in(&server).await;
+        let repository = project(&service);
+
+        let branch = service
+            .get_default_branch(&repository, &token())
+            .await
+            .unwrap();
+        let tree = service
+            .fetch_tree_at(&repository, &token(), branch.as_str(), true)
+            .await
+            .unwrap();
+        let mut read = Vec::new();
+        for entry in tree
+            .entries
+            .iter()
+            .filter(|entry| entry.path != "image.png")
+        {
+            let contents = service
+                .fetch_contents(
+                    &repository,
+                    &token(),
+                    &repository_path(&entry.path),
+                    branch.as_str(),
+                )
+                .await
+                .unwrap();
+            read.push((entry.path.clone(), contents.content));
+        }
+
+        assert_eq!(tree.sha, ObjectId::from(commit('a')));
+        assert_eq!(
+            read,
+            [
+                ("README.md".to_string(), Some(readme.as_bytes().to_vec())),
+                ("src/lib.rs".to_string(), Some(library.as_bytes().to_vec())),
+            ]
         );
     }
 }

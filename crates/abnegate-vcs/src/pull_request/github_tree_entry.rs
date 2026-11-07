@@ -1,4 +1,4 @@
-use crate::pull_request::TreeEntryKind;
+use crate::tree_entry_kind::TreeEntryKind;
 use serde::Deserialize;
 
 /// One entry of a git tree as GitHub's REST API lists it. A blob carries its

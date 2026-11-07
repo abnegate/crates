@@ -16,7 +16,9 @@
 //! `pull_request::PullRequestService` opens, reads, checks, reviews and merges
 //! pull requests, sets them to merge once they are ready, moves them in and
 //! out of draft, creates repositories and registers their webhooks, over
-//! GitHub's REST and GraphQL APIs.
+//! GitHub's REST and GraphQL APIs. With the `gitlab` feature,
+//! `gitlab::GitLabService` reads a project's default branch, its tree and its
+//! blobs from GitLab or a self-hosted GitLab instance.
 //!
 //! Nothing here holds application state, so a task runner can drive it directly.
 //!
@@ -44,9 +46,10 @@
 //!   pull requests on GitHub or a GitHub Enterprise install, sets them to
 //!   merge once they are ready and moves them in and out of draft, reads back
 //!   how each one was received, lists a repository's branches, each named by
-//!   a [`RemoteBranchName`] as GitHub spells it, and creates
-//!   repositories there and registers their webhooks, over the REST and
-//!   GraphQL APIs; and
+//!   a [`RemoteBranchName`] as GitHub spells it, reads a repository's tree
+//!   at a branch, tag or commit with `fetch_tree_at` and a file there with
+//!   `fetch_contents`, and creates repositories there and registers their
+//!   webhooks, over the REST and GraphQL APIs; and
 //!   `pull_request::WebhookSignature`, which checks that a webhook delivery was
 //!   signed with the secret its webhook was registered with.
 //! - `github-app`: `github`, plus `pull_request::ApplicationClaims`, which
@@ -56,6 +59,12 @@
 //!   installation's token until it nears expiry, and
 //!   `pull_request::ApplicationService`, which registers an App from its
 //!   manifest and lists its installations and their repositories.
+//! - `gitlab`: `gitlab::GitLabService`, which reads a GitLab project's
+//!   default branch, its tree at a branch, tag or commit with
+//!   `fetch_tree_at`, beneath a [`RepositoryPath`] when one is given, and
+//!   its blobs, from
+//!   gitlab.com or a self-hosted instance, anonymously or with a token, and
+//!   never from a link-local or cloud metadata address.
 //! - `testing`: `RepositoryUrl::local`,
 //!   `pull_request::PullRequestService::standing_in_for` and, with
 //!   `github-app`, `pull_request::InstallationIssuer::standing_in_for` and
@@ -63,25 +72,37 @@
 //!   repository on the local disk or a mock API server. Nothing a
 //!   caller configures produces any of them, so only a test should enable it.
 
+mod blob;
 mod branch_name;
 mod checkout;
 mod commit_sha;
 pub mod conflict;
 pub mod discovery;
 pub mod git;
+#[cfg(feature = "gitlab")]
+#[cfg_attr(docsrs, doc(cfg(feature = "gitlab")))]
+pub mod gitlab;
 mod object_id;
 mod parse_error;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub mod pull_request;
+#[cfg(any(feature = "github", feature = "gitlab"))]
+mod redirect;
 mod remote_branch_name;
+mod repository_path;
 mod repository_url;
 pub mod resolution;
 pub mod subject;
 mod tag_name;
+#[cfg(all(test, any(feature = "github", feature = "gitlab")))]
+mod test_support;
+mod tree_entry;
+mod tree_entry_kind;
 mod truncation;
 pub mod worktree;
 
+pub use crate::blob::Blob;
 pub use crate::branch_name::BranchName;
 pub use crate::checkout::Checkout;
 pub use crate::commit_sha::CommitSha;
@@ -99,6 +120,15 @@ pub use crate::git::DiffSummary;
 pub use crate::git::GitError;
 pub use crate::git::GitService;
 pub use crate::git::RemoteHead;
+#[cfg(feature = "gitlab")]
+#[cfg_attr(docsrs, doc(cfg(feature = "gitlab")))]
+pub use crate::gitlab::GitLabError;
+#[cfg(feature = "gitlab")]
+#[cfg_attr(docsrs, doc(cfg(feature = "gitlab")))]
+pub use crate::gitlab::GitLabService;
+#[cfg(feature = "gitlab")]
+#[cfg_attr(docsrs, doc(cfg(feature = "gitlab")))]
+pub use crate::gitlab::Project;
 pub use crate::object_id::ObjectId;
 pub use crate::parse_error::ParseError;
 #[cfg(feature = "github-app")]
@@ -124,9 +154,6 @@ pub use crate::pull_request::ApplicationService;
 pub use crate::pull_request::AutoMerge;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
-pub use crate::pull_request::Blob;
-#[cfg(feature = "github")]
-#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::Branch;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
@@ -143,6 +170,9 @@ pub use crate::pull_request::Collected;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::CommitStatus;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::Contents;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::CreatedPullRequest;
@@ -272,9 +302,6 @@ pub use crate::pull_request::Release;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::Repository;
-#[cfg(feature = "github")]
-#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
-pub use crate::pull_request::RepositoryPath;
 #[cfg(feature = "github-app")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]
 pub use crate::pull_request::RepositorySelection;
@@ -316,12 +343,6 @@ pub use crate::pull_request::TokenCache;
 pub use crate::pull_request::Tree;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
-pub use crate::pull_request::TreeEntry;
-#[cfg(feature = "github")]
-#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
-pub use crate::pull_request::TreeEntryKind;
-#[cfg(feature = "github")]
-#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::WebhookEvent;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
@@ -342,12 +363,15 @@ pub use crate::pull_request::minutes_between;
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::tally;
 pub use crate::remote_branch_name::RemoteBranchName;
+pub use crate::repository_path::RepositoryPath;
 pub use crate::repository_url::RepositoryUrl;
 pub use crate::resolution::ConflictSide;
 pub use crate::resolution::ResolutionVerdict;
 pub use crate::resolution::judge;
 pub use crate::subject::Kind;
 pub use crate::subject::Subject;
+pub use crate::tree_entry::TreeEntry;
+pub use crate::tree_entry_kind::TreeEntryKind;
 pub use crate::worktree::Unfinished;
 
 #[cfg(doctest)]

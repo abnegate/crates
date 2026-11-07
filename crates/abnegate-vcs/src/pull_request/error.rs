@@ -154,6 +154,11 @@ pub enum PullRequestError {
     #[error("The content is larger than the limit the caller set")]
     TooLarge,
 
+    /// GitHub sent a file's content in a form that is not valid base64, so
+    /// its bytes could not be read. The content is not repeated back.
+    #[error("GitHub sent file content that is not valid base64")]
+    MalformedContent,
+
     /// The request did not complete, or its answer could not be read.
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),

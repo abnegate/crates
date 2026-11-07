@@ -13,14 +13,6 @@ const ABSENT: &str = "Reference does not exist";
 /// What GitHub says when no commit answers to the ref asked to be resolved.
 const UNRESOLVED: &str = "No commit found";
 
-/// The ref GitHub reads as the tip of a repository's default branch, which no
-/// branch may be named.
-const HEAD: &str = "HEAD";
-
-/// Git's shorthand for `HEAD`, a revision expression rather than a name,
-/// though git accepts it as a tag.
-const CURRENT: &str = "@";
-
 impl PullRequestService {
     /// Delete a branch; one already gone is not an error.
     ///
@@ -73,8 +65,7 @@ impl PullRequestService {
         token: &SecretValue,
         reference: &str,
     ) -> PullRequestResult<CommitSha> {
-        let named = reference == HEAD || (reference != CURRENT && !TagName::refuses(reference));
-        if !named {
+        if !TagName::accepts_reference(reference) {
             return Err(ParseError::BranchName(reference.to_string()).into());
         }
         let url = self.repository_endpoint(repository, &["commits", reference])?;

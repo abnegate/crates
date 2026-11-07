@@ -26,14 +26,20 @@
 //! origin, as path segments or as a query value, and a segment that is
 //! empty, `.` or `..` is refused before anything is sent.
 //!
-//! Three values a caller passes as plain text are held to rules before they
+//! Five values a caller passes as plain text are held to rules before they
 //! travel:
 //!
-//! - the ref [`PullRequestService::resolve_commit`] resolves, held to a
-//!   [`crate::BranchName`]'s rules unless it is `HEAD`, travels as one path
-//!   segment, a `/` in it sent as `%2F`;
-//! - the tag [`PullRequestService::fetch_release`] reads, held to the same
-//!   rules, travels as one path segment the same way;
+//! - the ref [`PullRequestService::resolve_commit`] resolves, held to git's
+//!   rules for a tag name, which every name a [`crate::BranchName`] accepts
+//!   meets too, except that `HEAD` is accepted and `@`, git's shorthand for
+//!   it, is refused, travels as one path segment, a `/` in it sent as `%2F`;
+//! - the ref [`PullRequestService::fetch_tree_at`] reads a tree at, held to
+//!   the same rules, travels as one path segment the same way;
+//! - the ref [`PullRequestService::fetch_contents`] reads a file at, held to
+//!   the same rules, travels as the `ref` query value;
+//! - the tag [`PullRequestService::fetch_release`] reads, held to git's rules
+//!   for a tag name, `HEAD` refused, travels as one path segment the same
+//!   way;
 //! - the fork owner [`PullRequestService::find_pull_request`] and
 //!   [`PullRequestService::create_pull_request_from`] take, held to a
 //!   [`Repository`] owner's rules, travels with the head branch as the
@@ -58,6 +64,9 @@
 //! return an [`Excerpt`] that is never longer than that limit, never ends inside
 //! a character, and says in [`Excerpt::truncated`] whether the text went on;
 //! displayed, a cut excerpt ends with [`Excerpt::MARKER`].
+//! [`PullRequestService::fetch_contents`] reads a file through GitHub's
+//! contents API instead, no more of the answer than any JSON answer, and
+//! returns its bytes decoded from base64 in a [`Contents`].
 //!
 //! [`WebhookSignature`] checks that a webhook delivery was signed with the
 //! secret its webhook was registered with, before anything reads it.
@@ -74,7 +83,6 @@
 mod application;
 mod auto_merge;
 mod automation;
-mod blob;
 mod branch;
 mod changed_file;
 mod check_run;
@@ -82,6 +90,7 @@ mod checks_outcome;
 mod collected;
 mod comment_request;
 mod commit_status;
+mod contents;
 mod create_request;
 mod created;
 mod created_repository;
@@ -106,6 +115,8 @@ mod github_comment;
 mod github_commit;
 mod github_commit_status;
 mod github_commit_status_record;
+mod github_contents;
+mod github_contents_answer;
 mod github_created_repository;
 mod github_deployment;
 mod github_deployment_status;
@@ -175,7 +186,6 @@ mod reference;
 mod release;
 mod repository;
 mod repository_detail;
-mod repository_path;
 mod repository_request;
 mod review_comment;
 mod review_event;
@@ -191,8 +201,6 @@ mod state_filter;
 mod submitted_review;
 mod thread_comment;
 mod tree;
-mod tree_entry;
-mod tree_entry_kind;
 mod webhook_configuration;
 mod webhook_event;
 mod webhook_request;
@@ -201,6 +209,7 @@ mod workflow_job;
 mod workflow_run;
 mod workflow_run_filter;
 
+pub use crate::blob::Blob;
 #[cfg(feature = "github-app")]
 pub use crate::pull_request::application::Account;
 #[cfg(feature = "github-app")]
@@ -231,13 +240,13 @@ pub use crate::pull_request::application::RepositorySelection;
 pub use crate::pull_request::application::TokenCache;
 pub use crate::pull_request::auto_merge::AutoMerge;
 pub use crate::pull_request::automation::PullRequestAutomation;
-pub use crate::pull_request::blob::Blob;
 pub use crate::pull_request::branch::Branch;
 pub use crate::pull_request::changed_file::ChangedFile;
 pub use crate::pull_request::check_run::CheckRun;
 pub use crate::pull_request::checks_outcome::ChecksOutcome;
 pub use crate::pull_request::collected::Collected;
 pub use crate::pull_request::commit_status::CommitStatus;
+pub use crate::pull_request::contents::Contents;
 pub use crate::pull_request::created::CreatedPullRequest;
 pub use crate::pull_request::created_repository::CreatedRepository;
 pub use crate::pull_request::deployment::Deployment;
@@ -274,7 +283,6 @@ pub use crate::pull_request::reception::minutes_between;
 pub use crate::pull_request::reference::PullRequestReference;
 pub use crate::pull_request::release::Release;
 pub use crate::pull_request::repository::Repository;
-pub use crate::pull_request::repository_path::RepositoryPath;
 pub use crate::pull_request::review_comment::ReviewComment;
 pub use crate::pull_request::review_event::ReviewEvent;
 pub use crate::pull_request::review_record::ReviewRecord;
@@ -289,10 +297,11 @@ pub use crate::pull_request::state_filter::StateFilter;
 pub use crate::pull_request::submitted_review::SubmittedReview;
 pub use crate::pull_request::thread_comment::ThreadComment;
 pub use crate::pull_request::tree::Tree;
-pub use crate::pull_request::tree_entry::TreeEntry;
-pub use crate::pull_request::tree_entry_kind::TreeEntryKind;
 pub use crate::pull_request::webhook_event::WebhookEvent;
 pub use crate::pull_request::webhook_signature::WebhookSignature;
 pub use crate::pull_request::workflow_job::WorkflowJob;
 pub use crate::pull_request::workflow_run::WorkflowRun;
 pub use crate::pull_request::workflow_run_filter::WorkflowRunFilter;
+pub use crate::repository_path::RepositoryPath;
+pub use crate::tree_entry::TreeEntry;
+pub use crate::tree_entry_kind::TreeEntryKind;
