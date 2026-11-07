@@ -416,6 +416,42 @@ fn uri_stems_match_the_donor() {
 }
 
 #[test]
+fn for_query_reproduces_the_donor_config() {
+    let cases = fixture("cases.json");
+    let golden = fixture("golden.json");
+    let queries = cases["queries"].as_array().expect("queries");
+    let expected_queries = golden["queries"].as_array().expect("golden queries");
+    assert_eq!(queries.len(), expected_queries.len());
+    for (query, expected) in queries.iter().zip(expected_queries) {
+        assert_eq!(query["label"], expected["label"]);
+        let query_text = text(&query["text"]);
+        let config = HybridSearchConfig::for_query(query_text);
+        let expected = &expected["config"];
+        let context = format!("for_query {query_text:?}");
+        assert_bits(
+            &format!("{context} semantic_weight"),
+            config.semantic_weight,
+            golden_bits(&expected["semantic_weight"]),
+        );
+        assert_bits(
+            &format!("{context} fusion_constant"),
+            config.fusion_constant,
+            golden_bits(&expected["fusion_constant"]),
+        );
+        assert_bits(
+            &format!("{context} minimum_keyword_score"),
+            config.minimum_keyword_score,
+            golden_bits(&expected["minimum_keyword_score"]),
+        );
+        assert_bits(
+            &format!("{context} minimum_semantic_score"),
+            config.minimum_semantic_score,
+            golden_bits(&expected["minimum_semantic_score"]),
+        );
+    }
+}
+
+#[test]
 fn ulp_tolerance_accepts_neighbours_and_rejects_distant_values() {
     let base = 16.0f32;
     assert!(close(base, f32::from_bits(base.to_bits() + MAXIMUM_ULPS)));
