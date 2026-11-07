@@ -422,7 +422,7 @@ impl CliProvider {
         });
 
         let forward = events.clone();
-        let (verdicts, settled) = mpsc::channel(2);
+        let (verdicts, settled) = mpsc::unbounded_channel();
         let (draining, started) = watch::channel(false);
         let (answered_sender, answered) = watch::channel(false);
         let prose = Sink::open(files.as_ref().map(|files| files.stdout.as_path())).await;
@@ -3290,15 +3290,28 @@ while [ ! -s '{marker}' ]; do sleep 0.1; done"#,
     /// A stand-in that replays `fixture`, whatever comes after the first
     /// result taking longer than a settled run is given to exit.
     fn replaying_turns(directory: &TempDir, fixture: &str) -> CliSettings {
+        replaying_after(directory, fixture, 0)
+    }
+
+    /// A stand-in that replays `fixture`, pausing longer than a settled run is
+    /// given to exit after its result at `index`, counting from zero, and after
+    /// the `init` that begins the next turn when claude wrote it straight after.
+    fn replaying_after(directory: &TempDir, fixture: &str, index: usize) -> CliSettings {
         let lines: Vec<&str> = fixture.lines().collect();
-        let first = lines
+        let paused = lines
             .iter()
-            .position(|line| line.contains(r#""type":"result""#))
-            .expect("the turn's first result");
-        let (started, ended) = lines.split_at(first + 1);
+            .enumerate()
+            .filter(|(_, line)| line.contains(r#""type":"result""#))
+            .nth(index)
+            .expect("the result to pause after")
+            .0;
+        let begins_next = lines
+            .get(paused + 1)
+            .is_some_and(|line| line.contains(r#""subtype":"init""#));
+        let (started, ended) = lines.split_at(paused + 1 + usize::from(begins_next));
         let path = |name: &str| directory.path().join(name);
-        std::fs::write(path("started.jsonl"), started.join("\n") + "\n").expect("the first turn");
-        std::fs::write(path("ended.jsonl"), ended.join("\n") + "\n").expect("the later turn");
+        std::fs::write(path("started.jsonl"), started.join("\n") + "\n").expect("the first turns");
+        std::fs::write(path("ended.jsonl"), ended.join("\n") + "\n").expect("the later turns");
         let wait = abnegate_exec::executor::GRACE_PERIOD + Duration::from_secs(4);
         let script = format!(
             "cat '{started}'\nsleep {wait}\ncat '{ended}'",
@@ -3440,28 +3453,9 @@ sleep 120"#,
     #[tokio::test]
     async fn every_task_that_ended_before_the_first_result_gets_its_turn() {
         let directory = TempDir::new().expect("a temporary directory");
-        let lines: Vec<&str> = TWO_ENDED_FIRST.lines().collect();
-        let empty = lines
-            .iter()
-            .enumerate()
-            .filter(|(_, line)| line.contains(r#""type":"result""#))
-            .nth(1)
-            .expect("the empty result")
-            .0;
-        let (started, ended) = lines.split_at(empty + 1);
-        let path = |name: &str| directory.path().join(name);
-        std::fs::write(path("started.jsonl"), started.join("\n") + "\n").expect("the first turns");
-        std::fs::write(path("ended.jsonl"), ended.join("\n") + "\n").expect("the last turn");
-        let wait = abnegate_exec::executor::GRACE_PERIOD + Duration::from_secs(4);
-        let script = format!(
-            "cat '{started}'\nsleep {wait}\ncat '{ended}'",
-            started = path("started.jsonl").display(),
-            wait = wait.as_secs(),
-            ended = path("ended.jsonl").display(),
-        );
         let provider = CliProvider::agent(
             AgentKind::Claude,
-            settings(&directory, &script).await_background(),
+            replaying_after(&directory, TWO_ENDED_FIRST, 1).await_background(),
         );
 
         let execution = execute(&provider, &[Message::user("hi")]).await;
@@ -3470,6 +3464,158 @@ sleep 120"#,
         assert!(
             execution.stdout.text.contains(LATER_ANSWER),
             "{execution:?}"
+        );
+    }
+
+    /// claude 2.1.318's own lines for a monitor that printed a line and ended
+    /// while the model was still writing: its line begins a third turn once the
+    /// second has settled the run.
+    const MONITOR_ENDED_FIRST: &str =
+        include_str!("../tests/fixtures/claude/monitor-ended-first.jsonl");
+
+    #[tokio::test]
+    async fn a_monitors_line_after_the_run_settled_still_gets_its_turn() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let provider = CliProvider::agent(
+            AgentKind::Claude,
+            replaying_after(&directory, MONITOR_ENDED_FIRST, 1).await_background(),
+        );
+
+        let execution = execute(&provider, &[Message::user("hi")]).await;
+
+        assert_eq!(execution.stopped, None, "{execution:?}");
+        assert_eq!(
+            execution.stdout.text.matches(LATER_ANSWER).count(),
+            2,
+            "{execution:?}"
+        );
+        assert_ne!(
+            execution.stdout.finish_reason.as_deref(),
+            Some(crate::CUT_SHORT)
+        );
+    }
+
+    /// The tripwire still fails a run whose agent trips it in the grace after
+    /// its answer, whether or not the run waits on background work.
+    #[tokio::test]
+    async fn a_diagnostic_tripped_in_the_grace_still_fails_the_run() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = r#"echo '{"type":"result","subtype":"success","is_error":false,"result":"Done."}'
+sleep 1
+echo 'API Error: 429 Too Many Requests' >&2
+sleep 1
+exit 0"#;
+        for awaited in [false, true] {
+            let mut settings =
+                settings(&directory, script).with_tripwire(|line| line.contains("429"));
+            if awaited {
+                settings = settings.await_background();
+            }
+            let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+            let execution = execute(&provider, &[Message::user("hi")]).await;
+
+            assert!(
+                execution
+                    .failure
+                    .as_deref()
+                    .is_some_and(|failure| failure.contains("429")),
+                "awaited {awaited}: {execution:?}"
+            );
+        }
+    }
+
+    /// A result, a turn and its result read in one go settle the run twice with
+    /// a reopening between, none of which may be lost.
+    #[tokio::test]
+    async fn turns_read_in_one_go_settle_the_run_without_waiting_for_its_timeout() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let started = directory.path().join("started");
+        let turns = directory.path().join("turns.jsonl");
+        std::fs::write(
+            &turns,
+            [
+                r#"{"type":"system","subtype":"init","session_id":"s"}"#,
+                r#"{"type":"result","subtype":"success","is_error":false,"result":"One."}"#,
+                r#"{"type":"system","subtype":"init","session_id":"s"}"#,
+                r#"{"type":"result","subtype":"success","is_error":false,"result":"Two."}"#,
+            ]
+            .join("\n")
+                + "\n",
+        )
+        .expect("the turns");
+        let script = format!(
+            "touch '{started}'\ncat '{turns}'\nsleep 120",
+            started = started.display(),
+            turns = turns.display(),
+        );
+        let timeout = Duration::from_secs(14);
+        let provider = CliProvider::agent(
+            AgentKind::Claude,
+            settings(&directory, &script)
+                .await_background()
+                .with_timeout(timeout),
+        );
+
+        let (execution, waited) = timed(
+            async { execute(&provider, &[Message::user("hi")]).await },
+            &started,
+        )
+        .await;
+
+        assert!(waited < Duration::from_secs(11), "waited {waited:?}");
+        assert_ne!(
+            execution.stdout.finish_reason.as_deref(),
+            Some(crate::CUT_SHORT)
+        );
+    }
+
+    /// Claude can begin a turn before writing the result of the one before, so
+    /// a turn stays open while more have begun than finished.
+    #[tokio::test]
+    async fn a_turn_begun_before_the_last_result_is_still_open_when_output_ends() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = r#"echo '{"type":"system","subtype":"init","session_id":"s"}'
+echo '{"type":"system","subtype":"init","session_id":"s"}'
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"The la"}]}}'
+echo '{"type":"result","subtype":"success","is_error":false,"result":"First."}'"#;
+        let provider = CliProvider::agent(AgentKind::Claude, settings(&directory, script));
+
+        let execution = execute(&provider, &[Message::user("hi")]).await;
+
+        assert_eq!(
+            execution.stdout.finish_reason.as_deref(),
+            Some(crate::CUT_SHORT),
+            "{execution:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_later_turn_that_fails_its_stream_is_never_marked_cut_short_first() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let long = "x".repeat(4096);
+        let script = format!(
+            r#"echo '{{"type":"system","subtype":"init","session_id":"s"}}'
+echo '{{"type":"result","subtype":"success","is_error":false,"result":"First."}}'
+echo '{{"type":"system","subtype":"init","session_id":"s"}}'
+echo '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"{long}"}}]}}}}'"#
+        );
+        let provider = CliProvider::agent(
+            AgentKind::Claude,
+            settings(&directory, &script).with_output_limit(1024),
+        );
+
+        let events = streamed(&provider, &[Message::user("hi")]).await;
+        let (events, failure, _) = collected(events).await;
+
+        assert!(failure.is_some(), "{events:?}");
+        assert!(
+            !events.iter().any(|event| matches!(
+                event,
+                AgentEvent::Finished { finish_reason }
+                    if finish_reason.as_deref() == Some(crate::CUT_SHORT)
+            )),
+            "{events:?}"
         );
     }
 
@@ -3657,6 +3803,10 @@ done"#,
 
         let completion = completion.expect("the answers it gave");
         assert!(
+            waited > timeout - Duration::from_secs(3),
+            "stopped at {waited:?}, before reopening ran it to its timeout"
+        );
+        assert!(
             waited < timeout + Duration::from_secs(5),
             "waited {waited:?}"
         );
@@ -3665,7 +3815,7 @@ done"#,
                 .message
                 .content
                 .as_deref()
-                .is_some_and(|content| content.matches("Again.").count() > 1),
+                .is_some_and(|content| content.matches("Again.").count() > 3),
             "{completion:?}"
         );
     }

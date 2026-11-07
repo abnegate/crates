@@ -155,6 +155,27 @@ mod tests {
     }
 
     #[test]
+    fn a_task_noticed_twice_is_owed_one_turn() {
+        const LISTED: &str =
+            r#"{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"b1"}]}"#;
+        const NOTHING: &str =
+            r#"{"type":"system","subtype":"background_tasks_changed","tasks":[]}"#;
+        const ENDED: &str = r#"{"type":"system","subtype":"task_notification","task_id":"b1","status":"completed"}"#;
+        const TURN: &str = r#"{"type":"system","subtype":"init","session_id":"s"}"#;
+        let mut turn = AgentKind::Claude.turn();
+        let mut events = Vec::new();
+
+        for line in [TURN, LISTED, ENDED, ENDED, NOTHING, TURN] {
+            turn.interpret(line, &mut events);
+        }
+
+        assert!(
+            !turn.background_running(),
+            "one turn was owed, and it began"
+        );
+    }
+
+    #[test]
     fn a_claude_turn_owes_nothing_for_a_task_it_never_listed() {
         const SUBAGENTS: &str = r#"{"type":"system","subtype":"task_notification","task_id":"sub1","status":"completed"}"#;
         let mut turn = AgentKind::Claude.turn();

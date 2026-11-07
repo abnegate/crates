@@ -140,7 +140,7 @@ pub struct Turn {
     roster: Roster,
     /// The tasks the latest notice of what runs in the background listed.
     running: Vec<Option<String>>,
-    /// Every task any such notice has listed.
+    /// Every task any such notice has listed and no notice has said ended.
     listed: BTreeSet<String>,
     /// The turns claude still owes: one for each listed task that ended and
     /// each wakeup that fired, paid as each turn's `init` line begins it.
@@ -309,7 +309,7 @@ impl Turn {
             && notice
                 .task_id
                 .as_ref()
-                .is_some_and(|task| self.listed.contains(task))
+                .is_some_and(|task| self.listed.remove(task))
         {
             self.owed += 1;
         }

@@ -37,7 +37,7 @@ use crate::verdict::Verdict;
 
 const UNSTOPPABLE: &str = "the agent could not be stopped";
 const LINGERED: &str = "the agent finished its turn but did not exit";
-const OUTLASTED: &str = "the agent's background work outlasted the run's timeout";
+const OUTLASTED: &str = "the run's timeout came while the agent was still at work";
 
 /// A spawned agent, with the tasks reading its output and everything that
 /// has to outlive it, until [`Run::finish`] collects what it did.
@@ -62,7 +62,7 @@ pub(crate) struct Run {
     pub(crate) writer: JoinHandle<()>,
     pub(crate) reader: JoinHandle<Result<StdoutParseResult, String>>,
     pub(crate) diagnostics: JoinHandle<String>,
-    pub(crate) settled: mpsc::Receiver<Verdict>,
+    pub(crate) settled: mpsc::UnboundedReceiver<Verdict>,
     /// Turned true when a turn finished while the run waited on background
     /// work, so the agent has answered even if it never settles.
     pub(crate) answered: watch::Receiver<bool>,
@@ -146,6 +146,7 @@ impl Run {
             }
         };
         if stopped.as_deref() == Some(OUTLASTED)
+            && stdout.failure.is_none()
             && stdout.finish_reason.as_deref() != Some(CUT_SHORT)
         {
             let cut_short = AgentEvent::finished(Some(CUT_SHORT.to_string()));
@@ -315,8 +316,9 @@ impl Run {
             Outcome::Settled(verdict) => verdict,
         };
 
-        let tripped = matches!(verdict, Verdict::Tripped(_));
-        let (reason, failure) = match verdict.failure() {
+        let finished = verdict == Verdict::Finished;
+        let mut tripped = matches!(verdict, Verdict::Tripped(_));
+        let (reason, mut failure) = match verdict.failure() {
             None => (LINGERED.to_string(), None),
             Some(reason) => {
                 let reason = preview(&reason, EXECUTION_LOG_PREVIEW_LIMIT);
@@ -330,10 +332,23 @@ impl Run {
 
         let grace = Instant::now() + GRACE_PERIOD;
         let patience = self.deadline.map_or(grace, |deadline| deadline.min(grace));
-        let exited_in_grace = tokio::select! {
-            biased;
-            exit = timeout_at(patience, exited(&mut self.child, self.reaper.group())) => exit.ok().and_then(Result::ok),
-            Some(Verdict::Reopened) = self.settled.recv() => return Ok(None),
+        let exited_in_grace = loop {
+            tokio::select! {
+                biased;
+                exit = timeout_at(patience, exited(&mut self.child, self.reaper.group())) => {
+                    break exit.ok().and_then(Result::ok);
+                }
+                Some(later) = self.settled.recv() => match later {
+                    Verdict::Reopened if finished => return Ok(None),
+                    Verdict::Reopened | Verdict::Finished => {}
+                    Verdict::Failed(_) | Verdict::Tripped(_) => {
+                        tripped |= matches!(later, Verdict::Tripped(_));
+                        if failure.is_none() {
+                            failure = later.failure();
+                        }
+                    }
+                },
+            }
         };
         if let Some(exit) = exited_in_grace {
             return Ok(Some(Settlement {
