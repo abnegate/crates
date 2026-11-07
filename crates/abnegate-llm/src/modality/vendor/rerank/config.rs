@@ -1,9 +1,12 @@
+use std::fmt;
 use std::time::Duration;
 
 use abnegate_secret::SecretValue;
+use reqwest::Url;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_millis(2500);
 const DEFAULT_MAXIMUM_DOCUMENT_CHARACTERS: usize = 1200;
+const UNPARSABLE_URL: &str = "<unparsable>";
 
 /// How to reach a rerank endpoint that takes `{model, query, documents}` and
 /// answers `{results: [{index, relevance_score}]}`, as Cohere-style rerank
@@ -12,8 +15,8 @@ const DEFAULT_MAXIMUM_DOCUMENT_CHARACTERS: usize = 1200;
 /// `url` is the whole endpoint, such as `http://localhost:8080/v1/rerank`;
 /// nothing is appended to it. Trailing slashes on its path and any fragment are
 /// dropped, and a query string is kept. Printing a config never shows its key,
-/// though it does show the URL, so put no credential in the URL.
-#[derive(Debug, Clone)]
+/// nor the URL's user, password, query or fragment.
+#[derive(Clone)]
 #[non_exhaustive]
 pub struct HttpRerankConfig {
     /// The endpoint to post every batch to, such as
@@ -31,6 +34,34 @@ pub struct HttpRerankConfig {
     /// unless set. [`RerankProvider::rerank`](crate::RerankProvider::rerank)
     /// sends every document whole.
     pub maximum_document_characters: usize,
+}
+
+impl fmt::Debug for HttpRerankConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HttpRerankConfig")
+            .field("url", &printable_url(&self.url))
+            .field("model", &self.model)
+            .field("api_key", &self.api_key)
+            .field("timeout", &self.timeout)
+            .field(
+                "maximum_document_characters",
+                &self.maximum_document_characters,
+            )
+            .finish()
+    }
+}
+
+fn printable_url(url: &str) -> String {
+    let Ok(mut parsed) = Url::parse(url) else {
+        return UNPARSABLE_URL.to_string();
+    };
+    if parsed.set_username("").is_err() || parsed.set_password(None).is_err() {
+        return UNPARSABLE_URL.to_string();
+    }
+    parsed.set_query(None);
+    parsed.set_fragment(None);
+    parsed.to_string()
 }
 
 impl HttpRerankConfig {

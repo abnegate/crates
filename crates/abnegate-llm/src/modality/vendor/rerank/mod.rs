@@ -7,6 +7,8 @@ mod hit;
 mod request;
 mod response;
 
+use std::fmt;
+
 use async_trait::async_trait;
 use reqwest::Url;
 
@@ -44,11 +46,20 @@ const EMPTY_PAIR: &str = "empty rerank pair";
 /// status. A request that has no answer within [`HttpRerankConfig::timeout`],
 /// connecting included, is a [`ProviderError::Network`]; connecting also gives
 /// up after 10 seconds when the timeout is longer.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct HttpRerankProvider {
     config: HttpRerankConfig,
     url: Url,
     transport: Transport,
+}
+
+impl fmt::Debug for HttpRerankProvider {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HttpRerankProvider")
+            .field("config", &self.config)
+            .finish_non_exhaustive()
+    }
 }
 
 impl HttpRerankProvider {

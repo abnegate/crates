@@ -4,6 +4,8 @@ use abnegate_secret::REDACTED;
 use abnegate_secret::SecretValue;
 use serde_json::Value;
 use serde_json::json;
+use tokio::io::AsyncReadExt;
+use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use wiremock::Mock;
 use wiremock::MockServer;
@@ -626,6 +628,61 @@ fn a_config_never_prints_its_key() {
         assert!(!printed.contains(KEY), "{printed}");
         assert!(printed.contains(REDACTED), "{printed}");
     }
+}
+
+#[test]
+fn neither_print_shows_a_credential_in_the_url() {
+    let config = HttpRerankConfig::new(
+        "http://user:plain-password@localhost:8080/v1/rerank?api_key=plain-query-value#token",
+        MODEL,
+    );
+    let provider = HttpRerankProvider::new(config.clone()).unwrap();
+
+    for printed in [format!("{config:?}"), format!("{provider:?}")] {
+        assert!(!printed.contains("plain-password"), "{printed}");
+        assert!(!printed.contains("plain-query-value"), "{printed}");
+        assert!(!printed.contains("user:"), "{printed}");
+        assert!(printed.contains("localhost:8080/v1/rerank"), "{printed}");
+        assert!(printed.contains(MODEL), "{printed}");
+    }
+}
+
+#[test]
+fn a_config_whose_url_does_not_parse_does_not_print_it() {
+    let printed = format!(
+        "{:?}",
+        HttpRerankConfig::new("not a url plain-secret", MODEL)
+    );
+
+    assert!(!printed.contains("plain-secret"), "{printed}");
+}
+
+#[tokio::test]
+async fn a_refusal_whose_body_stalls_past_the_deadline_is_a_network_error() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = [0u8; 4096];
+        let _ = stream.read(&mut request).await.unwrap();
+        stream
+            .write_all(b"HTTP/1.1 401 Unauthorized\r\ncontent-length: 100\r\n\r\npartial")
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        drop(stream);
+    });
+
+    let error = provider(
+        HttpRerankConfig::new(format!("http://{address}{RERANK}"), MODEL)
+            .with_timeout(Duration::from_millis(300)),
+    )
+    .rerank(QUERY, &documents(&["first"]))
+    .await
+    .unwrap_err();
+    server.abort();
+
+    assert!(matches!(error, ProviderError::Network { .. }), "{error:?}");
 }
 
 #[test]

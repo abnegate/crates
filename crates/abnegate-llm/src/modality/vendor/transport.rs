@@ -13,6 +13,7 @@ use crate::client::Trust;
 use crate::provider::ProviderError;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const UNREADABLE_REFUSAL: &str = "unknown error";
 
 /// How a vendor client reaches its API: the shared per-runtime
 /// [`Trust::Operator`] pool, which refuses redirects so a vendor key header
@@ -58,11 +59,11 @@ impl Transport {
 
         if !response.status().is_success() {
             let status = response.status().as_u16();
-            let message = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "unknown error".into());
-            return Err(ProviderError::api(status, message));
+            return match response.text().await {
+                Ok(message) => Err(ProviderError::api(status, message)),
+                Err(error) if error.is_timeout() => Err(self.failure(error)),
+                Err(_) => Err(ProviderError::api(status, UNREADABLE_REFUSAL)),
+            };
         }
 
         let body = response
