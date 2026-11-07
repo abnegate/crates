@@ -227,8 +227,9 @@ impl Recurrence {
     /// [`TimeDelta`] can hold, which only a monthly `INTERVAL` in the billions
     /// reaches, reads as [`TimeDelta::MAX`].
     ///
-    /// The gap is measured on the wall clock. A daylight-saving change can
-    /// bring two firings closer in elapsed time by the size of that change:
+    /// An hourly rule counts elapsed hours, so its gap is elapsed time. Every
+    /// other gap is measured on the wall clock, where a daylight-saving change
+    /// can bring two firings closer in elapsed time by the size of that change:
     /// `FREQ=DAILY;BYHOUR=0,2` fires at 00:00 and 02:00, two hours apart on
     /// the clock, but on the morning London springs forward those are one
     /// elapsed hour apart. A host that bounds elapsed time between firings
@@ -341,11 +342,11 @@ impl Recurrence {
     /// The first firing strictly after `after`, or `None` once the rule is
     /// spent.
     ///
-    /// `anchor` is the first firing: it supplies whatever the rule does not
-    /// say, so `FREQ=WEEKLY` alone repeats on the anchor's own weekday and
-    /// time, and an `INTERVAL` counts from the anchor's period. `fired` is how
-    /// many firings have already happened, which is what `COUNT` is measured
-    /// against. `UNTIL` includes the instant it names.
+    /// `anchor` supplies whatever the rule does not say, so `FREQ=WEEKLY`
+    /// alone repeats on the anchor's own weekday and time, and an `INTERVAL`
+    /// counts from the anchor's period. `fired` is how many firings have
+    /// already happened, which is what `COUNT` is measured against. `UNTIL`
+    /// includes the instant it names.
     ///
     /// Every clause is read on `timezone`'s wall clock, and so is the anchor,
     /// so nine o'clock stays nine o'clock there across a daylight-saving
@@ -366,24 +367,24 @@ impl Recurrence {
     /// a second, dropping only its whole seconds, so an anchor at 09:17:42.5
     /// fires at 10:17:00.5; every other firing falls on a whole minute.
     ///
-    /// `anchor` is the same instant for the rule's whole life: the day a
-    /// monthly rule clamps from, the phase an `INTERVAL` counts from, and the
-    /// first of the firings `fired` counts. A rule anchored on 31 January
-    /// fires on 28 February and then 31 March, where one re-anchored on
-    /// 28 February would fire on the 28th for ever after.
+    /// `anchor` is the rule's first firing and the same instant for its whole
+    /// life: the day a monthly rule clamps from, the phase an `INTERVAL`
+    /// counts from, and the first of the firings `fired` counts. A rule
+    /// anchored on 31 January fires on 28 February and then 31 March, where
+    /// one re-anchored on 28 February would fire on the 28th for ever after.
     ///
-    /// The anchor is itself the first firing, so a host takes it as such,
-    /// checking it with [`Recurrence::fires_at`], and asks for each later one
-    /// with `after` at or past the anchor. An `after` earlier than `anchor`
-    /// reads the periods before the anchor as well, in the anchor's phase, so
-    /// it can answer with a firing before the anchor: a daily rule anchored on
-    /// 14 September and asked after noon on 1 September answers 2 September.
-    /// [`Recurrence::fires_at`] relies on this, asking from the minute before
-    /// the anchor's own.
+    /// A host checks the anchor with [`Recurrence::fires_at`] and asks for
+    /// each later firing with `after` at or past it. An `after` earlier than
+    /// `anchor` reads the periods before the anchor as well, in the anchor's
+    /// phase, so it can answer with a firing before the anchor: a daily rule
+    /// anchored on 14 September and asked after noon on 1 September answers
+    /// 2 September. [`Recurrence::fires_at`] relies on this, asking from the
+    /// minute before the anchor's own.
     ///
-    /// Finding the period `after` falls in takes one step per period between
-    /// `anchor` and `after`, so the cost grows with that distance divided by
-    /// the period.
+    /// Finding the period `after` falls in takes constant time for an hourly,
+    /// daily or weekly rule, whose periods are all one length. A monthly rule
+    /// takes one step per month between `anchor` and `after`, because its
+    /// months differ in length.
     ///
     /// # Panics
     ///
@@ -435,23 +436,44 @@ impl Recurrence {
         None
     }
 
-    /// The start of the period `after` falls in, walked from the anchor so an
+    /// The start of the period `after` falls in, counted from the anchor so an
     /// `INTERVAL` keeps the anchor's phase.
     fn period_start(&self, anchor: NaiveDateTime, after: NaiveDateTime) -> NaiveDateTime {
-        let mut period = anchor;
+        let mut period = self.nearest_period(anchor, after);
         while period > after {
             let Some(back) = self.retreat(period) else {
                 break;
             };
             period = back;
         }
-        while self.advance(period).is_some_and(|next| next <= after) {
-            let Some(next) = self.advance(period) else {
-                break;
-            };
+        while let Some(next) = self.advance(period).filter(|next| *next <= after) {
             period = next;
         }
         period
+    }
+
+    /// The last period at or before `after`, reached in one jump when every
+    /// period is the same length on the wall clock. A month is not, and a
+    /// period the calendar cannot hold is not reached, so both answer the
+    /// anchor and leave [`Recurrence::period_start`] to walk from there.
+    fn nearest_period(&self, anchor: NaiveDateTime, after: NaiveDateTime) -> NaiveDateTime {
+        if self.frequency == Frequency::Monthly {
+            return anchor;
+        }
+        let distance = after.signed_duration_since(anchor);
+        let whole_seconds = distance.num_seconds() - i64::from(distance.subsec_nanos() < 0);
+        self.frequency
+            .shortest()
+            .num_seconds()
+            .checked_mul(i64::from(self.interval))
+            .and_then(|length| {
+                whole_seconds
+                    .checked_div_euclid(length)?
+                    .checked_mul(length)
+            })
+            .and_then(TimeDelta::try_seconds)
+            .and_then(|offset| anchor.checked_add_signed(offset))
+            .unwrap_or(anchor)
     }
 
     fn advance(&self, from: NaiveDateTime) -> Option<NaiveDateTime> {

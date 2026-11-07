@@ -561,3 +561,115 @@ fn a_monthly_rule_keeps_the_31st_of_the_calendars_last_december() {
     );
     assert_eq!(rule.next_after(january, december, 12, Timezone::UTC), None);
 }
+
+fn london_firing(rule: &str, anchor: &str, after: &str) -> Option<DateTime<Utc>> {
+    let london = Timezone::parse("Europe/London").expect("a timezone");
+    let rule = Recurrence::parse(rule).expect("accepted");
+    assert!(
+        rule.fires_at(at_utc(anchor), london),
+        "{anchor} is a firing"
+    );
+    rule.next_after(at_utc(anchor), at_utc(after), 1, london)
+}
+
+#[test]
+fn a_thirty_year_old_anchor_keeps_its_phase_across_daylight_saving() {
+    for (rule, anchor, after, next) in [
+        (
+            "FREQ=HOURLY",
+            "1997-03-28T01:00:00Z",
+            "2027-03-28T01:00:00Z",
+            "2027-03-28T02:00:00Z",
+        ),
+        (
+            "FREQ=HOURLY;INTERVAL=7",
+            "1997-03-30T00:17:42.5Z",
+            "2027-03-28T01:00:00Z",
+            "2027-03-28T07:17:00.5Z",
+        ),
+        (
+            "FREQ=DAILY",
+            "1997-03-28T09:00:00Z",
+            "2027-03-28T08:00:00Z",
+            "2027-03-29T08:00:00Z",
+        ),
+        (
+            "FREQ=DAILY;INTERVAL=3;BYHOUR=1;BYMINUTE=30",
+            "1997-10-25T00:30:00Z",
+            "2027-03-27T12:00:00Z",
+            "2027-03-28T01:00:00Z",
+        ),
+        (
+            "FREQ=DAILY;INTERVAL=3;BYHOUR=1;BYMINUTE=30",
+            "1997-10-26T00:30:00Z",
+            "2027-03-27T12:00:00Z",
+            "2027-03-29T00:30:00Z",
+        ),
+        (
+            "FREQ=WEEKLY;INTERVAL=2;BYDAY=SU;BYHOUR=1;BYMINUTE=30",
+            "1997-03-23T01:30:00Z",
+            "2027-03-21T12:00:00Z",
+            "2027-03-28T01:00:00Z",
+        ),
+        (
+            "FREQ=WEEKLY;INTERVAL=2;BYDAY=SU;BYHOUR=1;BYMINUTE=30",
+            "1997-03-30T01:00:00Z",
+            "2027-03-21T12:00:00Z",
+            "2027-04-04T00:30:00Z",
+        ),
+        (
+            "FREQ=MONTHLY",
+            "1997-01-31T09:00:00Z",
+            "2027-02-15T00:00:00Z",
+            "2027-02-28T09:00:00Z",
+        ),
+        (
+            "FREQ=MONTHLY;INTERVAL=7;BYMONTHDAY=31",
+            "1997-01-31T09:00:00Z",
+            "2027-01-01T00:00:00Z",
+            "2027-05-31T08:00:00Z",
+        ),
+    ] {
+        assert_eq!(
+            london_firing(rule, anchor, after),
+            Some(at_utc(next)),
+            "{rule} anchored at {anchor}, asked after {after}"
+        );
+    }
+}
+
+#[test]
+fn an_anchor_two_years_ahead_counts_its_phase_back_across_daylight_saving() {
+    for (rule, anchor, after, next) in [
+        (
+            "FREQ=HOURLY;INTERVAL=7",
+            "2029-03-28T00:17:42.5Z",
+            "2027-03-28T01:00:00Z",
+            "2027-03-28T02:17:00.5Z",
+        ),
+        (
+            "FREQ=DAILY;INTERVAL=3;BYHOUR=1;BYMINUTE=30",
+            "2029-03-24T01:30:00Z",
+            "2027-03-27T12:00:00Z",
+            "2027-03-29T00:30:00Z",
+        ),
+        (
+            "FREQ=WEEKLY;INTERVAL=2;BYDAY=SU;BYHOUR=1;BYMINUTE=30",
+            "2029-04-01T00:30:00Z",
+            "2027-03-21T12:00:00Z",
+            "2027-04-04T00:30:00Z",
+        ),
+        (
+            "FREQ=MONTHLY",
+            "2029-01-31T09:00:00Z",
+            "2027-02-15T00:00:00Z",
+            "2027-02-28T09:00:00Z",
+        ),
+    ] {
+        assert_eq!(
+            london_firing(rule, anchor, after),
+            Some(at_utc(next)),
+            "{rule} anchored at {anchor}, asked after {after}"
+        );
+    }
+}
