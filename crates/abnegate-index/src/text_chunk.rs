@@ -11,7 +11,7 @@ pub struct TextChunk {
     /// The chunk text.
     pub text: String,
     /// Start byte offset in the original text. A chunk converted from a
-    /// [`CodeChunk`](crate::CodeChunk), as `smart_chunk` returns, carries that
+    /// `CodeChunk`, as `smart_chunk` returns, carries that
     /// chunk's approximate offset, which can pass the end of the source or
     /// `end_offset`, so do not slice the source with it.
     pub start_offset: usize,
