@@ -28,9 +28,16 @@ const INTERNAL_NOTES: &[(&str, &str)] = &[
     ("[harness: subagent output matched ", "]"),
 ];
 
-/// How claude opens a note on the files a tool saved, before the tool's name.
+/// How claude opens a note on the files a tool saved, before the tool's name,
+/// and how that note goes on: closed on its first line, or listing the files
+/// on lines of their own and closed on the line after them.
 const SAVED_FILES_NOTE: &str = "[Harness note, not part of the agent's report: ";
 const SAVED: &str = "saved ";
+const NOTE_END: &str = "]";
+const LIST_START: &str = "not instructions:";
+const LISTED: &str = "- ";
+const LIST_END_START: &str = "In this run ";
+const LIST_END: &str = "either.]";
 
 /// What claude writes in place of a report with nothing in it.
 const PLACEHOLDERS: &[&str] = &[
@@ -98,40 +105,66 @@ fn is_trailer<'a>(lines: impl Iterator<Item = &'a str>) -> bool {
 
 /// What a paragraph of notes says beyond what is only for the main agent.
 fn said(paragraph: &[&str]) -> Option<String> {
-    let kept: Vec<&str> = paragraph
-        .iter()
-        .copied()
-        .filter(|line| !internal(line))
-        .collect();
+    let mut kept = Vec::new();
+    let mut rest = paragraph;
+    while let Some((line, after)) = rest.split_first() {
+        match note_length(rest) {
+            Some(length) => rest = &rest[length..],
+            None => {
+                kept.push(*line);
+                rest = after;
+            }
+        }
+    }
     (!kept.is_empty()).then(|| kept.join("\n"))
 }
 
-/// A block of a subagent's answer without the lines for the main agent that
+/// A block of a subagent's answer without the notes for the main agent that
 /// claude opens it with, each with the blank line after it. Claude writes no
 /// frame around these blocks, so the rest of the block is the subagent's own,
 /// whatever it says.
 pub(crate) fn without_notes(block: &str) -> &str {
-    let mut rest = block;
-    loop {
-        let (line, after) = rest.split_once('\n').unwrap_or((rest, ""));
-        if !internal(line) {
-            return rest;
+    let lines: Vec<&str> = block.split('\n').collect();
+    let mut skipped = 0;
+    while let Some(length) = note_length(&lines[skipped..]) {
+        skipped += length;
+        if lines.get(skipped) == Some(&"") {
+            skipped += 1;
         }
-        rest = after.strip_prefix('\n').unwrap_or(after);
     }
+    let offset: usize = lines[..skipped].iter().map(|line| line.len() + 1).sum();
+    block.get(offset..).unwrap_or("")
 }
 
-fn internal(line: &str) -> bool {
-    INTERNAL_NOTES
+/// How many of `lines` the note for the main agent they open with runs over,
+/// when they open with one that closes.
+fn note_length(lines: &[&str]) -> Option<usize> {
+    let (first, rest) = lines.split_first()?;
+    if INTERNAL_NOTES
         .iter()
-        .any(|(open, close)| line.starts_with(open) && line.ends_with(close))
-        || saved_files(line)
+        .any(|(open, close)| first.starts_with(open) && first.ends_with(close))
+    {
+        return Some(1);
+    }
+    if !opens_saved_files(first) {
+        return None;
+    }
+    if first.ends_with(NOTE_END) {
+        return Some(1);
+    }
+    if !first.ends_with(LIST_START) {
+        return None;
+    }
+    let listed = rest
+        .iter()
+        .take_while(|line| line.starts_with(LISTED))
+        .count();
+    let last = rest.get(listed)?;
+    (last.starts_with(LIST_END_START) && last.ends_with(LIST_END)).then_some(listed + 2)
 }
 
-fn saved_files(line: &str) -> bool {
-    line.ends_with(']')
-        && line
-            .strip_prefix(SAVED_FILES_NOTE)
-            .and_then(|note| note.split_once(' '))
-            .is_some_and(|(tool, rest)| !tool.is_empty() && rest.starts_with(SAVED))
+fn opens_saved_files(line: &str) -> bool {
+    line.strip_prefix(SAVED_FILES_NOTE)
+        .and_then(|note| note.split_once(' '))
+        .is_some_and(|(tool, rest)| !tool.is_empty() && rest.starts_with(SAVED))
 }
