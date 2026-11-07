@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.12](https://github.com/abnegate/crates/compare/abnegate-vcs/v0.1.11...abnegate-vcs/v0.1.12) - 2026-11-07
+
+### Added
+
+- *(vcs)* read github and gitlab repositories by reference for source adapters ([#68](https://github.com/abnegate/crates/pull/68))
+
 ## [0.1.11](https://github.com/abnegate/crates/compare/abnegate-vcs/v0.1.10...abnegate-vcs/v0.1.11) - 2026-11-06
 
 ### Added
