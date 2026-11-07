@@ -1,0 +1,314 @@
+{
+  "content_types": [
+    {
+      "content_type": "text/x-rust",
+      "language": "rust"
+    },
+    {
+      "content_type": "text/x-python",
+      "language": "python"
+    },
+    {
+      "content_type": "application/javascript",
+      "language": "javascript"
+    },
+    {
+      "content_type": "text/javascript",
+      "language": "javascript"
+    },
+    {
+      "content_type": "text/tsx",
+      "language": "tsx"
+    },
+    {
+      "content_type": "application/typescript",
+      "language": "typescript"
+    },
+    {
+      "content_type": "text/x-golang",
+      "language": "go"
+    },
+    {
+      "content_type": "text/x-go",
+      "language": "unknown"
+    },
+    {
+      "content_type": "text/x-java",
+      "language": "java"
+    },
+    {
+      "content_type": "application/java-archive",
+      "language": "java"
+    },
+    {
+      "content_type": "text/x-kotlin",
+      "language": "kotlin"
+    },
+    {
+      "content_type": "text/x-swift",
+      "language": "swift"
+    },
+    {
+      "content_type": "application/sql",
+      "language": "sql"
+    },
+    {
+      "content_type": "text/x-c++",
+      "language": "cpp"
+    },
+    {
+      "content_type": "text/x-cpp",
+      "language": "cpp"
+    },
+    {
+      "content_type": "text/x-c",
+      "language": "c"
+    },
+    {
+      "content_type": "text/x-csrc",
+      "language": "c"
+    },
+    {
+      "content_type": "text/css",
+      "language": "c"
+    },
+    {
+      "content_type": "text/calendar",
+      "language": "c"
+    },
+    {
+      "content_type": "text/x-csv",
+      "language": "c"
+    },
+    {
+      "content_type": "application/json",
+      "language": "json"
+    },
+    {
+      "content_type": "application/yaml",
+      "language": "yaml"
+    },
+    {
+      "content_type": "text/x-ruby",
+      "language": "ruby"
+    },
+    {
+      "content_type": "application/x-php",
+      "language": "php"
+    },
+    {
+      "content_type": "text/plain",
+      "language": "unknown"
+    },
+    {
+      "content_type": "text/markdown",
+      "language": "unknown"
+    },
+    {
+      "content_type": "text/html",
+      "language": "unknown"
+    },
+    {
+      "content_type": "application/xml",
+      "language": "unknown"
+    },
+    {
+      "content_type": "image/png",
+      "language": "unknown"
+    },
+    {
+      "content_type": "TEXT/X-RUST",
+      "language": "rust"
+    },
+    {
+      "content_type": "Application/JSON",
+      "language": "json"
+    },
+    {
+      "content_type": "",
+      "language": "unknown"
+    }
+  ],
+  "extensions": [
+    {
+      "extension": "rs",
+      "language": "rust"
+    },
+    {
+      "extension": "py",
+      "language": "python"
+    },
+    {
+      "extension": "pyw",
+      "language": "python"
+    },
+    {
+      "extension": "pyi",
+      "language": "python"
+    },
+    {
+      "extension": "js",
+      "language": "javascript"
+    },
+    {
+      "extension": "mjs",
+      "language": "javascript"
+    },
+    {
+      "extension": "cjs",
+      "language": "javascript"
+    },
+    {
+      "extension": "jsx",
+      "language": "javascript"
+    },
+    {
+      "extension": "ts",
+      "language": "typescript"
+    },
+    {
+      "extension": "mts",
+      "language": "typescript"
+    },
+    {
+      "extension": "cts",
+      "language": "typescript"
+    },
+    {
+      "extension": "tsx",
+      "language": "tsx"
+    },
+    {
+      "extension": "go",
+      "language": "go"
+    },
+    {
+      "extension": "java",
+      "language": "java"
+    },
+    {
+      "extension": "c",
+      "language": "c"
+    },
+    {
+      "extension": "h",
+      "language": "c"
+    },
+    {
+      "extension": "cpp",
+      "language": "cpp"
+    },
+    {
+      "extension": "cc",
+      "language": "cpp"
+    },
+    {
+      "extension": "cxx",
+      "language": "cpp"
+    },
+    {
+      "extension": "hpp",
+      "language": "cpp"
+    },
+    {
+      "extension": "hxx",
+      "language": "cpp"
+    },
+    {
+      "extension": "hh",
+      "language": "cpp"
+    },
+    {
+      "extension": "kt",
+      "language": "kotlin"
+    },
+    {
+      "extension": "kts",
+      "language": "kotlin"
+    },
+    {
+      "extension": "swift",
+      "language": "swift"
+    },
+    {
+      "extension": "sql",
+      "language": "sql"
+    },
+    {
+      "extension": "json",
+      "language": "json"
+    },
+    {
+      "extension": "yaml",
+      "language": "yaml"
+    },
+    {
+      "extension": "yml",
+      "language": "yaml"
+    },
+    {
+      "extension": "rb",
+      "language": "ruby"
+    },
+    {
+      "extension": "php",
+      "language": "php"
+    },
+    {
+      "extension": "RS",
+      "language": "rust"
+    },
+    {
+      "extension": "Py",
+      "language": "python"
+    },
+    {
+      "extension": "TSX",
+      "language": "tsx"
+    },
+    {
+      "extension": "Yml",
+      "language": "yaml"
+    },
+    {
+      "extension": "",
+      "language": "unknown"
+    },
+    {
+      "extension": "txt",
+      "language": "unknown"
+    },
+    {
+      "extension": "md",
+      "language": "unknown"
+    },
+    {
+      "extension": "css",
+      "language": "unknown"
+    },
+    {
+      "extension": "html",
+      "language": "unknown"
+    },
+    {
+      "extension": "toml",
+      "language": "unknown"
+    },
+    {
+      "extension": "rs.bak",
+      "language": "unknown"
+    },
+    {
+      "extension": "jsonc",
+      "language": "unknown"
+    },
+    {
+      "extension": "phtml",
+      "language": "unknown"
+    },
+    {
+      "extension": "ℝs",
+      "language": "unknown"
+    }
+  ]
+}

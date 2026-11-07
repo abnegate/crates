@@ -1,0 +1,431 @@
+[
+  {
+    "chunk_type": "FileHeader",
+    "end_offset": 31,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 0,
+    "metadata": {
+      "content_hash": "51b96564962b333f",
+      "end_byte": 31,
+      "is_generated": false,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/Sources/Bookmarks/BookmarkStore.swift@main",
+      "start_byte": 0,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 0,
+    "text": "path: github://acme/widgets/Sources/Bookmarks/BookmarkStore.swift@main\nkind: file_header\n\n/// A bookmark saved by the reader.\n\nimport Foundation\nimport XCTest"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 266,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "Bookmark",
+        "BookmarkStoring"
+      ],
+      "referenced_types": [
+        "Bookmark",
+        "Codable",
+        "Equatable",
+        "UUID",
+        "String",
+        "URL",
+        "BookmarkStoring",
+        "Bookmark"
+      ]
+    },
+    "index": 1,
+    "metadata": {
+      "content_hash": "74e4831b3bfac2f2",
+      "end_byte": 266,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/Sources/Bookmarks/BookmarkStore.swift@main",
+      "start_byte": 69,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 69,
+    "text": "/// A bookmark saved by the reader.\nstruct Bookmark: Codable, Equatable {\n    let id: UUID\n    var title: String\n    var url: URL\n}\n\nprotocol BookmarkStoring {\n    func save(_ bookmark: Bookmark) throws\n    func all() -> [Bookmark]\n}"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 680,
+    "identifiers": {
+      "defined_symbol": "BookmarkStore",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "save",
+        "all"
+      ],
+      "referenced_types": [
+        "BookmarkStore",
+        "BookmarkStoring",
+        "UUID",
+        "Bookmark",
+        "DispatchQueue"
+      ]
+    },
+    "index": 2,
+    "metadata": {
+      "content_hash": "12c527254d2f0779",
+      "end_byte": 680,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Class",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/Sources/Bookmarks/BookmarkStore.swift@main",
+      "start_byte": 268,
+      "symbol": "BookmarkStore",
+      "visibility": "Private"
+    },
+    "start_offset": 268,
+    "text": "File: github://acme/widgets/Sources/Bookmarks/BookmarkStore.swift@main\npath: github://acme/widgets/Sources/Bookmarks/BookmarkStore.swift@main\nLanguage: swift\nsymbol: BookmarkStore\nSymbol: BookmarkStore\nkind: Class\nSignature: final class BookmarkStore: BookmarkStoring\n\n// Imports:\nimport Foundation\nimport XCTest\n\nfinal class BookmarkStore: BookmarkStoring {\n    private var bookmarks: [UUID: Bookmark] = [:]\n    private let queue = DispatchQueue(label: \"bookmarks\")\n\n    func save(_ bookmark: Bookmark) throws {\n        queue.sync {\n            bookmarks[bookmark.id] = bookmark\n        }\n    }\n\n    func all() -> [Bookmark] {\n        queue.sync {\n            bookmarks.values.sorted { $0.title < $1.title }\n        }\n    }\n}\n\n// Identifiers:\n// symbol: BookmarkStore\n// types: BookmarkStore, BookmarkStoring, UUID, Bookmark, DispatchQueue\n// calls: save, all\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 549,
+    "identifiers": {
+      "defined_symbol": "save",
+      "key_strings": [],
+      "parameters": [
+        "_",
+        "bookmark",
+        "Bookmark"
+      ],
+      "referenced_functions": [
+        "save"
+      ],
+      "referenced_types": [
+        "Bookmark"
+      ]
+    },
+    "index": 3,
+    "metadata": {
+      "content_hash": "ef959251f718cdd6",
+      "end_byte": 549,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "BookmarkStore"
+      ],
+      "path": "github://acme/widgets/Sources/Bookmarks/BookmarkStore.swift@main",
+      "start_byte": 426,
+      "symbol": "save",
+      "visibility": "Private"
+    },
+    "start_offset": 426,
+    "text": "File: github://acme/widgets/Sources/Bookmarks/BookmarkStore.swift@main\npath: github://acme/widgets/Sources/Bookmarks/BookmarkStore.swift@main\nLanguage: swift\nsymbol: BookmarkStore.save\nSymbol: BookmarkStore.save\nkind: Method\nParent: BookmarkStore\nparents: BookmarkStore\nSignature: func save(_ bookmark: Bookmark) throws\n\n// Imports:\nimport Foundation\nimport XCTest\n\nfunc save(_ bookmark: Bookmark) throws {\n        queue.sync {\n            bookmarks[bookmark.id] = bookmark\n        }\n    }\n\n// Identifiers:\n// symbol: save\n// params: _, bookmark, Bookmark\n// types: Bookmark\n// calls: save\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 549,
+    "identifiers": {
+      "defined_symbol": "save",
+      "key_strings": [],
+      "parameters": [
+        "_",
+        "bookmark",
+        "Bookmark"
+      ],
+      "referenced_functions": [
+        "save"
+      ],
+      "referenced_types": [
+        "Bookmark"
+      ]
+    },
+    "index": 4,
+    "metadata": {
+      "content_hash": "e71f3942aea3a697",
+      "end_byte": 549,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "BookmarkStore"
+      ],
+      "path": "github://acme/widgets/Sources/Bookmarks/BookmarkStore.swift@main",
+      "start_byte": 426,
+      "symbol": "save",
+      "visibility": "Private"
+    },
+    "start_offset": 426,
+    "text": "File: github://acme/widgets/Sources/Bookmarks/BookmarkStore.swift@main\npath: github://acme/widgets/Sources/Bookmarks/BookmarkStore.swift@main\nLanguage: swift\nsymbol: BookmarkStore.save\nSymbol: BookmarkStore.save\nkind: Method\nParent: BookmarkStore\nparents: BookmarkStore\nSignature: func save(_ bookmark: Bookmark) throws\n [skeleton]\nfunc save(_ bookmark: Bookmark) throws\n\n// Key identifiers:\n// defined: save\n// params: _, bookmark, Bookmark\n// types: Bookmark\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 678,
+    "identifiers": {
+      "defined_symbol": "all",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "all"
+      ],
+      "referenced_types": [
+        "Bookmark"
+      ]
+    },
+    "index": 5,
+    "metadata": {
+      "content_hash": "63245f61178a56cb",
+      "end_byte": 678,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "BookmarkStore"
+      ],
+      "path": "github://acme/widgets/Sources/Bookmarks/BookmarkStore.swift@main",
+      "start_byte": 555,
+      "symbol": "all",
+      "visibility": "Private"
+    },
+    "start_offset": 555,
+    "text": "File: github://acme/widgets/Sources/Bookmarks/BookmarkStore.swift@main\npath: github://acme/widgets/Sources/Bookmarks/BookmarkStore.swift@main\nLanguage: swift\nsymbol: BookmarkStore.all\nSymbol: BookmarkStore.all\nkind: Method\nParent: BookmarkStore\nparents: BookmarkStore\nSignature: func all() -> [Bookmark]\n\n// Imports:\nimport Foundation\nimport XCTest\n\nfunc all() -> [Bookmark] {\n        queue.sync {\n            bookmarks.values.sorted { $0.title < $1.title }\n        }\n    }\n\n// Identifiers:\n// symbol: all\n// types: Bookmark\n// calls: all\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 678,
+    "identifiers": {
+      "defined_symbol": "all",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "all"
+      ],
+      "referenced_types": [
+        "Bookmark"
+      ]
+    },
+    "index": 6,
+    "metadata": {
+      "content_hash": "30ad7202ae9fbd07",
+      "end_byte": 678,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "BookmarkStore"
+      ],
+      "path": "github://acme/widgets/Sources/Bookmarks/BookmarkStore.swift@main",
+      "start_byte": 555,
+      "symbol": "all",
+      "visibility": "Private"
+    },
+    "start_offset": 555,
+    "text": "File: github://acme/widgets/Sources/Bookmarks/BookmarkStore.swift@main\npath: github://acme/widgets/Sources/Bookmarks/BookmarkStore.swift@main\nLanguage: swift\nsymbol: BookmarkStore.all\nSymbol: BookmarkStore.all\nkind: Method\nParent: BookmarkStore\nparents: BookmarkStore\nSignature: func all() -> [Bookmark]\n [skeleton]\nfunc all() -> [Bookmark]\n\n// Key identifiers:\n// defined: all\n// types: Bookmark\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 814,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "Bookmark",
+        "SortOrder"
+      ],
+      "referenced_types": [
+        "Bookmark",
+        "String",
+        "SortOrder"
+      ]
+    },
+    "index": 7,
+    "metadata": {
+      "content_hash": "678aa08a43048d74",
+      "end_byte": 814,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/Sources/Bookmarks/BookmarkStore.swift@main",
+      "start_byte": 682,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 682,
+    "text": "extension Bookmark {\n    var host: String {\n        url.host ?? \"unknown\"\n    }\n}\n\nenum SortOrder {\n    case title\n    case recent\n}"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1087,
+    "identifiers": {
+      "defined_symbol": "BookmarkStoreTests",
+      "key_strings": [
+        "https://example.com"
+      ],
+      "parameters": [],
+      "referenced_functions": [
+        "testSaveThenAll",
+        "save",
+        "all"
+      ],
+      "referenced_types": [
+        "BookmarkStoreTests",
+        "XCTestCase",
+        "BookmarkStore",
+        "Bookmark",
+        "UUID",
+        "Docs",
+        "URL",
+        "XCTAssertEqual"
+      ]
+    },
+    "index": 8,
+    "metadata": {
+      "content_hash": "bed0d448c1b2b9ce",
+      "end_byte": 1087,
+      "is_generated": false,
+      "is_test": true,
+      "kind": "Class",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/Sources/Bookmarks/BookmarkStore.swift@main",
+      "start_byte": 816,
+      "symbol": "BookmarkStoreTests",
+      "visibility": "Private"
+    },
+    "start_offset": 816,
+    "text": "File: github://acme/widgets/Sources/Bookmarks/BookmarkStore.swift@main\npath: github://acme/widgets/Sources/Bookmarks/BookmarkStore.swift@main\nLanguage: swift\nsymbol: BookmarkStoreTests\nSymbol: BookmarkStoreTests\nkind: Class\nSignature: final class BookmarkStoreTests: XCTestCase\n\n// Imports:\nimport Foundation\nimport XCTest\n\nfinal class BookmarkStoreTests: XCTestCase {\n    func testSaveThenAll() throws {\n        let store = BookmarkStore()\n        try store.save(Bookmark(id: UUID(), title: \"Docs\", url: URL(string: \"https://example.com\")!))\n        XCTAssertEqual(store.all().count, 1)\n    }\n}\n\n// Identifiers:\n// symbol: BookmarkStoreTests\n// types: BookmarkStoreTests, XCTestCase, BookmarkStore, Bookmark, UUID, Docs, URL, XCTAssertEqual\n// calls: testSaveThenAll, save, all\n// keys: https://example.com\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1085,
+    "identifiers": {
+      "defined_symbol": "testSaveThenAll",
+      "key_strings": [
+        "https://example.com"
+      ],
+      "parameters": [],
+      "referenced_functions": [
+        "testSaveThenAll",
+        "save",
+        "all"
+      ],
+      "referenced_types": [
+        "BookmarkStore",
+        "Bookmark",
+        "UUID",
+        "Docs",
+        "URL",
+        "XCTAssertEqual"
+      ]
+    },
+    "index": 9,
+    "metadata": {
+      "content_hash": "177e55f79b8b18fd",
+      "end_byte": 1085,
+      "is_generated": false,
+      "is_test": true,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "BookmarkStoreTests"
+      ],
+      "path": "github://acme/widgets/Sources/Bookmarks/BookmarkStore.swift@main",
+      "start_byte": 865,
+      "symbol": "testSaveThenAll",
+      "visibility": "Private"
+    },
+    "start_offset": 865,
+    "text": "File: github://acme/widgets/Sources/Bookmarks/BookmarkStore.swift@main\npath: github://acme/widgets/Sources/Bookmarks/BookmarkStore.swift@main\nLanguage: swift\nsymbol: BookmarkStoreTests.testSaveThenAll\nSymbol: BookmarkStoreTests.testSaveThenAll\nkind: Method\nParent: BookmarkStoreTests\nparents: BookmarkStoreTests\nSignature: func testSaveThenAll() throws\n\n// Imports:\nimport Foundation\nimport XCTest\n\nfunc testSaveThenAll() throws {\n        let store = BookmarkStore()\n        try store.save(Bookmark(id: UUID(), title: \"Docs\", url: URL(string: \"https://example.com\")!))\n        XCTAssertEqual(store.all().count, 1)\n    }\n\n// Identifiers:\n// symbol: testSaveThenAll\n// types: BookmarkStore, Bookmark, UUID, Docs, URL, XCTAssertEqual\n// calls: testSaveThenAll, save, all\n// keys: https://example.com\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 1085,
+    "identifiers": {
+      "defined_symbol": "testSaveThenAll",
+      "key_strings": [
+        "https://example.com"
+      ],
+      "parameters": [],
+      "referenced_functions": [
+        "testSaveThenAll",
+        "save",
+        "all"
+      ],
+      "referenced_types": [
+        "BookmarkStore",
+        "Bookmark",
+        "UUID",
+        "Docs",
+        "URL",
+        "XCTAssertEqual"
+      ]
+    },
+    "index": 10,
+    "metadata": {
+      "content_hash": "e04c7be4b9d916f9",
+      "end_byte": 1085,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "BookmarkStoreTests"
+      ],
+      "path": "github://acme/widgets/Sources/Bookmarks/BookmarkStore.swift@main",
+      "start_byte": 865,
+      "symbol": "testSaveThenAll",
+      "visibility": "Private"
+    },
+    "start_offset": 865,
+    "text": "File: github://acme/widgets/Sources/Bookmarks/BookmarkStore.swift@main\npath: github://acme/widgets/Sources/Bookmarks/BookmarkStore.swift@main\nLanguage: swift\nsymbol: BookmarkStoreTests.testSaveThenAll\nSymbol: BookmarkStoreTests.testSaveThenAll\nkind: Method\nParent: BookmarkStoreTests\nparents: BookmarkStoreTests\nSignature: func testSaveThenAll() throws\n [skeleton]\nfunc testSaveThenAll() throws\n\n// Key identifiers:\n// defined: testSaveThenAll\n// types: BookmarkStore, Bookmark, UUID, Docs, URL\n"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 69,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 11,
+    "metadata": {
+      "content_hash": "acaf55fc81ad3ddc",
+      "end_byte": 69,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/Sources/Bookmarks/BookmarkStore.swift@main",
+      "start_byte": 33,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 33,
+    "text": "File: github://acme/widgets/Sources/Bookmarks/BookmarkStore.swift@main\npath: github://acme/widgets/Sources/Bookmarks/BookmarkStore.swift@main\nLanguage: swift\nkind: top_level\n\n/// A bookmark saved by the reader."
+  }
+]

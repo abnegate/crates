@@ -7,22 +7,19 @@ use crate::provider::ProviderError;
 const PATH_SEPARATOR: char = '/';
 
 /// `path` under `base_url`, refusing a base that does not parse, cannot be a
-/// base, or is not `http` or `https`.
+/// base, or is not `http` or `https`. The refusal does not repeat the base, which
+/// can hold a credential.
 ///
 /// Each segment of `path` is appended to the base's own path, after any
 /// trailing `/`, so a base such as `http://host/ollama` keeps its prefix and
 /// `http://gateway/v1?api-version=1` keeps its query; a fragment is dropped.
 /// The checked URL is handed back, so only a checked URL is ever requested.
 pub(crate) fn endpoint(base_url: &str, path: &str) -> Result<Url, ProviderError> {
-    let invalid = |reason: &dyn Display| {
-        ProviderError::config(format!("invalid base URL {base_url}: {reason}"))
-    };
+    let invalid =
+        |reason: &dyn Display| ProviderError::config(format!("invalid base URL: {reason}"));
     let mut url = Url::parse(base_url).map_err(|error| invalid(&error))?;
-    let scheme = url.scheme();
-    if !matches!(scheme, "http" | "https") {
-        return Err(invalid(&format!(
-            "the {scheme} scheme is not http or https"
-        )));
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(invalid(&"its scheme is not http or https"));
     }
 
     let prefix = url.path().trim_end_matches(PATH_SEPARATOR).to_string();

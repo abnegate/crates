@@ -1,0 +1,642 @@
+[
+  {
+    "chunk_type": "FileHeader",
+    "end_offset": 132,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 0,
+    "metadata": {
+      "content_hash": "d7d326df96d93e46",
+      "end_byte": 132,
+      "is_generated": false,
+      "is_test": false,
+      "kind": null,
+      "module": "package catalog",
+      "parents": [],
+      "path": "github://acme/widgets/internal/catalog/server.go@main",
+      "start_byte": 74,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 74,
+    "text": "path: github://acme/widgets/internal/catalog/server.go@main\nkind: file_header\n\n// Package catalog serves the product catalog over HTTP.\n\npackage catalog\nimport (\n\t\"encoding/json\"\n\t\"net/http\"\n\t\"sync\"\n\t\"testing\"\n)"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 457,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": [
+        "Product",
+        "ID",
+        "Name",
+        "Price",
+        "Store",
+        "RWMutex",
+        "Product",
+        "Lister",
+        "List",
+        "Product"
+      ]
+    },
+    "index": 1,
+    "metadata": {
+      "content_hash": "13644b05bc38963f",
+      "end_byte": 457,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/internal/catalog/server.go@main",
+      "start_byte": 167,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 167,
+    "text": "// Product is one catalog entry.\ntype Product struct {\n\tID    string  `json:\"id\"`\n\tName  string  `json:\"name\"`\n\tPrice float64 `json:\"price\"`\n}\n\n// Store keeps products in memory.\ntype Store struct {\n\tmu       sync.RWMutex\n\tproducts map[string]Product\n}\n\n// Lister lists products.\ntype Lister interface {\n\tList() []Product\n}"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 572,
+    "identifiers": {
+      "defined_symbol": "NewStore",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "make"
+      ],
+      "referenced_types": [
+        "NewStore",
+        "Store",
+        "Product"
+      ]
+    },
+    "index": 2,
+    "metadata": {
+      "content_hash": "65428d93d3f3906d",
+      "end_byte": 572,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/internal/catalog/server.go@main",
+      "start_byte": 495,
+      "symbol": "NewStore",
+      "visibility": "Public"
+    },
+    "start_offset": 495,
+    "text": "File: github://acme/widgets/internal/catalog/server.go@main\npath: github://acme/widgets/internal/catalog/server.go@main\nLanguage: go\nsymbol: NewStore\nSymbol: NewStore\nkind: Function\nSignature: func NewStore() *Store\n\n// NewStore creates an empty store.\n// Imports:\nimport (\n\t\"encoding/json\"\n\t\"net/http\"\n\t\"sync\"\n\t\"testing\"\n)\n\nfunc NewStore() *Store {\n\treturn &Store{products: make(map[string]Product)}\n}\n\n// Identifiers:\n// symbol: NewStore\n// types: NewStore, Store, Product\n// calls: make\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 572,
+    "identifiers": {
+      "defined_symbol": "NewStore",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "make"
+      ],
+      "referenced_types": [
+        "NewStore",
+        "Store",
+        "Product"
+      ]
+    },
+    "index": 3,
+    "metadata": {
+      "content_hash": "c61c4fb31af7c62a",
+      "end_byte": 572,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/internal/catalog/server.go@main",
+      "start_byte": 495,
+      "symbol": "NewStore",
+      "visibility": "Public"
+    },
+    "start_offset": 495,
+    "text": "File: github://acme/widgets/internal/catalog/server.go@main\npath: github://acme/widgets/internal/catalog/server.go@main\nLanguage: go\nsymbol: NewStore\nSymbol: NewStore\nkind: Function\nSignature: func NewStore() *Store\n [skeleton]\n// NewStore creates an empty store.\nfunc NewStore() *Store\n\n// Key identifiers:\n// defined: NewStore\n// types: NewStore, Store, Product\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 720,
+    "identifiers": {
+      "defined_symbol": "Put",
+      "key_strings": [],
+      "parameters": [
+        "s",
+        "Store",
+        "Put",
+        "product",
+        "Product"
+      ],
+      "referenced_functions": [],
+      "referenced_types": [
+        "Store",
+        "Put",
+        "Product",
+        "Lock",
+        "Unlock",
+        "ID"
+      ]
+    },
+    "index": 4,
+    "metadata": {
+      "content_hash": "3a239dfdf76c3316",
+      "end_byte": 720,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/internal/catalog/server.go@main",
+      "start_byte": 612,
+      "symbol": "Put",
+      "visibility": "Public"
+    },
+    "start_offset": 612,
+    "text": "File: github://acme/widgets/internal/catalog/server.go@main\npath: github://acme/widgets/internal/catalog/server.go@main\nLanguage: go\nsymbol: Put\nSymbol: Put\nkind: Method\nSignature: func (s *Store) Put(product Product)\n\n// Put inserts or replaces a product.\n// Imports:\nimport (\n\t\"encoding/json\"\n\t\"net/http\"\n\t\"sync\"\n\t\"testing\"\n)\n\nfunc (s *Store) Put(product Product) {\n\ts.mu.Lock()\n\tdefer s.mu.Unlock()\n\ts.products[product.ID] = product\n}\n\n// Identifiers:\n// symbol: Put\n// params: s, Store, Put, product, Product\n// types: Store, Put, Product, Lock, Unlock, ID\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 720,
+    "identifiers": {
+      "defined_symbol": "Put",
+      "key_strings": [],
+      "parameters": [
+        "s",
+        "Store",
+        "Put",
+        "product",
+        "Product"
+      ],
+      "referenced_functions": [],
+      "referenced_types": [
+        "Store",
+        "Put",
+        "Product",
+        "Lock",
+        "Unlock",
+        "ID"
+      ]
+    },
+    "index": 5,
+    "metadata": {
+      "content_hash": "f8816e590f93a6ec",
+      "end_byte": 720,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/internal/catalog/server.go@main",
+      "start_byte": 612,
+      "symbol": "Put",
+      "visibility": "Public"
+    },
+    "start_offset": 612,
+    "text": "File: github://acme/widgets/internal/catalog/server.go@main\npath: github://acme/widgets/internal/catalog/server.go@main\nLanguage: go\nsymbol: Put\nSymbol: Put\nkind: Method\nSignature: func (s *Store) Put(product Product)\n [skeleton]\n// Put inserts or replaces a product.\nfunc (s *Store) Put(product Product)\n\n// Key identifiers:\n// defined: Put\n// params: s, Store, Put, product, Product\n// types: Store, Put, Product, Lock, Unlock\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 951,
+    "identifiers": {
+      "defined_symbol": "List",
+      "key_strings": [],
+      "parameters": [
+        "s",
+        "Store",
+        "List"
+      ],
+      "referenced_functions": [
+        "make",
+        "len",
+        "append"
+      ],
+      "referenced_types": [
+        "Store",
+        "List",
+        "Product",
+        "RLock",
+        "RUnlock"
+      ]
+    },
+    "index": 6,
+    "metadata": {
+      "content_hash": "05e31c0573a7f37f",
+      "end_byte": 951,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/internal/catalog/server.go@main",
+      "start_byte": 753,
+      "symbol": "List",
+      "visibility": "Public"
+    },
+    "start_offset": 753,
+    "text": "File: github://acme/widgets/internal/catalog/server.go@main\npath: github://acme/widgets/internal/catalog/server.go@main\nLanguage: go\nsymbol: List\nSymbol: List\nkind: Method\nSignature: func (s *Store) List() []Product\n\n// List returns every product.\n// Imports:\nimport (\n\t\"encoding/json\"\n\t\"net/http\"\n\t\"sync\"\n\t\"testing\"\n)\n\nfunc (s *Store) List() []Product {\n\ts.mu.RLock()\n\tdefer s.mu.RUnlock()\n\tout := make([]Product, 0, len(s.products))\n\tfor _, product := range s.products {\n\t\tout = append(out, product)\n\t}\n\treturn out\n}\n\n// Identifiers:\n// symbol: List\n// params: s, Store, List\n// types: Store, List, Product, RLock, RUnlock\n// calls: make, len, append\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 951,
+    "identifiers": {
+      "defined_symbol": "List",
+      "key_strings": [],
+      "parameters": [
+        "s",
+        "Store",
+        "List"
+      ],
+      "referenced_functions": [
+        "make",
+        "len",
+        "append"
+      ],
+      "referenced_types": [
+        "Store",
+        "List",
+        "Product",
+        "RLock",
+        "RUnlock"
+      ]
+    },
+    "index": 7,
+    "metadata": {
+      "content_hash": "b13dc2144a8973e3",
+      "end_byte": 951,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/internal/catalog/server.go@main",
+      "start_byte": 753,
+      "symbol": "List",
+      "visibility": "Public"
+    },
+    "start_offset": 753,
+    "text": "File: github://acme/widgets/internal/catalog/server.go@main\npath: github://acme/widgets/internal/catalog/server.go@main\nLanguage: go\nsymbol: List\nSymbol: List\nkind: Method\nSignature: func (s *Store) List() []Product\n [skeleton]\n// List returns every product.\nfunc (s *Store) List() []Product\n\n// Key identifiers:\n// defined: List\n// params: s, Store, List\n// types: Store, List, Product, RLock, RUnlock\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1183,
+    "identifiers": {
+      "defined_symbol": "handleList",
+      "key_strings": [],
+      "parameters": [
+        "lister",
+        "Lister"
+      ],
+      "referenced_functions": [
+        "func",
+        "handleList"
+      ],
+      "referenced_types": [
+        "Lister",
+        "HandlerFunc",
+        "ResponseWriter",
+        "Request",
+        "Header",
+        "Set",
+        "Content",
+        "Type",
+        "NewEncoder",
+        "Encode",
+        "List"
+      ]
+    },
+    "index": 8,
+    "metadata": {
+      "content_hash": "2aa67e5799a28fd7",
+      "end_byte": 1183,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/internal/catalog/server.go@main",
+      "start_byte": 953,
+      "symbol": "handleList",
+      "visibility": "Private"
+    },
+    "start_offset": 953,
+    "text": "File: github://acme/widgets/internal/catalog/server.go@main\npath: github://acme/widgets/internal/catalog/server.go@main\nLanguage: go\nsymbol: handleList\nSymbol: handleList\nkind: Function\nSignature: func handleList(lister Lister) http.HandlerFunc\n\n// Imports:\nimport (\n\t\"encoding/json\"\n\t\"net/http\"\n\t\"sync\"\n\t\"testing\"\n)\n\nfunc handleList(lister Lister) http.HandlerFunc {\n\treturn func(writer http.ResponseWriter, request *http.Request) {\n\t\twriter.Header().Set(\"Content-Type\", \"application/json\")\n\t\t_ = json.NewEncoder(writer).Encode(lister.List())\n\t}\n}\n\n// Identifiers:\n// symbol: handleList\n// params: lister, Lister\n// types: Lister, HandlerFunc, ResponseWriter, Request, Header, Set, Content, Type, NewEncoder, Encode, List\n// calls: func, handleList\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 1183,
+    "identifiers": {
+      "defined_symbol": "handleList",
+      "key_strings": [],
+      "parameters": [
+        "lister",
+        "Lister"
+      ],
+      "referenced_functions": [
+        "func",
+        "handleList"
+      ],
+      "referenced_types": [
+        "Lister",
+        "HandlerFunc",
+        "ResponseWriter",
+        "Request",
+        "Header",
+        "Set",
+        "Content",
+        "Type",
+        "NewEncoder",
+        "Encode",
+        "List"
+      ]
+    },
+    "index": 9,
+    "metadata": {
+      "content_hash": "68129c0b0657a8c7",
+      "end_byte": 1183,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/internal/catalog/server.go@main",
+      "start_byte": 953,
+      "symbol": "handleList",
+      "visibility": "Private"
+    },
+    "start_offset": 953,
+    "text": "File: github://acme/widgets/internal/catalog/server.go@main\npath: github://acme/widgets/internal/catalog/server.go@main\nLanguage: go\nsymbol: handleList\nSymbol: handleList\nkind: Function\nSignature: func handleList(lister Lister) http.HandlerFunc\n [skeleton]\nfunc handleList(lister Lister) http.HandlerFunc\n\n// Key identifiers:\n// defined: handleList\n// params: lister, Lister\n// types: Lister, HandlerFunc, ResponseWriter, Request, Header\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1372,
+    "identifiers": {
+      "defined_symbol": "TestStorePutThenList",
+      "key_strings": [],
+      "parameters": [
+        "t",
+        "testing",
+        "T"
+      ],
+      "referenced_functions": [
+        "t",
+        "len"
+      ],
+      "referenced_types": [
+        "TestStorePutThenList",
+        "NewStore",
+        "Put",
+        "Product",
+        "ID",
+        "Name",
+        "Anchor",
+        "Price",
+        "List",
+        "Fatal"
+      ]
+    },
+    "index": 10,
+    "metadata": {
+      "content_hash": "0f43a1bada8222a1",
+      "end_byte": 1372,
+      "is_generated": false,
+      "is_test": true,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/internal/catalog/server.go@main",
+      "start_byte": 1185,
+      "symbol": "TestStorePutThenList",
+      "visibility": "Public"
+    },
+    "start_offset": 1185,
+    "text": "File: github://acme/widgets/internal/catalog/server.go@main\npath: github://acme/widgets/internal/catalog/server.go@main\nLanguage: go\nsymbol: TestStorePutThenList\nSymbol: TestStorePutThenList\nkind: Function\nSignature: func TestStorePutThenList(t *testing.T)\n\n// Imports:\nimport (\n\t\"encoding/json\"\n\t\"net/http\"\n\t\"sync\"\n\t\"testing\"\n)\n\nfunc TestStorePutThenList(t *testing.T) {\n\tstore := NewStore()\n\tstore.Put(Product{ID: \"a\", Name: \"Anchor\", Price: 3.5})\n\tif len(store.List()) != 1 {\n\t\tt.Fatal(\"expected one product\")\n\t}\n}\n\n// Identifiers:\n// symbol: TestStorePutThenList\n// params: t, testing, T\n// types: TestStorePutThenList, NewStore, Put, Product, ID, Name, Anchor, Price, List, Fatal\n// calls: t, len\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 1372,
+    "identifiers": {
+      "defined_symbol": "TestStorePutThenList",
+      "key_strings": [],
+      "parameters": [
+        "t",
+        "testing",
+        "T"
+      ],
+      "referenced_functions": [
+        "t",
+        "len"
+      ],
+      "referenced_types": [
+        "TestStorePutThenList",
+        "NewStore",
+        "Put",
+        "Product",
+        "ID",
+        "Name",
+        "Anchor",
+        "Price",
+        "List",
+        "Fatal"
+      ]
+    },
+    "index": 11,
+    "metadata": {
+      "content_hash": "0b595d306ad55252",
+      "end_byte": 1372,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/internal/catalog/server.go@main",
+      "start_byte": 1185,
+      "symbol": "TestStorePutThenList",
+      "visibility": "Public"
+    },
+    "start_offset": 1185,
+    "text": "File: github://acme/widgets/internal/catalog/server.go@main\npath: github://acme/widgets/internal/catalog/server.go@main\nLanguage: go\nsymbol: TestStorePutThenList\nSymbol: TestStorePutThenList\nkind: Function\nSignature: func TestStorePutThenList(t *testing.T)\n [skeleton]\nfunc TestStorePutThenList(t *testing.T)\n\n// Key identifiers:\n// defined: TestStorePutThenList\n// params: t, testing, T\n// types: TestStorePutThenList, NewStore, Put, Product, ID\n"
+  },
+  {
+    "chunk_type": "ApiSurface",
+    "end_offset": 1372,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": [
+        "NewStore",
+        "Put",
+        "List",
+        "TestStorePutThenList"
+      ]
+    },
+    "index": 12,
+    "metadata": {
+      "content_hash": "82286f056f1147e9",
+      "end_byte": 1372,
+      "is_generated": false,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/internal/catalog/server.go@main",
+      "start_byte": 495,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 495,
+    "text": "path: github://acme/widgets/internal/catalog/server.go@main\nkind: api_surface\n\n// Public API:\n\n// NewStore creates an empty store.\nfunc NewStore() *Store\n\n// Put inserts or replaces a product.\nfunc (s *Store) Put(product Product)\n\n// List returns every product.\nfunc (s *Store) List() []Product\n\nfunc TestStorePutThenList(t *testing.T)\n\n"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 74,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 13,
+    "metadata": {
+      "content_hash": "826d9c2b6c8991c3",
+      "end_byte": 74,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/internal/catalog/server.go@main",
+      "start_byte": 0,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 0,
+    "text": "File: github://acme/widgets/internal/catalog/server.go@main\npath: github://acme/widgets/internal/catalog/server.go@main\nLanguage: go\nkind: top_level\n\n// Package catalog serves the product catalog over HTTP.\npackage catalog\n"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 167,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 14,
+    "metadata": {
+      "content_hash": "c3d7208af7b5cc6f",
+      "end_byte": 167,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/internal/catalog/server.go@main",
+      "start_byte": 134,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 134,
+    "text": "File: github://acme/widgets/internal/catalog/server.go@main\npath: github://acme/widgets/internal/catalog/server.go@main\nLanguage: go\nkind: top_level\n\n// Product is one catalog entry."
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 495,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 15,
+    "metadata": {
+      "content_hash": "23c08db1cfa9b2cd",
+      "end_byte": 495,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/internal/catalog/server.go@main",
+      "start_byte": 459,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 459,
+    "text": "File: github://acme/widgets/internal/catalog/server.go@main\npath: github://acme/widgets/internal/catalog/server.go@main\nLanguage: go\nkind: top_level\n\n// NewStore creates an empty store."
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 612,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 16,
+    "metadata": {
+      "content_hash": "512f187abd448d32",
+      "end_byte": 612,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/internal/catalog/server.go@main",
+      "start_byte": 574,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 574,
+    "text": "File: github://acme/widgets/internal/catalog/server.go@main\npath: github://acme/widgets/internal/catalog/server.go@main\nLanguage: go\nkind: top_level\n\n// Put inserts or replaces a product."
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 753,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 17,
+    "metadata": {
+      "content_hash": "8b50dceb85a0a5e0",
+      "end_byte": 753,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/internal/catalog/server.go@main",
+      "start_byte": 722,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 722,
+    "text": "File: github://acme/widgets/internal/catalog/server.go@main\npath: github://acme/widgets/internal/catalog/server.go@main\nLanguage: go\nkind: top_level\n\n// List returns every product."
+  }
+]

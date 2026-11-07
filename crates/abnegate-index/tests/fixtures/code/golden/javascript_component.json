@@ -1,0 +1,532 @@
+[
+  {
+    "chunk_type": "FileHeader",
+    "end_offset": 87,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 0,
+    "metadata": {
+      "content_hash": "c978b271e714eb55",
+      "end_byte": 87,
+      "is_generated": false,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/cart/badge.jsx@main",
+      "start_byte": 0,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 0,
+    "text": "path: github://acme/widgets/src/cart/badge.jsx@main\nkind: file_header\n\nimport React, { useState, useEffect } from 'react';\nimport PropTypes from 'prop-types';"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 553,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "setPulse",
+        "useState",
+        "useEffect",
+        "setTimeout",
+        "clearTimeout"
+      ],
+      "referenced_types": [
+        "CartBadge"
+      ]
+    },
+    "index": 1,
+    "metadata": {
+      "content_hash": "d8576bc2af1c9693",
+      "end_byte": 553,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/cart/badge.jsx@main",
+      "start_byte": 89,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 89,
+    "text": "File: github://acme/widgets/src/cart/badge.jsx@main\npath: github://acme/widgets/src/cart/badge.jsx@main\nLanguage: javascript\nkind: Other\nSignature: export function CartBadge(\n\n// Imports:\nimport React, { useState, useEffect } from 'react';\nimport PropTypes from 'prop-types';\n\nexport function CartBadge({ count, onOpen }) {\n  const [pulse, setPulse] = useState(false);\n\n  useEffect(() => {\n    if (count === 0) {\n      return undefined;\n    }\n    setPulse(true);\n    const timer = setTimeout(() => setPulse(false), 300);\n    return () => clearTimeout(timer);\n  }, [count]);\n\n  return (\n    <button className={pulse ? 'badge badge--pulse' : 'badge'} onClick={onOpen}>\n      <span aria-label=\"items in cart\">{count}</span>\n    </button>\n  );\n}\n\n// Identifiers:\n// types: CartBadge\n// calls: setPulse, useState, useEffect, setTimeout, clearTimeout\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 553,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "setPulse",
+        "useState",
+        "useEffect",
+        "setTimeout",
+        "clearTimeout"
+      ],
+      "referenced_types": [
+        "CartBadge"
+      ]
+    },
+    "index": 2,
+    "metadata": {
+      "content_hash": "aefede0ccafb2c85",
+      "end_byte": 553,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/cart/badge.jsx@main",
+      "start_byte": 89,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 89,
+    "text": "File: github://acme/widgets/src/cart/badge.jsx@main\npath: github://acme/widgets/src/cart/badge.jsx@main\nLanguage: javascript\nkind: Other\nSignature: export function CartBadge(\n [skeleton]\nexport function CartBadge(\n\n// Key identifiers:\n// types: CartBadge\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 553,
+    "identifiers": {
+      "defined_symbol": "CartBadge",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "setPulse",
+        "useState",
+        "useEffect",
+        "setTimeout",
+        "clearTimeout"
+      ],
+      "referenced_types": [
+        "CartBadge"
+      ]
+    },
+    "index": 3,
+    "metadata": {
+      "content_hash": "de5ab9aa43ff197f",
+      "end_byte": 553,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/cart/badge.jsx@main",
+      "start_byte": 96,
+      "symbol": "CartBadge",
+      "visibility": "Private"
+    },
+    "start_offset": 96,
+    "text": "File: github://acme/widgets/src/cart/badge.jsx@main\npath: github://acme/widgets/src/cart/badge.jsx@main\nLanguage: javascript\nsymbol: CartBadge\nSymbol: CartBadge\nkind: Function\nSignature: function CartBadge(\n\n// Imports:\nimport React, { useState, useEffect } from 'react';\nimport PropTypes from 'prop-types';\n\nfunction CartBadge({ count, onOpen }) {\n  const [pulse, setPulse] = useState(false);\n\n  useEffect(() => {\n    if (count === 0) {\n      return undefined;\n    }\n    setPulse(true);\n    const timer = setTimeout(() => setPulse(false), 300);\n    return () => clearTimeout(timer);\n  }, [count]);\n\n  return (\n    <button className={pulse ? 'badge badge--pulse' : 'badge'} onClick={onOpen}>\n      <span aria-label=\"items in cart\">{count}</span>\n    </button>\n  );\n}\n\n// Identifiers:\n// symbol: CartBadge\n// types: CartBadge\n// calls: setPulse, useState, useEffect, setTimeout, clearTimeout\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 553,
+    "identifiers": {
+      "defined_symbol": "CartBadge",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "setPulse",
+        "useState",
+        "useEffect",
+        "setTimeout",
+        "clearTimeout"
+      ],
+      "referenced_types": [
+        "CartBadge"
+      ]
+    },
+    "index": 4,
+    "metadata": {
+      "content_hash": "d2dca1822121def6",
+      "end_byte": 553,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/cart/badge.jsx@main",
+      "start_byte": 96,
+      "symbol": "CartBadge",
+      "visibility": "Private"
+    },
+    "start_offset": 96,
+    "text": "File: github://acme/widgets/src/cart/badge.jsx@main\npath: github://acme/widgets/src/cart/badge.jsx@main\nLanguage: javascript\nsymbol: CartBadge\nSymbol: CartBadge\nkind: Function\nSignature: function CartBadge(\n [skeleton]\nfunction CartBadge(\n\n// Key identifiers:\n// defined: CartBadge\n// types: CartBadge\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 180,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "useState"
+      ],
+      "referenced_types": []
+    },
+    "index": 5,
+    "metadata": {
+      "content_hash": "d046dc3b9aae011e",
+      "end_byte": 180,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "CartBadge"
+      ],
+      "path": "github://acme/widgets/src/cart/badge.jsx@main",
+      "start_byte": 138,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 138,
+    "text": "File: github://acme/widgets/src/cart/badge.jsx@main\npath: github://acme/widgets/src/cart/badge.jsx@main\nLanguage: javascript\nkind: Other\nParent: CartBadge\nparents: CartBadge\nSignature: const [pulse, setPulse] = useState(false);\n\n// Imports:\nimport React, { useState, useEffect } from 'react';\nimport PropTypes from 'prop-types';\n\nconst [pulse, setPulse] = useState(false);\n\n// Identifiers:\n// calls: useState\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 374,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "setPulse",
+        "setTimeout",
+        "clearTimeout"
+      ],
+      "referenced_types": []
+    },
+    "index": 6,
+    "metadata": {
+      "content_hash": "7bc7e06f0e836dfe",
+      "end_byte": 374,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "CartBadge"
+      ],
+      "path": "github://acme/widgets/src/cart/badge.jsx@main",
+      "start_byte": 194,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 194,
+    "text": "File: github://acme/widgets/src/cart/badge.jsx@main\npath: github://acme/widgets/src/cart/badge.jsx@main\nLanguage: javascript\nkind: Method\nParent: CartBadge\nparents: CartBadge\nSignature: () =>\n\n// Imports:\nimport React, { useState, useEffect } from 'react';\nimport PropTypes from 'prop-types';\n\n() => {\n    if (count === 0) {\n      return undefined;\n    }\n    setPulse(true);\n    const timer = setTimeout(() => setPulse(false), 300);\n    return () => clearTimeout(timer);\n  }\n\n// Identifiers:\n// calls: setPulse, setTimeout, clearTimeout\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 374,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "setPulse",
+        "setTimeout",
+        "clearTimeout"
+      ],
+      "referenced_types": []
+    },
+    "index": 7,
+    "metadata": {
+      "content_hash": "239dc3459531832a",
+      "end_byte": 374,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "CartBadge"
+      ],
+      "path": "github://acme/widgets/src/cart/badge.jsx@main",
+      "start_byte": 194,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 194,
+    "text": "File: github://acme/widgets/src/cart/badge.jsx@main\npath: github://acme/widgets/src/cart/badge.jsx@main\nLanguage: javascript\nkind: Method\nParent: CartBadge\nparents: CartBadge\nSignature: () =>\n [skeleton]\n() =>\n\n// Key identifiers:\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 369,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [
+        "setPulse",
+        "clearTimeout",
+        "timer"
+      ],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 8,
+    "metadata": {
+      "content_hash": "d2877726c35703f8",
+      "end_byte": 369,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "CartBadge"
+      ],
+      "path": "github://acme/widgets/src/cart/badge.jsx@main",
+      "start_byte": 279,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 279,
+    "text": "const timer = setTimeout(() => setPulse(false), 300);\n\n() => clearTimeout(timer)"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1012,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "reduce",
+        "map",
+        "p",
+        "toFixed"
+      ],
+      "referenced_types": [
+        "CartSummary",
+        "Cart",
+        "Total"
+      ]
+    },
+    "index": 9,
+    "metadata": {
+      "content_hash": "f2e952399be1dba2",
+      "end_byte": 1012,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/cart/badge.jsx@main",
+      "start_byte": 647,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 647,
+    "text": "File: github://acme/widgets/src/cart/badge.jsx@main\npath: github://acme/widgets/src/cart/badge.jsx@main\nLanguage: javascript\nkind: Other\nSignature: export default function CartSummary(\n\n// Imports:\nimport React, { useState, useEffect } from 'react';\nimport PropTypes from 'prop-types';\n\nexport default function CartSummary({ items }) {\n  const total = items.reduce((sum, item) => sum + item.price * item.quantity, 0);\n  return (\n    <section>\n      <h2>Cart</h2>\n      <ul>\n        {items.map((item) => (\n          <li key={item.id}>{item.name} x {item.quantity}</li>\n        ))}\n      </ul>\n      <p>Total: {total.toFixed(2)}</p>\n    </section>\n  );\n}\n\n// Identifiers:\n// types: CartSummary, Cart, Total\n// calls: reduce, map, p, toFixed\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 1012,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "reduce",
+        "map",
+        "p",
+        "toFixed"
+      ],
+      "referenced_types": [
+        "CartSummary",
+        "Cart",
+        "Total"
+      ]
+    },
+    "index": 10,
+    "metadata": {
+      "content_hash": "29761473b3e98691",
+      "end_byte": 1012,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/cart/badge.jsx@main",
+      "start_byte": 647,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 647,
+    "text": "File: github://acme/widgets/src/cart/badge.jsx@main\npath: github://acme/widgets/src/cart/badge.jsx@main\nLanguage: javascript\nkind: Other\nSignature: export default function CartSummary(\n [skeleton]\nexport default function CartSummary(\n\n// Key identifiers:\n// types: CartSummary, Cart, Total\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1012,
+    "identifiers": {
+      "defined_symbol": "CartSummary",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "reduce",
+        "map",
+        "p",
+        "toFixed"
+      ],
+      "referenced_types": [
+        "CartSummary",
+        "Cart",
+        "Total"
+      ]
+    },
+    "index": 11,
+    "metadata": {
+      "content_hash": "888b04781761e1a6",
+      "end_byte": 1012,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/cart/badge.jsx@main",
+      "start_byte": 662,
+      "symbol": "CartSummary",
+      "visibility": "Private"
+    },
+    "start_offset": 662,
+    "text": "File: github://acme/widgets/src/cart/badge.jsx@main\npath: github://acme/widgets/src/cart/badge.jsx@main\nLanguage: javascript\nsymbol: CartSummary\nSymbol: CartSummary\nkind: Function\nSignature: function CartSummary(\n\n// Imports:\nimport React, { useState, useEffect } from 'react';\nimport PropTypes from 'prop-types';\n\nfunction CartSummary({ items }) {\n  const total = items.reduce((sum, item) => sum + item.price * item.quantity, 0);\n  return (\n    <section>\n      <h2>Cart</h2>\n      <ul>\n        {items.map((item) => (\n          <li key={item.id}>{item.name} x {item.quantity}</li>\n        ))}\n      </ul>\n      <p>Total: {total.toFixed(2)}</p>\n    </section>\n  );\n}\n\n// Identifiers:\n// symbol: CartSummary\n// types: CartSummary, Cart, Total\n// calls: reduce, map, p, toFixed\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 1012,
+    "identifiers": {
+      "defined_symbol": "CartSummary",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "reduce",
+        "map",
+        "p",
+        "toFixed"
+      ],
+      "referenced_types": [
+        "CartSummary",
+        "Cart",
+        "Total"
+      ]
+    },
+    "index": 12,
+    "metadata": {
+      "content_hash": "97c2a02250f05872",
+      "end_byte": 1012,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/cart/badge.jsx@main",
+      "start_byte": 662,
+      "symbol": "CartSummary",
+      "visibility": "Private"
+    },
+    "start_offset": 662,
+    "text": "File: github://acme/widgets/src/cart/badge.jsx@main\npath: github://acme/widgets/src/cart/badge.jsx@main\nLanguage: javascript\nsymbol: CartSummary\nSymbol: CartSummary\nkind: Function\nSignature: function CartSummary(\n [skeleton]\nfunction CartSummary(\n\n// Key identifiers:\n// defined: CartSummary\n// types: CartSummary, Cart, Total\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 937,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [
+        "sum",
+        "item",
+        "price",
+        "quantity",
+        "item"
+      ],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 13,
+    "metadata": {
+      "content_hash": "6d1b45bdb89614d8",
+      "end_byte": 937,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "CartSummary"
+      ],
+      "path": "github://acme/widgets/src/cart/badge.jsx@main",
+      "start_byte": 698,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 698,
+    "text": "const total = items.reduce((sum, item) => sum + item.price * item.quantity, 0);\n\n(item) => (\n          <li key={item.id}>{item.name} x {item.quantity}</li>\n        )"
+  },
+  {
+    "chunk_type": "ApiSurface",
+    "end_offset": 1012,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 14,
+    "metadata": {
+      "content_hash": "40ed26e10b9bf78b",
+      "end_byte": 1012,
+      "is_generated": false,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/cart/badge.jsx@main",
+      "start_byte": 89,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 89,
+    "text": "path: github://acme/widgets/src/cart/badge.jsx@main\nkind: api_surface\n\n// Public API:\n\nexport function CartBadge(\n\nexport default function CartSummary(\n\n"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 647,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 15,
+    "metadata": {
+      "content_hash": "99d3c18b1079975f",
+      "end_byte": 647,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/cart/badge.jsx@main",
+      "start_byte": 555,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 555,
+    "text": "File: github://acme/widgets/src/cart/badge.jsx@main\npath: github://acme/widgets/src/cart/badge.jsx@main\nLanguage: javascript\nkind: top_level\n\nCartBadge.propTypes = {\n  count: PropTypes.number.isRequired,\n  onOpen: PropTypes.func,\n};\n"
+  }
+]

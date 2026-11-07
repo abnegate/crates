@@ -1,0 +1,65 @@
+[
+  {
+    "chunk_type": "Body",
+    "end_offset": 413,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [
+        "size_t",
+        "value"
+      ],
+      "referenced_functions": [
+        "buffer",
+        "buffer_round_up"
+      ],
+      "referenced_types": [
+        "BUFFER_OK",
+        "BUFFER_NO_MEMORY"
+      ]
+    },
+    "index": 0,
+    "metadata": {
+      "content_hash": "a6145ad8fbd74d21",
+      "end_byte": 413,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/native/buffer.h@main",
+      "start_byte": 80,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 80,
+    "text": "struct buffer\n\nenum {\n    BUFFER_OK = 0,\n    BUFFER_NO_MEMORY = -1,\n}\n\nstatic inline size_t buffer_round_up(size_t value) {\n    return (value + 15) & ~(size_t)15;\n}"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 72,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 1,
+    "metadata": {
+      "content_hash": "77233705c04c645b",
+      "end_byte": 72,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/native/buffer.h@main",
+      "start_byte": 0,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 0,
+    "text": "File: github://acme/widgets/native/buffer.h@main\npath: github://acme/widgets/native/buffer.h@main\nLanguage: c\nkind: top_level\n\n#ifndef WIDGETS_BUFFER_H\n#define WIDGETS_BUFFER_H\n\n#include <stddef.h>\n"
+  }
+]

@@ -1,0 +1,253 @@
+{
+  "cases": [
+    {
+      "id": "should_skip_blob",
+      "query": "What does should_skip_blob do when a GitHub file SHA is unchanged?",
+      "expect_identifiers": ["should_skip_blob"],
+      "expect_uri_contains": ["content/mod.rs"],
+      "judgments": [
+        {"uri_contains": "content/mod.rs", "grade": 3, "must_contain": ["should_skip_blob"]},
+        {"uri_contains": "embeddings/query.rs", "grade": 2},
+        {"uri_contains": "evals/retrieval.json", "grade": 1}
+      ]
+    },
+    {
+      "id": "github_adapter",
+      "query": "Where is GitHubAdapter implemented?",
+      "expect_identifiers": ["GitHubAdapter"],
+      "expect_uri_contains": ["adapters/github.rs"],
+      "judgments": [
+        {"uri_contains": "adapters/github.rs", "grade": 3, "must_contain": ["GitHubAdapter"]},
+        {"uri_contains": "adapters/mod.rs", "grade": 2},
+        {"uri_contains": "adapters/gitlab.rs", "grade": 1}
+      ]
+    },
+    {
+      "id": "source_sync_state",
+      "query": "How is source_sync_state version stored after an incremental index?",
+      "expect_identifiers": ["source_sync_state"],
+      "expect_uri_contains": ["pgvector.rs", "source_resync.rs", "sources.rs"],
+      "judgments": [
+        {"uri_contains": "pgvector.rs", "grade": 3, "must_contain": ["source_sync_state"]},
+        {"uri_contains": "source_resync.rs", "grade": 3},
+        {"uri_contains": "sources.rs", "grade": 3},
+        {"uri_contains": "context/service.rs", "grade": 2}
+      ]
+    },
+    {
+      "id": "source_resync",
+      "query": "When does the source resync worker decide RemoteChanged or MissingEmbeddings?",
+      "expect_identifiers": ["MissingEmbeddings"],
+      "expect_uri_contains": ["source_resync.rs"],
+      "judgments": [
+        {"uri_contains": "source_resync.rs", "grade": 3, "must_contain": ["MissingEmbeddings"]},
+        {"uri_contains": "pgvector.rs", "grade": 2},
+        {"uri_contains": "config.rs", "grade": 1}
+      ]
+    },
+    {
+      "id": "align_vector",
+      "query": "What does align_vector do to a shorter embedding?",
+      "expect_identifiers": ["align_vector"],
+      "expect_uri_contains": ["pgvector.rs"],
+      "judgments": [
+        {"uri_contains": "pgvector.rs", "grade": 3, "must_contain": ["align_vector"]},
+        {"uri_contains": "embeddings/mod.rs", "grade": 2},
+        {"uri_contains": "message_embeddings.rs", "grade": 1}
+      ]
+    },
+    {
+      "id": "hybrid_rrf",
+      "query": "How does hybrid_search combine keyword and semantic ranks with RRF?",
+      "expect_identifiers": ["hybrid_search"],
+      "expect_uri_contains": ["hybrid.rs"],
+      "judgments": [
+        {"uri_contains": "embeddings/hybrid.rs", "grade": 3, "must_contain": ["hybrid_search"]},
+        {"uri_contains": "context/service.rs", "grade": 2},
+        {"uri_contains": "routes/context.rs", "grade": 1}
+      ]
+    },
+    {
+      "id": "max_embed_chars",
+      "query": "What is MAX_EMBED_CHARS used for when embedding a chunk?",
+      "expect_identifiers": ["MAX_EMBED_CHARS"],
+      "expect_uri_contains": ["tokenizer.rs"],
+      "judgments": [
+        {"uri_contains": "tokenizer.rs", "grade": 3, "must_contain": ["MAX_EMBED_CHARS"]},
+        {"uri_contains": "content/mod.rs", "grade": 2}
+      ]
+    },
+    {
+      "id": "code_chunker_bag",
+      "query": "Where does the code chunker cap identifier bags at MAX_IDENTIFIER_BAG_ITEMS?",
+      "expect_identifiers": ["MAX_IDENTIFIER_BAG_ITEMS"],
+      "expect_uri_contains": ["code_chunker.rs"],
+      "judgments": [
+        {"uri_contains": "code_chunker.rs", "grade": 3, "must_contain": ["MAX_IDENTIFIER_BAG_ITEMS"]},
+        {"uri_contains": "content/mod.rs", "grade": 2}
+      ]
+    },
+    {
+      "id": "search_knowledge_tool",
+      "query": "How does the search_knowledge agent tool query the workspace?",
+      "expect_identifiers": ["search_knowledge"],
+      "expect_uri_contains": ["agent/tools.rs"],
+      "judgments": [
+        {"uri_contains": "agent/tools.rs", "grade": 3, "must_contain": ["search_knowledge"]},
+        {"uri_contains": "db/knowledge.rs", "grade": 2},
+        {"uri_contains": "ws/chat.rs", "grade": 1}
+      ]
+    },
+    {
+      "id": "message_embed_worker",
+      "query": "Where is spawn_message_embedding_task defined?",
+      "expect_identifiers": ["spawn_message_embedding_task"],
+      "expect_uri_contains": ["workers/embeddings.rs"],
+      "judgments": [
+        {"uri_contains": "workers/embeddings.rs", "grade": 3, "must_contain": ["spawn_message_embedding_task"]},
+        {"uri_contains": "message_embeddings.rs", "grade": 2},
+        {"uri_contains": "ws/chat.rs", "grade": 1}
+      ]
+    },
+    {
+      "id": "fetch_config_known_blobs",
+      "query": "How does FetchConfig keep known_blobs for incremental GitHub fetch?",
+      "expect_identifiers": ["FetchConfig", "known_blobs"],
+      "expect_uri_contains": ["content/mod.rs"],
+      "judgments": [
+        {"uri_contains": "content/mod.rs", "grade": 3, "must_contain": ["known_blobs"]},
+        {"uri_contains": "adapters/github.rs", "grade": 2}
+      ]
+    },
+    {
+      "id": "live_uris",
+      "query": "Why must retain_content_uris use live_uris after an incremental gather?",
+      "expect_identifiers": ["live_uris", "retain_content_uris"],
+      "expect_uri_contains": ["context/service.rs", "content/mod.rs"],
+      "judgments": [
+        {"uri_contains": "context/service.rs", "grade": 3, "must_contain": ["retain_content_uris"]},
+        {"uri_contains": "content/mod.rs", "grade": 3, "must_contain": ["live_uris"]}
+      ]
+    },
+    {
+      "id": "ws_auth",
+      "query": "What is the first ClientMessage on a chat websocket after connect?",
+      "expect_identifiers": ["ClientMessage"],
+      "expect_uri_contains": ["ws/chat.rs"],
+      "judgments": [
+        {"uri_contains": "ws/chat.rs", "grade": 3, "must_contain": ["ClientMessage"]},
+        {"uri_contains": "agent/mod.rs", "grade": 1}
+      ]
+    },
+    {
+      "id": "create_knowledge",
+      "query": "What fields does CreateKnowledgeRequest require?",
+      "expect_identifiers": ["CreateKnowledgeRequest"],
+      "expect_uri_contains": ["routes/context.rs"],
+      "judgments": [
+        {"uri_contains": "routes/context.rs", "grade": 3, "must_contain": ["CreateKnowledgeRequest"]},
+        {"uri_contains": "db/knowledge.rs", "grade": 2}
+      ]
+    },
+    {
+      "id": "embedding_width_check",
+      "query": "Where does EmbeddingAdapter refuse a nomic-embed-text vector wider than the store?",
+      "expect_identifiers": ["nomic-embed-text", "EmbeddingAdapter"],
+      "expect_uri_contains": ["providers/adapter.rs"],
+      "judgments": [
+        {"uri_contains": "providers/adapter.rs", "grade": 3, "must_contain": ["EmbeddingDimensionMismatch"]},
+        {"uri_contains": "pgvector.rs", "grade": 1}
+      ]
+    },
+    {
+      "id": "vector_dimension",
+      "query": "Where is VECTOR_DIMENSION defined for pgvector storage?",
+      "expect_identifiers": ["VECTOR_DIMENSION"],
+      "expect_uri_contains": ["pgvector.rs"],
+      "judgments": [
+        {"uri_contains": "pgvector.rs", "grade": 3, "must_contain": ["VECTOR_DIMENSION"]},
+        {"uri_contains": "embeddings/mod.rs", "grade": 2}
+      ]
+    },
+    {
+      "id": "gitlab_adapter",
+      "query": "Where is GitLabAdapter implemented?",
+      "expect_identifiers": ["GitLabAdapter"],
+      "expect_uri_contains": ["adapters/gitlab.rs"],
+      "judgments": [
+        {"uri_contains": "adapters/gitlab.rs", "grade": 3, "must_contain": ["GitLabAdapter"]},
+        {"uri_contains": "adapters/github.rs", "grade": 1}
+      ]
+    },
+    {
+      "id": "ollama_embed_host",
+      "query": "Which host do Ollama's native /api/embeddings calls go to?",
+      "expect_identifiers": ["/api/embeddings"],
+      "expect_uri_contains": ["services/embedding.rs"],
+      "judgments": [
+        {"uri_contains": "services/embedding.rs", "grade": 3, "must_contain": ["/api/embeddings"]},
+        {"uri_contains": "providers/mod.rs", "grade": 2}
+      ]
+    },
+    {
+      "id": "knowledge_search_sql",
+      "query": "Where is search_knowledge_entries implemented?",
+      "expect_identifiers": ["search_knowledge_entries"],
+      "expect_uri_contains": ["db/knowledge.rs"],
+      "judgments": [
+        {"uri_contains": "db/knowledge.rs", "grade": 3, "must_contain": ["search_knowledge_entries"]},
+        {"uri_contains": "agent/tools.rs", "grade": 2}
+      ]
+    },
+    {
+      "id": "chat_search_api",
+      "query": "Where is search_messages used by GET /api/chats/search?",
+      "expect_identifiers": ["search_messages"],
+      "expect_uri_contains": ["routes/chats.rs"],
+      "judgments": [
+        {"uri_contains": "routes/chats.rs", "grade": 3, "must_contain": ["search_messages"]},
+        {"uri_contains": "message_embeddings.rs", "grade": 2}
+      ]
+    },
+    {
+      "id": "initial_schema_embeddings",
+      "query": "Which columns does 001_initial_schema create on the embeddings table?",
+      "expect_identifiers": ["001_initial_schema"],
+      "expect_uri_contains": ["001_initial_schema.sql"],
+      "judgments": [
+        {"uri_contains": "001_initial_schema.sql", "grade": 3, "must_contain": ["001_initial_schema"]},
+        {"uri_contains": "008_embedding_dimension_1024.sql", "grade": 2}
+      ]
+    },
+    {
+      "id": "rewrite_query",
+      "query": "What identifiers does rewrite_query extract from a sentence?",
+      "expect_identifiers": ["rewrite_query"],
+      "expect_uri_contains": ["embeddings/query.rs"],
+      "judgments": [
+        {"uri_contains": "embeddings/query.rs", "grade": 3, "must_contain": ["rewrite_query"]},
+        {"uri_contains": "embeddings/eval.rs", "grade": 2}
+      ]
+    },
+    {
+      "id": "embed_query_text",
+      "query": "When does embed_query_text add an Instruct prefix?",
+      "expect_identifiers": ["embed_query_text"],
+      "expect_uri_contains": ["embeddings/query.rs"],
+      "judgments": [
+        {"uri_contains": "embeddings/query.rs", "grade": 3, "must_contain": ["embed_query_text"]},
+        {"uri_contains": "providers/adapter.rs", "grade": 1}
+      ]
+    },
+    {
+      "id": "source_index_config",
+      "query": "What is SOURCE_RESYNC_POLL_SECS used for?",
+      "expect_identifiers": ["SOURCE_RESYNC_POLL_SECS"],
+      "expect_uri_contains": ["source_resync.rs", "config.rs"],
+      "judgments": [
+        {"uri_contains": "source_resync.rs", "grade": 3, "must_contain": ["poll_interval_secs"]},
+        {"uri_contains": "config.rs", "grade": 3, "must_contain": ["SOURCE_RESYNC_POLL_SECS"]}
+      ]
+    }
+  ]
+}

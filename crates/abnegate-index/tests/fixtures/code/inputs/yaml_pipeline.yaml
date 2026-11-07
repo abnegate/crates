@@ -1,0 +1,27 @@
+# Continuous integration for widgets.
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request: {}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        toolchain: [stable, beta]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: rustup toolchain install ${{ matrix.toolchain }}
+      - name: Test
+        run: cargo test --all-features
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo clippy -- -D warnings

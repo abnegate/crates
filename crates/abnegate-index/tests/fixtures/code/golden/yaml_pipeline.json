@@ -1,0 +1,384 @@
+[
+  {
+    "chunk_type": "Body",
+    "end_offset": 554,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": [
+        "CARGO_TERM_COLOR",
+        "Install",
+        "Test"
+      ]
+    },
+    "index": 0,
+    "metadata": {
+      "content_hash": "9d2fd3640a3c779c",
+      "end_byte": 554,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/.github/workflows/ci.yaml@main",
+      "start_byte": 38,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 38,
+    "text": "File: github://acme/widgets/.github/workflows/ci.yaml@main\npath: github://acme/widgets/.github/workflows/ci.yaml@main\nLanguage: yaml\nkind: Other\nSignature: name: ci\n\nname: ci\non:\n  push:\n    branches: [main]\n  pull_request: {}\n\nenv:\n  CARGO_TERM_COLOR: always\n\njobs:\n  test:\n    runs-on: ubuntu-latest\n    strategy:\n      matrix:\n        toolchain: [stable, beta]\n    steps:\n      - uses: actions/checkout@v4\n      - name: Install toolchain\n        run: rustup toolchain install ${{ matrix.toolchain }}\n      - name: Test\n        run: cargo test --all-features\n  lint:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: cargo clippy -- -D warnings\n\n\n// Identifiers:\n// types: CARGO_TERM_COLOR, Install, Test\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 554,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": [
+        "CARGO_TERM_COLOR",
+        "Install",
+        "Test"
+      ]
+    },
+    "index": 1,
+    "metadata": {
+      "content_hash": "7cecfe54bb1cad73",
+      "end_byte": 554,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/.github/workflows/ci.yaml@main",
+      "start_byte": 38,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 38,
+    "text": "File: github://acme/widgets/.github/workflows/ci.yaml@main\npath: github://acme/widgets/.github/workflows/ci.yaml@main\nLanguage: yaml\nkind: Other\nSignature: name: ci\n [skeleton]\nname: ci\n\n// Key identifiers:\n// types: CARGO_TERM_COLOR, Install, Test\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 131,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": [
+        "CARGO_TERM_COLOR"
+      ]
+    },
+    "index": 2,
+    "metadata": {
+      "content_hash": "2490a465109d2367",
+      "end_byte": 131,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/.github/workflows/ci.yaml@main",
+      "start_byte": 53,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 53,
+    "text": "push:\n    branches: [main]\n  pull_request: {}\n\nCARGO_TERM_COLOR: always"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 554,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": [
+        "Install",
+        "Test"
+      ]
+    },
+    "index": 3,
+    "metadata": {
+      "content_hash": "3bf2d446a6c4d82a",
+      "end_byte": 554,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/.github/workflows/ci.yaml@main",
+      "start_byte": 141,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 141,
+    "text": "File: github://acme/widgets/.github/workflows/ci.yaml@main\npath: github://acme/widgets/.github/workflows/ci.yaml@main\nLanguage: yaml\nkind: Other\nSignature: test:\n\ntest:\n    runs-on: ubuntu-latest\n    strategy:\n      matrix:\n        toolchain: [stable, beta]\n    steps:\n      - uses: actions/checkout@v4\n      - name: Install toolchain\n        run: rustup toolchain install ${{ matrix.toolchain }}\n      - name: Test\n        run: cargo test --all-features\n  lint:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: cargo clippy -- -D warnings\n\n\n// Identifiers:\n// types: Install, Test\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 554,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": [
+        "Install",
+        "Test"
+      ]
+    },
+    "index": 4,
+    "metadata": {
+      "content_hash": "4a58598b547682e2",
+      "end_byte": 554,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/.github/workflows/ci.yaml@main",
+      "start_byte": 141,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 141,
+    "text": "File: github://acme/widgets/.github/workflows/ci.yaml@main\npath: github://acme/widgets/.github/workflows/ci.yaml@main\nLanguage: yaml\nkind: Other\nSignature: test:\n [skeleton]\ntest:\n\n// Key identifiers:\n// types: Install, Test\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 432,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": [
+        "Install",
+        "Test"
+      ]
+    },
+    "index": 5,
+    "metadata": {
+      "content_hash": "9f39eb6ff0b616b2",
+      "end_byte": 432,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/.github/workflows/ci.yaml@main",
+      "start_byte": 151,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 151,
+    "text": "File: github://acme/widgets/.github/workflows/ci.yaml@main\npath: github://acme/widgets/.github/workflows/ci.yaml@main\nLanguage: yaml\nkind: Other\nSignature: runs-on: ubuntu-latest\n\nruns-on: ubuntu-latest\n    strategy:\n      matrix:\n        toolchain: [stable, beta]\n    steps:\n      - uses: actions/checkout@v4\n      - name: Install toolchain\n        run: rustup toolchain install ${{ matrix.toolchain }}\n      - name: Test\n        run: cargo test --all-features\n\n// Identifiers:\n// types: Install, Test\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 432,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": [
+        "Install",
+        "Test"
+      ]
+    },
+    "index": 6,
+    "metadata": {
+      "content_hash": "3199e0be874f19dd",
+      "end_byte": 432,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/.github/workflows/ci.yaml@main",
+      "start_byte": 151,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 151,
+    "text": "File: github://acme/widgets/.github/workflows/ci.yaml@main\npath: github://acme/widgets/.github/workflows/ci.yaml@main\nLanguage: yaml\nkind: Other\nSignature: runs-on: ubuntu-latest\n [skeleton]\nruns-on: ubuntu-latest\n\n// Key identifiers:\n// types: Install, Test\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 235,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 7,
+    "metadata": {
+      "content_hash": "8a22ad4f4be55fb2",
+      "end_byte": 235,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/.github/workflows/ci.yaml@main",
+      "start_byte": 194,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 194,
+    "text": "File: github://acme/widgets/.github/workflows/ci.yaml@main\npath: github://acme/widgets/.github/workflows/ci.yaml@main\nLanguage: yaml\nkind: Other\nSignature: matrix:\n\nmatrix:\n        toolchain: [stable, beta]"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 432,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": [
+        "Install",
+        "Test"
+      ]
+    },
+    "index": 8,
+    "metadata": {
+      "content_hash": "68ed66751c183172",
+      "end_byte": 432,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/.github/workflows/ci.yaml@main",
+      "start_byte": 253,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 253,
+    "text": "File: github://acme/widgets/.github/workflows/ci.yaml@main\npath: github://acme/widgets/.github/workflows/ci.yaml@main\nLanguage: yaml\nkind: Other\nSignature: - uses: actions/checkout@v4\n\n- uses: actions/checkout@v4\n      - name: Install toolchain\n        run: rustup toolchain install ${{ matrix.toolchain }}\n      - name: Test\n        run: cargo test --all-features\n\n// Identifiers:\n// types: Install, Test\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 432,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": [
+        "Install",
+        "Test"
+      ]
+    },
+    "index": 9,
+    "metadata": {
+      "content_hash": "cf9e3cf1dbae3fb8",
+      "end_byte": 432,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/.github/workflows/ci.yaml@main",
+      "start_byte": 253,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 253,
+    "text": "File: github://acme/widgets/.github/workflows/ci.yaml@main\npath: github://acme/widgets/.github/workflows/ci.yaml@main\nLanguage: yaml\nkind: Other\nSignature: - uses: actions/checkout@v4\n [skeleton]\n- uses: actions/checkout@v4\n\n// Key identifiers:\n// types: Install, Test\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 432,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": [
+        "Install",
+        "Test"
+      ]
+    },
+    "index": 10,
+    "metadata": {
+      "content_hash": "2b86d1ec21691f6f",
+      "end_byte": 432,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/.github/workflows/ci.yaml@main",
+      "start_byte": 255,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 255,
+    "text": "uses: actions/checkout@v4\n\nname: Install toolchain\n        run: rustup toolchain install ${{ matrix.toolchain }}\n\nname: Test\n        run: cargo test --all-features"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 554,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 11,
+    "metadata": {
+      "content_hash": "45b39e189364b916",
+      "end_byte": 554,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/.github/workflows/ci.yaml@main",
+      "start_byte": 445,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 445,
+    "text": "File: github://acme/widgets/.github/workflows/ci.yaml@main\npath: github://acme/widgets/.github/workflows/ci.yaml@main\nLanguage: yaml\nkind: Other\nSignature: runs-on: ubuntu-latest\n\nruns-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: cargo clippy -- -D warnings\n"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 38,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 12,
+    "metadata": {
+      "content_hash": "1c80f55227d4a3ad",
+      "end_byte": 38,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/.github/workflows/ci.yaml@main",
+      "start_byte": 0,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 0,
+    "text": "File: github://acme/widgets/.github/workflows/ci.yaml@main\npath: github://acme/widgets/.github/workflows/ci.yaml@main\nLanguage: yaml\nkind: top_level\n\n# Continuous integration for widgets."
+  }
+]
