@@ -59,6 +59,9 @@ fn printable_url(url: &str) -> String {
     let Some(host) = parsed.host_str() else {
         return UNPARSABLE_URL.to_string();
     };
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return UNPARSABLE_URL.to_string();
+    }
     match parsed.port() {
         Some(port) => format!("{}://{host}:{port}", parsed.scheme()),
         None => format!("{}://{host}", parsed.scheme()),

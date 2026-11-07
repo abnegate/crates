@@ -691,12 +691,23 @@ fn neither_print_shows_more_of_the_url_than_its_scheme_host_and_port() {
 }
 
 #[test]
+fn a_config_prints_no_scheme_but_http_and_https() {
+    let printed = format!(
+        "{:?}",
+        HttpRerankConfig::new("plain-secret://host/rerank", MODEL)
+    );
+
+    assert!(!printed.contains("plain-secret"), "{printed}");
+}
+
+#[test]
 fn a_refused_url_is_not_repeated_in_the_error() {
     for url in [
         "not a url plain-secret",
         "ftp://plain-secret/rerank",
         "ftp://host/plain-secret",
         "ftp://plain-secret@host/rerank",
+        "plain-secret:x-oauth-basic@host/v1",
     ] {
         let error = HttpRerankProvider::new(HttpRerankConfig::new(url, MODEL)).unwrap_err();
         let rendered = error.to_string();

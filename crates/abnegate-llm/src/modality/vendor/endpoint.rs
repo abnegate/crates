@@ -18,11 +18,8 @@ pub(crate) fn endpoint(base_url: &str, path: &str) -> Result<Url, ProviderError>
     let invalid =
         |reason: &dyn Display| ProviderError::config(format!("invalid base URL: {reason}"));
     let mut url = Url::parse(base_url).map_err(|error| invalid(&error))?;
-    let scheme = url.scheme();
-    if !matches!(scheme, "http" | "https") {
-        return Err(invalid(&format!(
-            "the {scheme} scheme is not http or https"
-        )));
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(invalid(&"its scheme is not http or https"));
     }
 
     let prefix = url.path().trim_end_matches(PATH_SEPARATOR).to_string();
