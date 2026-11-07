@@ -1,7 +1,8 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![warn(missing_docs)]
-//! Overlapping-window source chunking and host-owned semantic code search.
+//! Source chunking, query rewriting, learned ranking and hybrid fusion for
+//! host-owned semantic code search.
 //!
 //! [`index_tree`] walks a directory, splits each file with [`chunks`], and
 //! writes windows through a [`Store`] the host implements. Embeddings are
@@ -28,6 +29,121 @@
 //! assert_eq!(hits[0].relative, "api.rb");
 //! assert_eq!(hits[0].method, Method::Cosine);
 //! ```
+//!
+//! # Chunking
+//!
+//! [`chunks`] cuts a file into overlapping windows on line boundaries.
+//! [`chunk_text`] cuts prose into [`TextChunk`]s of about a token budget,
+//! breaking at a paragraph, sentence, line or word near the end of each
+//! window.
+//!
+//! With the `code-chunking` feature, [`chunk_code`] parses source with
+//! tree-sitter and splits it on symbol boundaries, never at a fixed length.
+//! Each symbol gets a body chunk and a skeleton of its signature; the file
+//! gets a header chunk with its imports and an API surface chunk with its
+//! public signatures. Every [`CodeChunk`] carries the identifiers it defines
+//! and references, so keyword and vector search see the same names.
+//! [`smart_chunk`] uses the code chunker when the language is known and text
+//! windows otherwise.
+//!
+//! ```
+//! # #[cfg(feature = "code-chunking")] {
+//! use abnegate_index::{CodeChunkType, CodeLanguage, chunk_code};
+//!
+//! let source = "pub fn greet(name: &str) -> String {\n    format!(\"Hello, {name}\")\n}\n";
+//! let chunks = chunk_code(source, CodeLanguage::Rust, 512);
+//!
+//! let body = chunks
+//!     .iter()
+//!     .find(|chunk| chunk.chunk_type == CodeChunkType::Body)
+//!     .unwrap();
+//! assert_eq!(body.metadata.symbol.as_deref(), Some("greet"));
+//! # }
+//! ```
+//!
+//! # Query rewriting
+//!
+//! [`rewrite_query`] turns a question into a [`RewrittenQuery`]: the code
+//! identifiers it names, kept intact, and a keyword query that ORs them with
+//! the question's distinctive words. A full-text index then matches
+//! `should_skip_blob` instead of stemming it into `shouldskipblob`.
+//!
+//! ```
+//! use abnegate_index::rewrite_query;
+//!
+//! let rewritten = rewrite_query("Where is should_skip_blob called?");
+//! assert_eq!(rewritten.identifiers, ["should_skip_blob"]);
+//! assert!(rewritten.keyword.contains("should_skip_blob"));
+//! ```
+//!
+//! # Ranking
+//!
+//! [`score_hit`] scores one retrieved chunk. A [`LinearRanker`] scores the
+//! features [`extract_features`] reads from the hit, that score is blended
+//! with [`lexical_cross_score`], and a bonus rewards definitions that cover
+//! the question's identifiers. [`fit_pairwise`] trains a ranker from
+//! `(better, worse)` feature pairs. The weights belong to the host: this crate
+//! ships no trained ranker.
+//!
+//! # Fusion
+//!
+//! The host runs the keyword and the semantic search.
+//! [`reciprocal_rank_fusion`] merges the two ranked lists of [`Candidate`]s
+//! by position, weighted by a [`HybridSearchConfig`], and
+//! [`finalize_ranking`] reranks the fused [`HybridSearchResult`]s with a
+//! ranker, drops fixtures, and keeps at most two chunks per file.
+//!
+//! ```
+//! use abnegate_index::{
+//!     Candidate, FEATURE_COUNT, HybridSearchConfig, LinearRanker, finalize_ranking,
+//!     reciprocal_rank_fusion,
+//! };
+//!
+//! let query = "Where is verify_signature defined?";
+//! let keyword = vec![
+//!     Candidate::new(1, "fn verify_signature() {}", "src/webhook.rs", "webhook.rs", 4.2),
+//!     Candidate::new(2, "verify_signature();", "src/routes.rs", "routes.rs", 1.3),
+//! ];
+//! let semantic = vec![
+//!     Candidate::new(1, "fn verify_signature() {}", "src/webhook.rs", "webhook.rs", 0.82),
+//!     Candidate::new(3, "struct Signature;", "src/signature.rs", "signature.rs", 0.61),
+//! ];
+//!
+//! let fused = reciprocal_rank_fusion(keyword, semantic, &HybridSearchConfig::for_query(query));
+//! assert_eq!(fused[0].id, 1);
+//! assert_eq!(fused[0].keyword_rank, Some(1));
+//! assert_eq!(fused[0].semantic_rank, Some(1));
+//!
+//! let ranker = LinearRanker::new([0.0; FEATURE_COUNT], 0.0);
+//! let ranked = finalize_ranking(&ranker, fused, query, 10);
+//! assert_eq!(ranked[0].item_uri, "src/webhook.rs");
+//! ```
+//!
+//! # Features
+//!
+//! - `code-chunking`: tree-sitter code chunking through [`chunk_code`],
+//!   [`chunk_code_with_config`] and [`smart_chunk`], for Rust, Python,
+//!   JavaScript, TypeScript, Go, Java, C, C++, Kotlin, Swift, SQL, JSON, YAML,
+//!   Ruby and PHP. It adds one grammar crate per language.
+//! - `testing`: [`Scripted`], an [`Embedder`] that returns inserted vectors so
+//!   a caller can rank without loading a model.
+//!
+#![cfg_attr(
+    feature = "code-chunking",
+    doc = "[`chunk_code`]: crate::chunk_code",
+    doc = "[`chunk_code_with_config`]: crate::chunk_code_with_config",
+    doc = "[`smart_chunk`]: crate::smart_chunk",
+    doc = "[`CodeChunk`]: crate::CodeChunk"
+)]
+#![cfg_attr(
+    not(feature = "code-chunking"),
+    doc = "[`chunk_code`]: #features",
+    doc = "[`chunk_code_with_config`]: #features",
+    doc = "[`smart_chunk`]: #features",
+    doc = "[`CodeChunk`]: #features"
+)]
+#![cfg_attr(feature = "testing", doc = "[`Scripted`]: crate::Scripted")]
+#![cfg_attr(not(feature = "testing"), doc = "[`Scripted`]: #features")]
 
 mod cancel;
 mod chunk;
