@@ -1,12 +1,12 @@
 use super::*;
+use crate::blob::Blob;
 use crate::object_id::ObjectId;
 use crate::parse_error::ParseError;
-use crate::pull_request::Blob;
 use crate::pull_request::Tree;
-use crate::pull_request::TreeEntry;
 use crate::pull_request::github_tree::GitHubTree;
 use crate::pull_request::github_tree_entry::GitHubTreeEntry;
 use crate::tag_name::TagName;
+use crate::tree_entry::TreeEntry;
 
 /// The query parameter that asks GitHub for every entry beneath a tree, and
 /// the value that turns it on.
@@ -141,13 +141,13 @@ fn entry(listed: GitHubTreeEntry) -> PullRequestResult<TreeEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pull_request::TreeEntryKind;
     use crate::pull_request::service::fixtures::commit;
     use crate::pull_request::service::fixtures::hanging_up;
     use crate::pull_request::service::fixtures::project;
     use crate::pull_request::service::fixtures::query_is;
     use crate::pull_request::service::fixtures::stand_in;
     use crate::pull_request::service::fixtures::token;
+    use crate::tree_entry_kind::TreeEntryKind;
     use reqwest::header::AUTHORIZATION;
     use serde_json::Value;
     use serde_json::json;
