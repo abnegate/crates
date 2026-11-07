@@ -4,11 +4,10 @@ use crate::parse_error::ParseError;
 use crate::pull_request::Contents;
 use crate::pull_request::Excerpt;
 use crate::pull_request::RepositoryPath;
-use crate::pull_request::github_contents::GitHubContents;
+use crate::pull_request::github_contents_answer::GitHubContentsAnswer;
 use crate::tag_name::TagName;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use serde_json::Value;
 use std::str;
 
 /// The media type GitHub answers with a pull request's unified diff in.
@@ -99,8 +98,9 @@ impl PullRequestService {
     /// entries, is [`PullRequestError::GitHubApi`], and so is an answer this
     /// crate cannot read, which is never quoted. Content that is not valid
     /// base64 is [`PullRequestError::MalformedContent`]. Content GitHub left
-    /// out is `None`; GitHub sends a file past a megabyte as empty content,
-    /// which reads as no bytes.
+    /// out is `None`, and so is a size it left out. GitHub sends a file past a
+    /// megabyte as empty content, which reads as no bytes beside the size
+    /// GitHub reports, so [`Contents::size`] tells it from an empty file.
     pub async fn fetch_contents(
         &self,
         repository: &Repository,
@@ -115,26 +115,23 @@ impl PullRequestService {
         let mut url = self.repository_endpoint(repository, &segments)?;
         url.query_pairs_mut().append_pair(REFERENCE, reference);
 
-        let answer: Value = self.get(url, token).await?;
-        if answer.is_array() {
-            return Err(PullRequestError::GitHubApi(NOT_A_FILE.to_string()));
-        }
-        let described: GitHubContents = serde_json::from_value(answer)
-            .map_err(|_| PullRequestError::GitHubApi(UNREADABLE.to_string()))?;
-        let content = described.content.as_deref().map(decoded).transpose()?;
-        Ok(Contents::new(content))
+        let described = match self.get(url, token).await? {
+            GitHubContentsAnswer::Listing(_) => {
+                return Err(PullRequestError::GitHubApi(NOT_A_FILE.to_string()));
+            }
+            GitHubContentsAnswer::File(described) => described,
+        };
+        let content = described.content.map(decoded).transpose()?;
+        Ok(Contents::new(content, described.size))
     }
 }
 
 /// The bytes `encoded` holds, once the line breaks GitHub wraps base64 in are
-/// dropped.
-fn decoded(encoded: &str) -> PullRequestResult<Vec<u8>> {
-    let joined: String = encoded
-        .chars()
-        .filter(|character| *character != LINE_BREAK)
-        .collect();
+/// dropped from it in place.
+fn decoded(mut encoded: String) -> PullRequestResult<Vec<u8>> {
+    encoded.retain(|character| character != LINE_BREAK);
     STANDARD
-        .decode(joined)
+        .decode(encoded)
         .map_err(|_| PullRequestError::MalformedContent)
 }
 
@@ -201,6 +198,7 @@ mod tests {
     use crate::pull_request::service::fixtures::stand_in;
     use crate::pull_request::service::fixtures::token;
     use reqwest::header::AUTHORIZATION;
+    use serde_json::Value;
     use serde_json::json;
     use wiremock::Mock;
     use wiremock::MockServer;
@@ -652,7 +650,7 @@ mod tests {
 
         let contents = contents_of(&server, "README.md", "main").await.unwrap();
 
-        assert_eq!(contents, Contents::new(Some(text.into_bytes())));
+        assert_eq!(contents, Contents::new(Some(text.into_bytes()), Some(100)));
     }
 
     #[tokio::test]
@@ -662,6 +660,34 @@ mod tests {
         let contents = contents_of(&server, "README.md", "main").await.unwrap();
 
         assert_eq!(contents.content, Some(Vec::new()));
+    }
+
+    #[tokio::test]
+    async fn a_file_github_declined_to_inline_reads_as_no_bytes_of_the_size_it_reported() {
+        for (size, content) in [(2_000_000, ""), (0, "")] {
+            let server = describing(
+                README,
+                "main",
+                json!({
+                    "name": "README.md",
+                    "path": "README.md",
+                    "sha": commit('b').as_str(),
+                    "size": size,
+                    "type": "file",
+                    "content": content,
+                    "encoding": if size == 0 { "base64" } else { "none" },
+                }),
+            )
+            .await;
+
+            let contents = contents_of(&server, "README.md", "main").await.unwrap();
+
+            assert_eq!(
+                contents,
+                Contents::new(Some(Vec::new()), Some(size)),
+                "size {size}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -700,29 +726,33 @@ mod tests {
 
     #[tokio::test]
     async fn a_directory_s_listing_is_not_read_as_a_file() {
-        let server = describing(
-            "/repos/acme/project/contents/src",
-            "main",
+        for listing in [
             json!([{ "name": "LISTING-SENTINEL", "type": "file" }]),
-        )
-        .await;
+            json!(["LISTING-SENTINEL", 7]),
+            json!([]),
+        ] {
+            let server =
+                describing("/repos/acme/project/contents/src", "main", listing.clone()).await;
 
-        let failure = contents_of(&server, "src", "main").await.unwrap_err();
+            let failure = contents_of(&server, "src", "main").await.unwrap_err();
 
-        assert!(
-            matches!(failure, PullRequestError::GitHubApi(ref message) if message == NOT_A_FILE),
-            "{failure:?}"
-        );
-        assert!(
-            !format!("{failure} {failure:?}").contains("SENTINEL"),
-            "{failure:?}"
-        );
+            assert!(
+                matches!(failure, PullRequestError::GitHubApi(ref message) if message == NOT_A_FILE),
+                "{listing}: {failure:?}"
+            );
+            assert!(
+                !format!("{failure} {failure:?}").contains("SENTINEL"),
+                "{failure:?}"
+            );
+        }
     }
 
     #[tokio::test]
     async fn an_answer_that_describes_no_file_is_unreadable_and_never_quoted() {
         for answer in [
             json!({ "content": 7, "name": "ANSWER-SENTINEL" }),
+            json!({ "content": "", "size": "ANSWER-SENTINEL" }),
+            json!({ "content": "", "size": -1, "name": "ANSWER-SENTINEL" }),
             json!("ANSWER-SENTINEL"),
         ] {
             let server = describing(README, "main", answer.clone()).await;
@@ -862,7 +892,7 @@ mod tests {
 
         let contents = contents_of(&server, "README.md", "main").await.unwrap();
 
-        assert_eq!(contents.content.as_deref(), Some(&b"bare"[..]));
+        assert_eq!(contents, Contents::new(Some(b"bare".to_vec()), None));
     }
 
     #[tokio::test]

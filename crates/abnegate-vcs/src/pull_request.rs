@@ -29,15 +29,17 @@
 //! Five values a caller passes as plain text are held to rules before they
 //! travel:
 //!
-//! - the ref [`PullRequestService::resolve_commit`] resolves, held to a
-//!   [`crate::BranchName`]'s rules unless it is `HEAD`, travels as one path
-//!   segment, a `/` in it sent as `%2F`;
+//! - the ref [`PullRequestService::resolve_commit`] resolves, held to git's
+//!   rules for a tag name, which every name a [`crate::BranchName`] accepts
+//!   meets too, except that `HEAD` is accepted and `@`, git's shorthand for
+//!   it, is refused, travels as one path segment, a `/` in it sent as `%2F`;
 //! - the ref [`PullRequestService::fetch_tree_at`] reads a tree at, held to
 //!   the same rules, travels as one path segment the same way;
 //! - the ref [`PullRequestService::fetch_contents`] reads a file at, held to
 //!   the same rules, travels as the `ref` query value;
-//! - the tag [`PullRequestService::fetch_release`] reads, held to the same
-//!   rules, travels as one path segment the same way;
+//! - the tag [`PullRequestService::fetch_release`] reads, held to git's rules
+//!   for a tag name, `HEAD` refused, travels as one path segment the same
+//!   way;
 //! - the fork owner [`PullRequestService::find_pull_request`] and
 //!   [`PullRequestService::create_pull_request_from`] take, held to a
 //!   [`Repository`] owner's rules, travels with the head branch as the
@@ -114,6 +116,7 @@ mod github_commit;
 mod github_commit_status;
 mod github_commit_status_record;
 mod github_contents;
+mod github_contents_answer;
 mod github_created_repository;
 mod github_deployment;
 mod github_deployment_status;
