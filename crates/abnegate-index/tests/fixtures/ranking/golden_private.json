@@ -1,0 +1,901 @@
+{
+  "answers": [
+    {
+      "case": 0,
+      "kept": [
+        "reserve_definition"
+      ],
+      "limit": 0,
+      "query": "What does reserve_stock do when the bin is locked?"
+    },
+    {
+      "case": 0,
+      "kept": [
+        "reserve_definition"
+      ],
+      "limit": 0,
+      "query": "reserve_stock and restock_bin"
+    },
+    {
+      "case": 0,
+      "kept": [
+        "reserve_definition"
+      ],
+      "limit": 0,
+      "query": "how are expired sessions cleaned up"
+    },
+    {
+      "case": 0,
+      "kept": [
+        "reserve_definition"
+      ],
+      "limit": 0,
+      "query": ""
+    },
+    {
+      "case": 0,
+      "kept": [
+        "reserve_definition"
+      ],
+      "limit": 1,
+      "query": "What does reserve_stock do when the bin is locked?"
+    },
+    {
+      "case": 0,
+      "kept": [
+        "reserve_definition"
+      ],
+      "limit": 1,
+      "query": "reserve_stock and restock_bin"
+    },
+    {
+      "case": 0,
+      "kept": [
+        "reserve_definition"
+      ],
+      "limit": 1,
+      "query": "how are expired sessions cleaned up"
+    },
+    {
+      "case": 0,
+      "kept": [
+        "reserve_definition"
+      ],
+      "limit": 1,
+      "query": ""
+    },
+    {
+      "case": 0,
+      "kept": [
+        "reserve_definition",
+        "warehouse_api_surface"
+      ],
+      "limit": 2,
+      "query": "What does reserve_stock do when the bin is locked?"
+    },
+    {
+      "case": 0,
+      "kept": [
+        "reserve_definition",
+        "warehouse_api_surface"
+      ],
+      "limit": 2,
+      "query": "reserve_stock and restock_bin"
+    },
+    {
+      "case": 0,
+      "kept": [
+        "reserve_definition",
+        "checkout_caller"
+      ],
+      "limit": 2,
+      "query": "how are expired sessions cleaned up"
+    },
+    {
+      "case": 0,
+      "kept": [
+        "reserve_definition",
+        "checkout_caller"
+      ],
+      "limit": 2,
+      "query": ""
+    },
+    {
+      "case": 0,
+      "kept": [
+        "reserve_definition",
+        "warehouse_api_surface",
+        "checkout_caller"
+      ],
+      "limit": 3,
+      "query": "What does reserve_stock do when the bin is locked?"
+    },
+    {
+      "case": 0,
+      "kept": [
+        "reserve_definition",
+        "warehouse_api_surface",
+        "checkout_caller"
+      ],
+      "limit": 3,
+      "query": "reserve_stock and restock_bin"
+    },
+    {
+      "case": 0,
+      "kept": [
+        "reserve_definition",
+        "checkout_caller",
+        "restock_definition"
+      ],
+      "limit": 3,
+      "query": "how are expired sessions cleaned up"
+    },
+    {
+      "case": 0,
+      "kept": [
+        "reserve_definition",
+        "checkout_caller",
+        "restock_definition"
+      ],
+      "limit": 3,
+      "query": ""
+    },
+    {
+      "case": 0,
+      "kept": [
+        "reserve_definition",
+        "warehouse_api_surface",
+        "checkout_caller",
+        "restock_definition",
+        "warehouse_header"
+      ],
+      "limit": 5,
+      "query": "What does reserve_stock do when the bin is locked?"
+    },
+    {
+      "case": 0,
+      "kept": [
+        "reserve_definition",
+        "warehouse_api_surface",
+        "checkout_caller",
+        "restock_definition",
+        "warehouse_header"
+      ],
+      "limit": 5,
+      "query": "reserve_stock and restock_bin"
+    },
+    {
+      "case": 0,
+      "kept": [
+        "reserve_definition",
+        "checkout_caller",
+        "restock_definition",
+        "warehouse_header",
+        "warehouse_api_surface"
+      ],
+      "limit": 5,
+      "query": "how are expired sessions cleaned up"
+    },
+    {
+      "case": 0,
+      "kept": [
+        "reserve_definition",
+        "checkout_caller",
+        "restock_definition",
+        "warehouse_header",
+        "warehouse_api_surface"
+      ],
+      "limit": 5,
+      "query": ""
+    },
+    {
+      "case": 0,
+      "kept": [
+        "reserve_definition",
+        "warehouse_api_surface",
+        "checkout_caller",
+        "restock_definition",
+        "warehouse_header"
+      ],
+      "limit": 10,
+      "query": "What does reserve_stock do when the bin is locked?"
+    },
+    {
+      "case": 0,
+      "kept": [
+        "reserve_definition",
+        "warehouse_api_surface",
+        "checkout_caller",
+        "restock_definition",
+        "warehouse_header"
+      ],
+      "limit": 10,
+      "query": "reserve_stock and restock_bin"
+    },
+    {
+      "case": 0,
+      "kept": [
+        "reserve_definition",
+        "checkout_caller",
+        "restock_definition",
+        "warehouse_header",
+        "warehouse_api_surface"
+      ],
+      "limit": 10,
+      "query": "how are expired sessions cleaned up"
+    },
+    {
+      "case": 0,
+      "kept": [
+        "reserve_definition",
+        "checkout_caller",
+        "restock_definition",
+        "warehouse_header",
+        "warehouse_api_surface"
+      ],
+      "limit": 10,
+      "query": ""
+    },
+    {
+      "case": 1,
+      "kept": [
+        "warehouse_api_surface"
+      ],
+      "limit": 1,
+      "query": "reserve_stock"
+    },
+    {
+      "case": 1,
+      "kept": [
+        "warehouse_api_surface"
+      ],
+      "limit": 1,
+      "query": "こんにちは greet 関数"
+    },
+    {
+      "case": 1,
+      "kept": [
+        "warehouse_api_surface",
+        "warehouse_header"
+      ],
+      "limit": 3,
+      "query": "reserve_stock"
+    },
+    {
+      "case": 1,
+      "kept": [
+        "warehouse_api_surface",
+        "warehouse_header"
+      ],
+      "limit": 3,
+      "query": "こんにちは greet 関数"
+    },
+    {
+      "case": 2,
+      "kept": [],
+      "limit": 0,
+      "query": "reserve_stock"
+    },
+    {
+      "case": 2,
+      "kept": [],
+      "limit": 4,
+      "query": "reserve_stock"
+    }
+  ],
+  "fusion": [
+    {
+      "results": [
+        {
+          "fusion_score": "0x3c84c762",
+          "keyword_rank": 1,
+          "keyword_score": "0x3ed1eb85",
+          "label": "reserve_definition",
+          "score": "0x3c84c762",
+          "semantic_rank": 2,
+          "semantic_score": "0x3f35c28f"
+        },
+        {
+          "fusion_score": "0x3c820821",
+          "keyword_rank": 3,
+          "keyword_score": "0x3df5c28f",
+          "label": "checkout_caller",
+          "score": "0x3c820821",
+          "semantic_rank": 3,
+          "semantic_score": "0x3f28f5c3"
+        },
+        {
+          "fusion_score": "0x3c3c035b",
+          "keyword_rank": null,
+          "keyword_score": null,
+          "label": "eval_fixture",
+          "score": "0x3c3c035b",
+          "semantic_rank": 1,
+          "semantic_score": "0x3f3ae148"
+        },
+        {
+          "fusion_score": "0x3c333333",
+          "keyword_rank": null,
+          "keyword_score": null,
+          "label": "bins_neighbour",
+          "score": "0x3c333333",
+          "semantic_rank": 4,
+          "semantic_score": "0x3f0ccccd"
+        },
+        {
+          "fusion_score": "0x3c30716d",
+          "keyword_rank": null,
+          "keyword_score": null,
+          "label": "warehouse_prelude",
+          "score": "0x3c30716d",
+          "semantic_rank": 5,
+          "semantic_score": "0x3f051eb8"
+        },
+        {
+          "fusion_score": "0x3b9e8e0a",
+          "keyword_rank": 2,
+          "keyword_score": "0x3ea8f5c3",
+          "label": "reserve_test",
+          "score": "0x3b9e8e0a",
+          "semantic_rank": null,
+          "semantic_score": null
+        },
+        {
+          "fusion_score": "0x3b99999a",
+          "keyword_rank": 4,
+          "keyword_score": "0x3da3d70a",
+          "label": "warehouse_api_surface",
+          "score": "0x3b99999a",
+          "semantic_rank": null,
+          "semantic_score": null
+        }
+      ]
+    },
+    {
+      "results": [
+        {
+          "fusion_score": "0x3c855202",
+          "keyword_rank": 1,
+          "keyword_score": "0x3ed1eb85",
+          "label": "timeout_constant",
+          "score": "0x3c855202",
+          "semantic_rank": 2,
+          "semantic_score": "0x3ef0a3d7"
+        },
+        {
+          "fusion_score": "0x3c851a8f",
+          "keyword_rank": 2,
+          "keyword_score": "0x3e428f5c",
+          "label": "retry_environment",
+          "score": "0x3c851a8f",
+          "semantic_rank": 1,
+          "semantic_score": "0x3f028f5c"
+        },
+        {
+          "fusion_score": "0x3c0f08f1",
+          "keyword_rank": 3,
+          "keyword_score": "0x3e19999a",
+          "label": "settings_fingerprint",
+          "score": "0x3c0f08f1",
+          "semantic_rank": null,
+          "semantic_score": null
+        }
+      ]
+    },
+    {
+      "results": [
+        {
+          "fusion_score": "0x3d8253c8",
+          "keyword_rank": 1,
+          "keyword_score": "0x3e4ccccd",
+          "label": "session_cleanup",
+          "score": "0x3d8253c8",
+          "semantic_rank": null,
+          "semantic_score": null
+        },
+        {
+          "fusion_score": "0x3d6eeeef",
+          "keyword_rank": 2,
+          "keyword_score": "0x3d8f5c29",
+          "label": "session_store",
+          "score": "0x3d6eeeef",
+          "semantic_rank": null,
+          "semantic_score": null
+        },
+        {
+          "fusion_score": "0x3cdf6b0f",
+          "keyword_rank": null,
+          "keyword_score": null,
+          "label": "cache_key",
+          "score": "0x3cdf6b0f",
+          "semantic_rank": 1,
+          "semantic_score": "0x3f2b851f"
+        },
+        {
+          "fusion_score": "0x3cccccce",
+          "keyword_rank": null,
+          "keyword_score": null,
+          "label": "postcode_validation",
+          "score": "0x3cccccce",
+          "semantic_rank": 2,
+          "semantic_score": "0x3f266666"
+        },
+        {
+          "fusion_score": "0x3cbd0bd2",
+          "keyword_rank": null,
+          "keyword_score": null,
+          "label": "webhook_settings",
+          "score": "0x3cbd0bd2",
+          "semantic_rank": 3,
+          "semantic_score": "0x3f2147ae"
+        }
+      ]
+    },
+    {
+      "results": [
+        {
+          "fusion_score": "0x3c3c035b",
+          "keyword_rank": null,
+          "keyword_score": null,
+          "label": "greeting_unicode",
+          "score": "0x3c3c035b",
+          "semantic_rank": 1,
+          "semantic_score": "0x3f333333"
+        },
+        {
+          "fusion_score": "0x3c38fb0b",
+          "keyword_rank": null,
+          "keyword_score": null,
+          "label": "cafe_menu",
+          "score": "0x3c38fb0b",
+          "semantic_rank": 2,
+          "semantic_score": "0x3f0a3d71"
+        }
+      ]
+    },
+    {
+      "results": [
+        {
+          "fusion_score": "0x3ba12773",
+          "keyword_rank": 1,
+          "keyword_score": "0x3eb33333",
+          "label": "orders_schema",
+          "score": "0x3ba12773",
+          "semantic_rank": null,
+          "semantic_score": null
+        }
+      ]
+    },
+    {
+      "results": []
+    }
+  ],
+  "patterns": [
+    {
+      "identifier_file_patterns": [
+        "%reserve_stock%"
+      ],
+      "query": "snake",
+      "same_file_patterns": [
+        "%reserve_stock%"
+      ]
+    },
+    {
+      "identifier_file_patterns": [
+        "%reserve_stock%"
+      ],
+      "query": "snake_question",
+      "same_file_patterns": [
+        "%reserve_stock%",
+        "%locked%"
+      ]
+    },
+    {
+      "identifier_file_patterns": [
+        "%InvoiceService%"
+      ],
+      "query": "camel",
+      "same_file_patterns": [
+        "%invoiceservice%"
+      ]
+    },
+    {
+      "identifier_file_patterns": [
+        "%sendInvoice%"
+      ],
+      "query": "camel_question",
+      "same_file_patterns": [
+        "%sendinvoice%",
+        "%retried%",
+        "%timeout%",
+        "%retried_timeout%"
+      ]
+    },
+    {
+      "identifier_file_patterns": [
+        "%retry-policy%"
+      ],
+      "query": "kebab",
+      "same_file_patterns": [
+        "%configuration%"
+      ]
+    },
+    {
+      "identifier_file_patterns": [
+        "%inventory::warehouse::Warehouse%"
+      ],
+      "query": "rust_path",
+      "same_file_patterns": []
+    },
+    {
+      "identifier_file_patterns": [],
+      "query": "api_path",
+      "same_file_patterns": []
+    },
+    {
+      "identifier_file_patterns": [],
+      "query": "api_path_question",
+      "same_file_patterns": [
+        "%handler%",
+        "%serves%",
+        "%handler_serves%"
+      ]
+    },
+    {
+      "identifier_file_patterns": [
+        "%DEFAULT_TIMEOUT_MS%"
+      ],
+      "query": "screaming",
+      "same_file_patterns": [
+        "%default_timeout_ms%"
+      ]
+    },
+    {
+      "identifier_file_patterns": [
+        "%RETRY_LIMIT%"
+      ],
+      "query": "screaming_env",
+      "same_file_patterns": [
+        "%retry_limit%",
+        "%read%",
+        "%environment%",
+        "%read_environment%"
+      ]
+    },
+    {
+      "identifier_file_patterns": [
+        "%CreateOrderRequest%"
+      ],
+      "query": "request_type",
+      "same_file_patterns": [
+        "%createorderrequest%",
+        "%fields%"
+      ]
+    },
+    {
+      "identifier_file_patterns": [],
+      "query": "natural_how",
+      "same_file_patterns": [
+        "%expired%",
+        "%sessions%",
+        "%cleaned%",
+        "%expired_sessions%",
+        "%sessions_cleaned%",
+        "%expired_cleaned%"
+      ]
+    },
+    {
+      "identifier_file_patterns": [],
+      "query": "natural_where",
+      "same_file_patterns": [
+        "%postcode%",
+        "%validated%",
+        "%payment%",
+        "%postcode_validated%",
+        "%validated_payment%",
+        "%postcode_payment%"
+      ]
+    },
+    {
+      "identifier_file_patterns": [],
+      "query": "natural_not",
+      "same_file_patterns": [
+        "%webhook%",
+        "%configured%",
+        "%configure%",
+        "%webhook_configured%",
+        "%configure_webhook%",
+        "%webhook_configure%",
+        "%configure_configured%",
+        "%configured_configure%"
+      ]
+    },
+    {
+      "identifier_file_patterns": [],
+      "query": "natural_derived",
+      "same_file_patterns": [
+        "%cache%",
+        "%key%",
+        "%derived%",
+        "%request%",
+        "%derive%",
+        "%cache_key%",
+        "%key_derived%",
+        "%derived_request%",
+        "%cache_request%",
+        "%derive_cache%",
+        "%cache_derive%",
+        "%derive_key%",
+        "%key_derive%",
+        "%derive_derived%",
+        "%derived_derive%",
+        "%derive_request%"
+      ]
+    },
+    {
+      "identifier_file_patterns": [],
+      "query": "natural_authorized",
+      "same_file_patterns": [
+        "%authorized%",
+        "%refund%",
+        "%invoice%",
+        "%authorize%",
+        "%authorized_refund%",
+        "%refund_invoice%",
+        "%authorized_invoice%",
+        "%authorize_authorized%",
+        "%authorized_authorize%",
+        "%authorize_refund%",
+        "%refund_authorize%",
+        "%authorize_invoice%",
+        "%invoice_authorize%"
+      ]
+    },
+    {
+      "identifier_file_patterns": [
+        "%parse_quantity%",
+        "%OrderIntake%"
+      ],
+      "query": "mixed",
+      "same_file_patterns": [
+        "%parse_quantity%",
+        "%orderintake%",
+        "%rejects%",
+        "%negative%",
+        "%values%",
+        "%rejects_negative%",
+        "%negative_values%",
+        "%rejects_values%"
+      ]
+    },
+    {
+      "identifier_file_patterns": [
+        "%reserve_stock%",
+        "%restock_bin%"
+      ],
+      "query": "two_identifiers",
+      "same_file_patterns": [
+        "%reserve_stock%",
+        "%restock_bin%"
+      ]
+    },
+    {
+      "identifier_file_patterns": [],
+      "query": "schema",
+      "same_file_patterns": [
+        "%orders%",
+        "%table%",
+        "%schema%",
+        "%columns%",
+        "%orders_table%",
+        "%table_schema%",
+        "%schema_columns%",
+        "%orders_columns%"
+      ]
+    },
+    {
+      "identifier_file_patterns": [
+        "%shipped_at%"
+      ],
+      "query": "migration",
+      "same_file_patterns": [
+        "%shipped_at%",
+        "%migration%",
+        "%adds%",
+        "%migration_adds%"
+      ]
+    },
+    {
+      "identifier_file_patterns": [
+        "%list_products%"
+      ],
+      "query": "tool",
+      "same_file_patterns": [
+        "%list_products%",
+        "%tool%",
+        "%definition%",
+        "%tool_definition%"
+      ]
+    },
+    {
+      "identifier_file_patterns": [
+        "%re-exported%"
+      ],
+      "query": "reexport",
+      "same_file_patterns": [
+        "%warehouse%"
+      ]
+    },
+    {
+      "identifier_file_patterns": [
+        "%InvoiceState%"
+      ],
+      "query": "enum_variant",
+      "same_file_patterns": [
+        "%invoicestate%",
+        "%pending%",
+        "%variant%",
+        "%pending_variant%"
+      ]
+    },
+    {
+      "identifier_file_patterns": [
+        "%settings_fingerprint%"
+      ],
+      "query": "file_stem",
+      "same_file_patterns": [
+        "%settings_fingerprint%"
+      ]
+    },
+    {
+      "identifier_file_patterns": [],
+      "query": "plural_path",
+      "same_file_patterns": [
+        "%authenticators%",
+        "%registered%",
+        "%authenticators_registered%"
+      ]
+    },
+    {
+      "identifier_file_patterns": [],
+      "query": "unicode",
+      "same_file_patterns": [
+        "%greet%"
+      ]
+    },
+    {
+      "identifier_file_patterns": [],
+      "query": "unicode_identifier",
+      "same_file_patterns": [
+        "%pricing%",
+        "%rules%",
+        "%pricing_rules%"
+      ]
+    },
+    {
+      "identifier_file_patterns": [],
+      "query": "empty",
+      "same_file_patterns": []
+    },
+    {
+      "identifier_file_patterns": [],
+      "query": "stopwords",
+      "same_file_patterns": []
+    },
+    {
+      "identifier_file_patterns": [],
+      "query": "punctuation",
+      "same_file_patterns": []
+    },
+    {
+      "identifier_file_patterns": [
+        "%reserve_stock%",
+        "%shipped_at%",
+        "%DEFAULT_TIMEOUT_MS%"
+      ],
+      "query": "long",
+      "same_file_patterns": [
+        "%reserve_stock%",
+        "%shipped_at%",
+        "%default_timeout_ms%",
+        "%explain%",
+        "%detail%",
+        "%warehouse%",
+        "%reservation%",
+        "%flow%",
+        "%works%",
+        "%starting%",
+        "%moment%",
+        "%explain_detail%",
+        "%detail_warehouse%",
+        "%warehouse_reservation%",
+        "%reservation_flow%",
+        "%flow_works%"
+      ]
+    }
+  ],
+  "stems": [
+    {
+      "identifiers": [
+        "warehouse"
+      ],
+      "matches": true,
+      "uri": "github://acme/widgets/src/inventory/warehouse.rs@main"
+    },
+    {
+      "identifiers": [
+        "reserve_stock"
+      ],
+      "matches": false,
+      "uri": "github://acme/widgets/src/inventory/warehouse.rs@main"
+    },
+    {
+      "identifiers": [
+        "reserve_stock"
+      ],
+      "matches": true,
+      "uri": "github://acme/widgets/src/stock/reserve.rs@main"
+    },
+    {
+      "identifiers": [
+        "settings_fingerprint"
+      ],
+      "matches": true,
+      "uri": "github://acme/widgets/src/settings.rs@main"
+    },
+    {
+      "identifiers": [
+        "api"
+      ],
+      "matches": false,
+      "uri": "github://acme/widgets/src/api.rs@main"
+    },
+    {
+      "identifiers": [
+        "/api/invoices/send"
+      ],
+      "matches": true,
+      "uri": "github://acme/widgets/src/routes/invoices.rs@main"
+    },
+    {
+      "identifiers": [
+        "retry-policy"
+      ],
+      "matches": true,
+      "uri": "github://acme/widgets/src/retry-policy.ts@main"
+    },
+    {
+      "identifiers": [
+        "InvoiceService"
+      ],
+      "matches": true,
+      "uri": "github://acme/widgets/src/InvoiceService.ts@main"
+    },
+    {
+      "identifiers": [
+        "library"
+      ],
+      "matches": false,
+      "uri": "github://acme/widgets/src/lib.rs@main"
+    },
+    {
+      "identifiers": [],
+      "matches": false,
+      "uri": "github://acme/widgets/src/checkout.rs@main"
+    },
+    {
+      "identifiers": [
+        "anything"
+      ],
+      "matches": false,
+      "uri": ""
+    },
+    {
+      "identifiers": [
+        "no-slash-or-at"
+      ],
+      "matches": true,
+      "uri": "no-slash-or-at"
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+[
+  {
+    "end_offset": 34,
+    "index": 0,
+    "start_offset": 0,
+    "text": ":root {\n  --badge-color: #d33;\n}\n\n"
+  },
+  {
+    "end_offset": 118,
+    "index": 1,
+    "start_offset": 18,
+    "text": "color: #d33;\n}\n\n.badge {\n  display: inline-flex;\n  padding: 0.25rem 0.5rem;\n  border-radius: 999px;\n"
+  },
+  {
+    "end_offset": 209,
+    "index": 2,
+    "start_offset": 102,
+    "text": "-radius: 999px;\n  background: var(--badge-color);\n}\n\n.badge--pulse {\n  animation: pulse 300ms ease-out;\n}\n\n"
+  },
+  {
+    "end_offset": 294,
+    "index": 3,
+    "start_offset": 193,
+    "text": "ms ease-out;\n}\n\n@keyframes pulse {\n  from { transform: scale(1.2); }\n  to { transform: scale(1); }\n}\n"
+  },
+  {
+    "end_offset": 294,
+    "index": 4,
+    "start_offset": 278,
+    "text": ": scale(1); }\n}\n"
+  }
+]

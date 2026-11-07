@@ -1,0 +1,83 @@
+[
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 209,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 0,
+    "metadata": {
+      "content_hash": "13cbcdcbb01fc22d",
+      "end_byte": 209,
+      "is_generated": false,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/docs/notes.txt@main",
+      "start_byte": 0,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 0,
+    "text": "File: github://acme/widgets/docs/notes.txt@main\npath: github://acme/widgets/docs/notes.txt@main\nRelease notes for widgets 1.4.\n\nThe checkout flow now validates postcodes before asking for payment. Customers who\nenter an invalid postcode see the error next to the field instead of at the top of\nthe page.\n\n"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 409,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 1,
+    "metadata": {
+      "content_hash": "63e9d9b4a7b88273",
+      "end_byte": 409,
+      "is_generated": false,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/docs/notes.txt@main",
+      "start_byte": 185,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 185,
+    "text": "File: github://acme/widgets/docs/notes.txt@main\npath: github://acme/widgets/docs/notes.txt@main\nt the top of\nthe page.\n\nKnown issues: the wishlist export still uses the old date format. A fix is planned\nfor the next minor release! Questions? Ask in the support channel.\n\nThanks to everyone who reported bugs this cycle.\n"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 409,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 2,
+    "metadata": {
+      "content_hash": "a5d32117765153cd",
+      "end_byte": 409,
+      "is_generated": false,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/docs/notes.txt@main",
+      "start_byte": 385,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 385,
+    "text": "File: github://acme/widgets/docs/notes.txt@main\npath: github://acme/widgets/docs/notes.txt@main\nported bugs this cycle.\n"
+  }
+]

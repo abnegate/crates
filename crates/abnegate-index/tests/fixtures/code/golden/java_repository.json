@@ -1,0 +1,503 @@
+[
+  {
+    "chunk_type": "FileHeader",
+    "end_offset": 150,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 0,
+    "metadata": {
+      "content_hash": "e60f07b887718d4f",
+      "end_byte": 150,
+      "is_generated": false,
+      "is_test": false,
+      "kind": null,
+      "module": "package com.acme.widgets.repository;",
+      "parents": [],
+      "path": "github://acme/widgets/src/main/java/com/acme/widgets/repository/CustomerRepository.java@main",
+      "start_byte": 0,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 0,
+    "text": "path: github://acme/widgets/src/main/java/com/acme/widgets/repository/CustomerRepository.java@main\nkind: file_header\n\n/**\n * Stores customer records in memory.\n */\n\npackage com.acme.widgets.repository;\npackage com.acme.widgets.repository;\nimport java.util.ArrayList;\nimport java.util.List;\nimport java.util.Optional;\nimport org.junit.jupiter.api.Test;"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 907,
+    "identifiers": {
+      "defined_symbol": "CustomerRepository",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "findByEmail",
+        "getEmail",
+        "equalsIgnoreCase",
+        "of",
+        "empty",
+        "add",
+        "size",
+        "count"
+      ],
+      "referenced_types": [
+        "CustomerRepository",
+        "Repository",
+        "Customer",
+        "List",
+        "ArrayList",
+        "MAXIMUM_CUSTOMERS",
+        "Optional",
+        "String"
+      ]
+    },
+    "index": 1,
+    "metadata": {
+      "content_hash": "9803d05adc4b6431",
+      "end_byte": 907,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Class",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/main/java/com/acme/widgets/repository/CustomerRepository.java@main",
+      "start_byte": 198,
+      "symbol": "CustomerRepository",
+      "visibility": "Public"
+    },
+    "start_offset": 198,
+    "text": "File: github://acme/widgets/src/main/java/com/acme/widgets/repository/CustomerRepository.java@main\npath: github://acme/widgets/src/main/java/com/acme/widgets/repository/CustomerRepository.java@main\nLanguage: java\nsymbol: CustomerRepository\nSymbol: CustomerRepository\nkind: Class\nSignature: public class CustomerRepository implements Repository<Customer>\n\n/**\n * Stores customer records in memory.\n */\n// Imports:\nimport java.util.ArrayList;\nimport java.util.List;\nimport java.util.Optional;\n\npublic class CustomerRepository implements Repository<Customer> {\n    private final List<Customer> customers = new ArrayList<>();\n    private static final int MAXIMUM_CUSTOMERS = 1000;\n\n    public Optional<Customer> findByEmail(String email) {\n        for (Customer customer : customers) {\n            if (customer.getEmail().equalsIgnoreCase(email)) {\n                return Optional.of(customer);\n            }\n        }\n        return Optional.empty();\n    }\n\n    public boolean add(Customer customer) {\n        if (customers.size() >= MAXIMUM_CUSTOMERS) {\n            return false;\n        }\n        return customers.add(customer);\n    }\n\n    private int count() {\n        return customers.size();\n    }\n}\n\n// Identifiers:\n// symbol: CustomerRepository\n// types: CustomerRepository, Repository, Customer, List, ArrayList, MAXIMUM_CUSTOMERS, Optional, String\n// calls: findByEmail, getEmail, equalsIgnoreCase, of, empty, add, size, count\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 659,
+    "identifiers": {
+      "defined_symbol": "findByEmail",
+      "key_strings": [],
+      "parameters": [
+        "String",
+        "email"
+      ],
+      "referenced_functions": [
+        "findByEmail",
+        "getEmail",
+        "equalsIgnoreCase",
+        "of",
+        "empty"
+      ],
+      "referenced_types": [
+        "Optional",
+        "Customer",
+        "String"
+      ]
+    },
+    "index": 2,
+    "metadata": {
+      "content_hash": "5aa7dded99614a6f",
+      "end_byte": 659,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "CustomerRepository"
+      ],
+      "path": "github://acme/widgets/src/main/java/com/acme/widgets/repository/CustomerRepository.java@main",
+      "start_byte": 388,
+      "symbol": "findByEmail",
+      "visibility": "Public"
+    },
+    "start_offset": 388,
+    "text": "File: github://acme/widgets/src/main/java/com/acme/widgets/repository/CustomerRepository.java@main\npath: github://acme/widgets/src/main/java/com/acme/widgets/repository/CustomerRepository.java@main\nLanguage: java\nsymbol: CustomerRepository.findByEmail\nSymbol: CustomerRepository.findByEmail\nkind: Method\nParent: CustomerRepository\nparents: CustomerRepository\nSignature: public Optional<Customer> findByEmail(String email)\n\n// Imports:\nimport java.util.Optional;\n\npublic Optional<Customer> findByEmail(String email) {\n        for (Customer customer : customers) {\n            if (customer.getEmail().equalsIgnoreCase(email)) {\n                return Optional.of(customer);\n            }\n        }\n        return Optional.empty();\n    }\n\n// Identifiers:\n// symbol: findByEmail\n// params: String, email\n// types: Optional, Customer, String\n// calls: findByEmail, getEmail, equalsIgnoreCase, of, empty\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 659,
+    "identifiers": {
+      "defined_symbol": "findByEmail",
+      "key_strings": [],
+      "parameters": [
+        "String",
+        "email"
+      ],
+      "referenced_functions": [
+        "findByEmail",
+        "getEmail",
+        "equalsIgnoreCase",
+        "of",
+        "empty"
+      ],
+      "referenced_types": [
+        "Optional",
+        "Customer",
+        "String"
+      ]
+    },
+    "index": 3,
+    "metadata": {
+      "content_hash": "08fac7626897ff76",
+      "end_byte": 659,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "CustomerRepository"
+      ],
+      "path": "github://acme/widgets/src/main/java/com/acme/widgets/repository/CustomerRepository.java@main",
+      "start_byte": 388,
+      "symbol": "findByEmail",
+      "visibility": "Public"
+    },
+    "start_offset": 388,
+    "text": "File: github://acme/widgets/src/main/java/com/acme/widgets/repository/CustomerRepository.java@main\npath: github://acme/widgets/src/main/java/com/acme/widgets/repository/CustomerRepository.java@main\nLanguage: java\nsymbol: CustomerRepository.findByEmail\nSymbol: CustomerRepository.findByEmail\nkind: Method\nParent: CustomerRepository\nparents: CustomerRepository\nSignature: public Optional<Customer> findByEmail(String email)\n [skeleton]\npublic Optional<Customer> findByEmail(String email)\n\n// Key identifiers:\n// defined: findByEmail\n// params: String, email\n// types: Optional, Customer, String\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 839,
+    "identifiers": {
+      "defined_symbol": "add",
+      "key_strings": [],
+      "parameters": [
+        "Customer",
+        "customer"
+      ],
+      "referenced_functions": [
+        "add",
+        "size"
+      ],
+      "referenced_types": [
+        "Customer",
+        "MAXIMUM_CUSTOMERS"
+      ]
+    },
+    "index": 4,
+    "metadata": {
+      "content_hash": "5593f5421558994f",
+      "end_byte": 839,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "CustomerRepository"
+      ],
+      "path": "github://acme/widgets/src/main/java/com/acme/widgets/repository/CustomerRepository.java@main",
+      "start_byte": 665,
+      "symbol": "add",
+      "visibility": "Public"
+    },
+    "start_offset": 665,
+    "text": "File: github://acme/widgets/src/main/java/com/acme/widgets/repository/CustomerRepository.java@main\npath: github://acme/widgets/src/main/java/com/acme/widgets/repository/CustomerRepository.java@main\nLanguage: java\nsymbol: CustomerRepository.add\nSymbol: CustomerRepository.add\nkind: Method\nParent: CustomerRepository\nparents: CustomerRepository\nSignature: public boolean add(Customer customer)\n\n// Imports:\npackage com.acme.widgets.repository;\nimport java.util.ArrayList;\nimport java.util.List;\nimport java.util.Optional;\nimport org.junit.jupiter.api.Test;\n\npublic boolean add(Customer customer) {\n        if (customers.size() >= MAXIMUM_CUSTOMERS) {\n            return false;\n        }\n        return customers.add(customer);\n    }\n\n// Identifiers:\n// symbol: add\n// params: Customer, customer\n// types: Customer, MAXIMUM_CUSTOMERS\n// calls: add, size\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 839,
+    "identifiers": {
+      "defined_symbol": "add",
+      "key_strings": [],
+      "parameters": [
+        "Customer",
+        "customer"
+      ],
+      "referenced_functions": [
+        "add",
+        "size"
+      ],
+      "referenced_types": [
+        "Customer",
+        "MAXIMUM_CUSTOMERS"
+      ]
+    },
+    "index": 5,
+    "metadata": {
+      "content_hash": "2b578b52918b8c69",
+      "end_byte": 839,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "CustomerRepository"
+      ],
+      "path": "github://acme/widgets/src/main/java/com/acme/widgets/repository/CustomerRepository.java@main",
+      "start_byte": 665,
+      "symbol": "add",
+      "visibility": "Public"
+    },
+    "start_offset": 665,
+    "text": "File: github://acme/widgets/src/main/java/com/acme/widgets/repository/CustomerRepository.java@main\npath: github://acme/widgets/src/main/java/com/acme/widgets/repository/CustomerRepository.java@main\nLanguage: java\nsymbol: CustomerRepository.add\nSymbol: CustomerRepository.add\nkind: Method\nParent: CustomerRepository\nparents: CustomerRepository\nSignature: public boolean add(Customer customer)\n [skeleton]\npublic boolean add(Customer customer)\n\n// Key identifiers:\n// defined: add\n// params: Customer, customer\n// types: Customer, MAXIMUM_CUSTOMERS\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 905,
+    "identifiers": {
+      "defined_symbol": "count",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "count",
+        "size"
+      ],
+      "referenced_types": []
+    },
+    "index": 6,
+    "metadata": {
+      "content_hash": "e3e3e33698e9a104",
+      "end_byte": 905,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "CustomerRepository"
+      ],
+      "path": "github://acme/widgets/src/main/java/com/acme/widgets/repository/CustomerRepository.java@main",
+      "start_byte": 845,
+      "symbol": "count",
+      "visibility": "Private"
+    },
+    "start_offset": 845,
+    "text": "File: github://acme/widgets/src/main/java/com/acme/widgets/repository/CustomerRepository.java@main\npath: github://acme/widgets/src/main/java/com/acme/widgets/repository/CustomerRepository.java@main\nLanguage: java\nsymbol: CustomerRepository.count\nSymbol: CustomerRepository.count\nkind: Method\nParent: CustomerRepository\nparents: CustomerRepository\nSignature: private int count()\n\n// Imports:\npackage com.acme.widgets.repository;\nimport java.util.ArrayList;\nimport java.util.List;\nimport java.util.Optional;\nimport org.junit.jupiter.api.Test;\n\nprivate int count() {\n        return customers.size();\n    }\n\n// Identifiers:\n// symbol: count\n// calls: count, size\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 905,
+    "identifiers": {
+      "defined_symbol": "count",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "count",
+        "size"
+      ],
+      "referenced_types": []
+    },
+    "index": 7,
+    "metadata": {
+      "content_hash": "72e89a46f591e382",
+      "end_byte": 905,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "CustomerRepository"
+      ],
+      "path": "github://acme/widgets/src/main/java/com/acme/widgets/repository/CustomerRepository.java@main",
+      "start_byte": 845,
+      "symbol": "count",
+      "visibility": "Private"
+    },
+    "start_offset": 845,
+    "text": "File: github://acme/widgets/src/main/java/com/acme/widgets/repository/CustomerRepository.java@main\npath: github://acme/widgets/src/main/java/com/acme/widgets/repository/CustomerRepository.java@main\nLanguage: java\nsymbol: CustomerRepository.count\nSymbol: CustomerRepository.count\nkind: Method\nParent: CustomerRepository\nparents: CustomerRepository\nSignature: private int count()\n [skeleton]\nprivate int count()\n\n// Key identifiers:\n// defined: count\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1017,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "Repository",
+        "CustomerTier"
+      ],
+      "referenced_types": [
+        "Repository",
+        "CustomerTier",
+        "BRONZE",
+        "SILVER",
+        "GOLD"
+      ]
+    },
+    "index": 8,
+    "metadata": {
+      "content_hash": "04e12cef83ee8ccc",
+      "end_byte": 1017,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/main/java/com/acme/widgets/repository/CustomerRepository.java@main",
+      "start_byte": 909,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 909,
+    "text": "interface Repository<T> {\n    boolean add(T item);\n}\n\nenum CustomerTier {\n    BRONZE,\n    SILVER,\n    GOLD\n}"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1216,
+    "identifiers": {
+      "defined_symbol": "CustomerRepositoryTest",
+      "key_strings": [
+        "ada@example.com"
+      ],
+      "parameters": [],
+      "referenced_functions": [
+        "addsCustomer",
+        "add"
+      ],
+      "referenced_types": [
+        "CustomerRepositoryTest",
+        "Test",
+        "CustomerRepository",
+        "Customer"
+      ]
+    },
+    "index": 9,
+    "metadata": {
+      "content_hash": "98d99ee5aa71eab7",
+      "end_byte": 1216,
+      "is_generated": false,
+      "is_test": true,
+      "kind": "Class",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/main/java/com/acme/widgets/repository/CustomerRepository.java@main",
+      "start_byte": 1019,
+      "symbol": "CustomerRepositoryTest",
+      "visibility": "Private"
+    },
+    "start_offset": 1019,
+    "text": "File: github://acme/widgets/src/main/java/com/acme/widgets/repository/CustomerRepository.java@main\npath: github://acme/widgets/src/main/java/com/acme/widgets/repository/CustomerRepository.java@main\nLanguage: java\nsymbol: CustomerRepositoryTest\nSymbol: CustomerRepositoryTest\nkind: Class\nSignature: class CustomerRepositoryTest\n\n// Imports:\nimport org.junit.jupiter.api.Test;\n\nclass CustomerRepositoryTest {\n    @Test\n    void addsCustomer() {\n        CustomerRepository repository = new CustomerRepository();\n        repository.add(new Customer(\"ada@example.com\"));\n    }\n}\n\n// Identifiers:\n// symbol: CustomerRepositoryTest\n// types: CustomerRepositoryTest, Test, CustomerRepository, Customer\n// calls: addsCustomer, add\n// keys: ada@example.com\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1214,
+    "identifiers": {
+      "defined_symbol": "addsCustomer",
+      "key_strings": [
+        "ada@example.com"
+      ],
+      "parameters": [],
+      "referenced_functions": [
+        "addsCustomer",
+        "add"
+      ],
+      "referenced_types": [
+        "Test",
+        "CustomerRepository",
+        "Customer"
+      ]
+    },
+    "index": 10,
+    "metadata": {
+      "content_hash": "8ea67cd611886dad",
+      "end_byte": 1214,
+      "is_generated": false,
+      "is_test": true,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "CustomerRepositoryTest"
+      ],
+      "path": "github://acme/widgets/src/main/java/com/acme/widgets/repository/CustomerRepository.java@main",
+      "start_byte": 1054,
+      "symbol": "addsCustomer",
+      "visibility": "Private"
+    },
+    "start_offset": 1054,
+    "text": "File: github://acme/widgets/src/main/java/com/acme/widgets/repository/CustomerRepository.java@main\npath: github://acme/widgets/src/main/java/com/acme/widgets/repository/CustomerRepository.java@main\nLanguage: java\nsymbol: CustomerRepositoryTest.addsCustomer\nSymbol: CustomerRepositoryTest.addsCustomer\nkind: Method\nParent: CustomerRepositoryTest\nparents: CustomerRepositoryTest\nSignature: @Test\n    void addsCustomer()\n\n// Imports:\nimport org.junit.jupiter.api.Test;\n\n@Test\n    void addsCustomer() {\n        CustomerRepository repository = new CustomerRepository();\n        repository.add(new Customer(\"ada@example.com\"));\n    }\n\n// Identifiers:\n// symbol: addsCustomer\n// types: Test, CustomerRepository, Customer\n// calls: addsCustomer, add\n// keys: ada@example.com\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 1214,
+    "identifiers": {
+      "defined_symbol": "addsCustomer",
+      "key_strings": [
+        "ada@example.com"
+      ],
+      "parameters": [],
+      "referenced_functions": [
+        "addsCustomer",
+        "add"
+      ],
+      "referenced_types": [
+        "Test",
+        "CustomerRepository",
+        "Customer"
+      ]
+    },
+    "index": 11,
+    "metadata": {
+      "content_hash": "78e7b21c341c5c5a",
+      "end_byte": 1214,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "CustomerRepositoryTest"
+      ],
+      "path": "github://acme/widgets/src/main/java/com/acme/widgets/repository/CustomerRepository.java@main",
+      "start_byte": 1054,
+      "symbol": "addsCustomer",
+      "visibility": "Private"
+    },
+    "start_offset": 1054,
+    "text": "File: github://acme/widgets/src/main/java/com/acme/widgets/repository/CustomerRepository.java@main\npath: github://acme/widgets/src/main/java/com/acme/widgets/repository/CustomerRepository.java@main\nLanguage: java\nsymbol: CustomerRepositoryTest.addsCustomer\nSymbol: CustomerRepositoryTest.addsCustomer\nkind: Method\nParent: CustomerRepositoryTest\nparents: CustomerRepositoryTest\nSignature: @Test\n    void addsCustomer()\n [skeleton]\n@Test\n    void addsCustomer()\n\n// Key identifiers:\n// defined: addsCustomer\n// types: Test, CustomerRepository, Customer\n"
+  },
+  {
+    "chunk_type": "ApiSurface",
+    "end_offset": 907,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": [
+        "CustomerRepository"
+      ]
+    },
+    "index": 12,
+    "metadata": {
+      "content_hash": "15883709fe39875b",
+      "end_byte": 907,
+      "is_generated": false,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/main/java/com/acme/widgets/repository/CustomerRepository.java@main",
+      "start_byte": 198,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 198,
+    "text": "path: github://acme/widgets/src/main/java/com/acme/widgets/repository/CustomerRepository.java@main\nkind: api_surface\n\n// Public API:\n\n/**\npublic class CustomerRepository implements Repository<Customer>\n\n"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 198,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 13,
+    "metadata": {
+      "content_hash": "b74012a523937843",
+      "end_byte": 198,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/main/java/com/acme/widgets/repository/CustomerRepository.java@main",
+      "start_byte": 152,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 152,
+    "text": "File: github://acme/widgets/src/main/java/com/acme/widgets/repository/CustomerRepository.java@main\npath: github://acme/widgets/src/main/java/com/acme/widgets/repository/CustomerRepository.java@main\nLanguage: java\nkind: top_level\n\n/**\n * Stores customer records in memory.\n */"
+  }
+]

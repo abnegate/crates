@@ -1,0 +1,110 @@
+[
+  {
+    "end_offset": 59,
+    "index": 0,
+    "start_offset": 0,
+    "text": "\"\"\"Greeting helpers — 挨拶 and emoji 👋 support.\"\"\"\n\n"
+  },
+  {
+    "end_offset": 59,
+    "index": 1,
+    "start_offset": 51,
+    "text": "rt.\"\"\"\n\n"
+  },
+  {
+    "end_offset": 137,
+    "index": 2,
+    "start_offset": 59,
+    "text": "GREETINGS = {\n    \"ja\": \"こんにちは世界\",\n    \"zh\": \"你好，世界\",\n"
+  },
+  {
+    "end_offset": 198,
+    "index": 3,
+    "start_offset": 119,
+    "text": "你好，世界\",\n    \"ko\": \"안녕하세요\",\n    \"emoji\": \"👋🌍✨\",\n}\n\n\n"
+  },
+  {
+    "end_offset": 198,
+    "index": 4,
+    "start_offset": 188,
+    "text": "✨\",\n}\n\n\n"
+  },
+  {
+    "end_offset": 242,
+    "index": 5,
+    "start_offset": 198,
+    "text": "def greet(language: str, name: str) -> str:\n"
+  },
+  {
+    "end_offset": 242,
+    "index": 6,
+    "start_offset": 234,
+    "text": "-> str:\n"
+  },
+  {
+    "end_offset": 318,
+    "index": 7,
+    "start_offset": 242,
+    "text": "    \"\"\"Return a greeting such as 'こんにちは, 太郎' for the language "
+  },
+  {
+    "end_offset": 327,
+    "index": 8,
+    "start_offset": 310,
+    "text": "anguage code.\"\"\"\n"
+  },
+  {
+    "end_offset": 375,
+    "index": 9,
+    "start_offset": 319,
+    "text": "ode.\"\"\"\n    template = GREETINGS.get(language, \"Hello\")\n"
+  },
+  {
+    "end_offset": 415,
+    "index": 10,
+    "start_offset": 367,
+    "text": "Hello\")\n    return f\"{template}, {name} 🎉\"\n\n\n"
+  },
+  {
+    "end_offset": 415,
+    "index": 11,
+    "start_offset": 404,
+    "text": "e} 🎉\"\n\n\n"
+  },
+  {
+    "end_offset": 446,
+    "index": 12,
+    "start_offset": 415,
+    "text": "def widths(text: str) -> list:\n"
+  },
+  {
+    "end_offset": 446,
+    "index": 13,
+    "start_offset": 438,
+    "text": "> list:\n"
+  },
+  {
+    "end_offset": 510,
+    "index": 14,
+    "start_offset": 446,
+    "text": "    # Count east asian wide characters: 漢字 take two columns."
+  },
+  {
+    "end_offset": 510,
+    "index": 15,
+    "start_offset": 502,
+    "text": "columns."
+  },
+  {
+    "end_offset": 568,
+    "index": 16,
+    "start_offset": 510,
+    "text": "\n    return [2 if ord(ch) > 0x2E80 else 1 for ch in text]\n"
+  },
+  {
+    "end_offset": 568,
+    "index": 17,
+    "start_offset": 560,
+    "text": "n text]\n"
+  }
+]

@@ -1,0 +1,479 @@
+[
+  {
+    "chunk_type": "FileHeader",
+    "end_offset": 72,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 0,
+    "metadata": {
+      "content_hash": "2b3b1985334a4448",
+      "end_byte": 72,
+      "is_generated": false,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/invoices/table.tsx@main",
+      "start_byte": 0,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 0,
+    "text": "path: github://acme/widgets/src/invoices/table.tsx@main\nkind: file_header\n\nimport { useMemo } from 'react';\nimport type { Invoice } from './types';"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 162,
+    "identifiers": {
+      "defined_symbol": "InvoiceTableProps",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": [
+        "InvoiceTableProps",
+        "Invoice"
+      ]
+    },
+    "index": 1,
+    "metadata": {
+      "content_hash": "ba1b3f579e053604",
+      "end_byte": 162,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Interface",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/invoices/table.tsx@main",
+      "start_byte": 74,
+      "symbol": "InvoiceTableProps",
+      "visibility": "Private"
+    },
+    "start_offset": 74,
+    "text": "File: github://acme/widgets/src/invoices/table.tsx@main\npath: github://acme/widgets/src/invoices/table.tsx@main\nLanguage: tsx\nsymbol: InvoiceTableProps\nSymbol: InvoiceTableProps\nkind: Interface\nSignature: interface InvoiceTableProps\n\n// Imports:\nimport type { Invoice } from './types';\n\ninterface InvoiceTableProps {\n  invoices: Invoice[];\n  onSelect: (id: string) => void;\n}\n\n// Identifiers:\n// symbol: InvoiceTableProps\n// types: InvoiceTableProps, Invoice\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 788,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "onSelect",
+        "useMemo",
+        "sort",
+        "getTime",
+        "map",
+        "toLocaleDateString"
+      ],
+      "referenced_types": [
+        "InvoiceTable",
+        "InvoiceTableProps",
+        "Number",
+        "Due"
+      ]
+    },
+    "index": 2,
+    "metadata": {
+      "content_hash": "bb96d45d51da5b20",
+      "end_byte": 788,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/invoices/table.tsx@main",
+      "start_byte": 164,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 164,
+    "text": "File: github://acme/widgets/src/invoices/table.tsx@main\npath: github://acme/widgets/src/invoices/table.tsx@main\nLanguage: tsx\nkind: Other\nSignature: export function InvoiceTable(\n\n// Imports:\nimport { useMemo } from 'react';\nimport type { Invoice } from './types';\n\nexport function InvoiceTable({ invoices, onSelect }: InvoiceTableProps) {\n  const sorted = useMemo(\n    () => [...invoices].sort((left, right) => right.dueDate.getTime() - left.dueDate.getTime()),\n    [invoices],\n  );\n  return (\n    <table>\n      <thead>\n        <tr>\n          <th>Number</th>\n          <th>Due</th>\n        </tr>\n      </thead>\n      <tbody>\n        {sorted.map((invoice) => (\n          <tr key={invoice.id} onClick={() => onSelect(invoice.id)}>\n            <td>{invoice.number}</td>\n            <td>{invoice.dueDate.toLocaleDateString()}</td>\n          </tr>\n        ))}\n      </tbody>\n    </table>\n  );\n}\n\n// Identifiers:\n// types: InvoiceTable, InvoiceTableProps, Number, Due\n// calls: onSelect, useMemo, sort, getTime, map, toLocaleDateString\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 788,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "onSelect",
+        "useMemo",
+        "sort",
+        "getTime",
+        "map",
+        "toLocaleDateString"
+      ],
+      "referenced_types": [
+        "InvoiceTable",
+        "InvoiceTableProps",
+        "Number",
+        "Due"
+      ]
+    },
+    "index": 3,
+    "metadata": {
+      "content_hash": "2398ff0f3d8fcd52",
+      "end_byte": 788,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/invoices/table.tsx@main",
+      "start_byte": 164,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 164,
+    "text": "File: github://acme/widgets/src/invoices/table.tsx@main\npath: github://acme/widgets/src/invoices/table.tsx@main\nLanguage: tsx\nkind: Other\nSignature: export function InvoiceTable(\n [skeleton]\nexport function InvoiceTable(\n\n// Key identifiers:\n// types: InvoiceTable, InvoiceTableProps, Number, Due\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 788,
+    "identifiers": {
+      "defined_symbol": "InvoiceTable",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "onSelect",
+        "useMemo",
+        "sort",
+        "getTime",
+        "map",
+        "toLocaleDateString"
+      ],
+      "referenced_types": [
+        "InvoiceTable",
+        "InvoiceTableProps",
+        "Number",
+        "Due"
+      ]
+    },
+    "index": 4,
+    "metadata": {
+      "content_hash": "41c18c372526fd57",
+      "end_byte": 788,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/invoices/table.tsx@main",
+      "start_byte": 171,
+      "symbol": "InvoiceTable",
+      "visibility": "Private"
+    },
+    "start_offset": 171,
+    "text": "File: github://acme/widgets/src/invoices/table.tsx@main\npath: github://acme/widgets/src/invoices/table.tsx@main\nLanguage: tsx\nsymbol: InvoiceTable\nSymbol: InvoiceTable\nkind: Function\nSignature: function InvoiceTable(\n\n// Imports:\nimport { useMemo } from 'react';\nimport type { Invoice } from './types';\n\nfunction InvoiceTable({ invoices, onSelect }: InvoiceTableProps) {\n  const sorted = useMemo(\n    () => [...invoices].sort((left, right) => right.dueDate.getTime() - left.dueDate.getTime()),\n    [invoices],\n  );\n  return (\n    <table>\n      <thead>\n        <tr>\n          <th>Number</th>\n          <th>Due</th>\n        </tr>\n      </thead>\n      <tbody>\n        {sorted.map((invoice) => (\n          <tr key={invoice.id} onClick={() => onSelect(invoice.id)}>\n            <td>{invoice.number}</td>\n            <td>{invoice.dueDate.toLocaleDateString()}</td>\n          </tr>\n        ))}\n      </tbody>\n    </table>\n  );\n}\n\n// Identifiers:\n// symbol: InvoiceTable\n// types: InvoiceTable, InvoiceTableProps, Number, Due\n// calls: onSelect, useMemo, sort, getTime, map, toLocaleDateString\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 788,
+    "identifiers": {
+      "defined_symbol": "InvoiceTable",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "onSelect",
+        "useMemo",
+        "sort",
+        "getTime",
+        "map",
+        "toLocaleDateString"
+      ],
+      "referenced_types": [
+        "InvoiceTable",
+        "InvoiceTableProps",
+        "Number",
+        "Due"
+      ]
+    },
+    "index": 5,
+    "metadata": {
+      "content_hash": "0501060aef4e8dd6",
+      "end_byte": 788,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/invoices/table.tsx@main",
+      "start_byte": 171,
+      "symbol": "InvoiceTable",
+      "visibility": "Private"
+    },
+    "start_offset": 171,
+    "text": "File: github://acme/widgets/src/invoices/table.tsx@main\npath: github://acme/widgets/src/invoices/table.tsx@main\nLanguage: tsx\nsymbol: InvoiceTable\nSymbol: InvoiceTable\nkind: Function\nSignature: function InvoiceTable(\n [skeleton]\nfunction InvoiceTable(\n\n// Key identifiers:\n// defined: InvoiceTable\n// types: InvoiceTable, InvoiceTableProps, Number, Due\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 381,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "useMemo",
+        "sort",
+        "getTime"
+      ],
+      "referenced_types": []
+    },
+    "index": 6,
+    "metadata": {
+      "content_hash": "6586566ad373bc00",
+      "end_byte": 381,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "InvoiceTable"
+      ],
+      "path": "github://acme/widgets/src/invoices/table.tsx@main",
+      "start_byte": 240,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 240,
+    "text": "File: github://acme/widgets/src/invoices/table.tsx@main\npath: github://acme/widgets/src/invoices/table.tsx@main\nLanguage: tsx\nkind: Other\nParent: InvoiceTable\nparents: InvoiceTable\nSignature: const sorted = useMemo(\n\n// Imports:\nimport { useMemo } from 'react';\nimport type { Invoice } from './types';\n\nconst sorted = useMemo(\n    () => [...invoices].sort((left, right) => right.dueDate.getTime() - left.dueDate.getTime()),\n    [invoices],\n  );\n\n// Identifiers:\n// calls: useMemo, sort, getTime\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 381,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "useMemo",
+        "sort",
+        "getTime"
+      ],
+      "referenced_types": []
+    },
+    "index": 7,
+    "metadata": {
+      "content_hash": "cf476b47938a4091",
+      "end_byte": 381,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "InvoiceTable"
+      ],
+      "path": "github://acme/widgets/src/invoices/table.tsx@main",
+      "start_byte": 240,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 240,
+    "text": "File: github://acme/widgets/src/invoices/table.tsx@main\npath: github://acme/widgets/src/invoices/table.tsx@main\nLanguage: tsx\nkind: Other\nParent: InvoiceTable\nparents: InvoiceTable\nSignature: const sorted = useMemo(\n [skeleton]\nconst sorted = useMemo(\n\n// Key identifiers:\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 359,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [
+        "invoices",
+        "sort",
+        "left",
+        "right",
+        "dueDate",
+        "getTime"
+      ],
+      "referenced_functions": [
+        "sort",
+        "getTime"
+      ],
+      "referenced_types": []
+    },
+    "index": 8,
+    "metadata": {
+      "content_hash": "878565a2cce1b49d",
+      "end_byte": 359,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "InvoiceTable"
+      ],
+      "path": "github://acme/widgets/src/invoices/table.tsx@main",
+      "start_byte": 268,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 268,
+    "text": "File: github://acme/widgets/src/invoices/table.tsx@main\npath: github://acme/widgets/src/invoices/table.tsx@main\nLanguage: tsx\nkind: Method\nParent: InvoiceTable\nparents: InvoiceTable\nSignature: () => [...invoices].sort((left, right) => right.dueDate.getTime() - left.dueDate.getTime())\n\n// Imports:\nimport { useMemo } from 'react';\nimport type { Invoice } from './types';\n\n() => [...invoices].sort((left, right) => right.dueDate.getTime() - left.dueDate.getTime())\n\n// Identifiers:\n// params: invoices, sort, left, right, dueDate, getTime\n// calls: sort, getTime\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 751,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [
+        "invoice"
+      ],
+      "referenced_functions": [
+        "onSelect",
+        "toLocaleDateString"
+      ],
+      "referenced_types": []
+    },
+    "index": 9,
+    "metadata": {
+      "content_hash": "40672fcf0c72ce94",
+      "end_byte": 751,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "InvoiceTable"
+      ],
+      "path": "github://acme/widgets/src/invoices/table.tsx@main",
+      "start_byte": 544,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 544,
+    "text": "File: github://acme/widgets/src/invoices/table.tsx@main\npath: github://acme/widgets/src/invoices/table.tsx@main\nLanguage: tsx\nkind: Method\nParent: InvoiceTable\nparents: InvoiceTable\nSignature: (invoice) => (\n          <tr key=\n\n// Imports:\nimport { useMemo } from 'react';\nimport type { Invoice } from './types';\n\n(invoice) => (\n          <tr key={invoice.id} onClick={() => onSelect(invoice.id)}>\n            <td>{invoice.number}</td>\n            <td>{invoice.dueDate.toLocaleDateString()}</td>\n          </tr>\n        )\n\n// Identifiers:\n// params: invoice\n// calls: onSelect, toLocaleDateString\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 751,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [
+        "invoice"
+      ],
+      "referenced_functions": [
+        "onSelect",
+        "toLocaleDateString"
+      ],
+      "referenced_types": []
+    },
+    "index": 10,
+    "metadata": {
+      "content_hash": "a50670150c3a718f",
+      "end_byte": 751,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "InvoiceTable"
+      ],
+      "path": "github://acme/widgets/src/invoices/table.tsx@main",
+      "start_byte": 544,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 544,
+    "text": "File: github://acme/widgets/src/invoices/table.tsx@main\npath: github://acme/widgets/src/invoices/table.tsx@main\nLanguage: tsx\nkind: Method\nParent: InvoiceTable\nparents: InvoiceTable\nSignature: (invoice) => (\n          <tr key=\n [skeleton]\n(invoice) => (\n          <tr key=\n\n// Key identifiers:\n// params: invoice\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 625,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [
+        "onSelect",
+        "invoice",
+        "id"
+      ],
+      "referenced_functions": [
+        "onSelect"
+      ],
+      "referenced_types": []
+    },
+    "index": 11,
+    "metadata": {
+      "content_hash": "0edeb4aec2f44781",
+      "end_byte": 625,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "InvoiceTable"
+      ],
+      "path": "github://acme/widgets/src/invoices/table.tsx@main",
+      "start_byte": 599,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 599,
+    "text": "File: github://acme/widgets/src/invoices/table.tsx@main\npath: github://acme/widgets/src/invoices/table.tsx@main\nLanguage: tsx\nkind: Method\nParent: InvoiceTable\nparents: InvoiceTable\nSignature: () => onSelect(invoice.id)\n\n// Imports:\nimport { useMemo } from 'react';\nimport type { Invoice } from './types';\n\n() => onSelect(invoice.id)\n\n// Identifiers:\n// params: onSelect, invoice, id\n// calls: onSelect\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 889,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": [
+        "EmptyState"
+      ]
+    },
+    "index": 12,
+    "metadata": {
+      "content_hash": "548972f2ba12b53b",
+      "end_byte": 889,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/invoices/table.tsx@main",
+      "start_byte": 790,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 790,
+    "text": "File: github://acme/widgets/src/invoices/table.tsx@main\npath: github://acme/widgets/src/invoices/table.tsx@main\nLanguage: tsx\nkind: Other\nSignature: export const EmptyState = (\n\n// Imports:\nimport { useMemo } from 'react';\nimport type { Invoice } from './types';\n\nexport const EmptyState = ({ message }: { message: string }) => <p className=\"empty\">{message}</p>;\n\n// Identifiers:\n// types: EmptyState\n"
+  },
+  {
+    "chunk_type": "ApiSurface",
+    "end_offset": 889,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 13,
+    "metadata": {
+      "content_hash": "15fc1ba1e6f47974",
+      "end_byte": 889,
+      "is_generated": false,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/invoices/table.tsx@main",
+      "start_byte": 164,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 164,
+    "text": "path: github://acme/widgets/src/invoices/table.tsx@main\nkind: api_surface\n\n// Public API:\n\nexport function InvoiceTable(\n\nexport const EmptyState = (\n\n"
+  }
+]

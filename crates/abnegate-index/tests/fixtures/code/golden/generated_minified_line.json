@@ -1,0 +1,83 @@
+[
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 2042,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 0,
+    "metadata": {
+      "content_hash": "7e83cd38c9fc96a3",
+      "end_byte": 2042,
+      "is_generated": true,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/static/app.js@main",
+      "start_byte": 0,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 0,
+    "text": "File: github://acme/widgets/static/app.js@main\npath: github://acme/widgets/static/app.js@main\nvar widgets=(function(){function f0(a,b){return a*0+b};function f1(a,b){return a*1+b};function f2(a,b){return a*2+b};function f3(a,b){return a*3+b};function f4(a,b){return a*4+b};function f5(a,b){return a*5+b};function f6(a,b){return a*6+b};function f7(a,b){return a*7+b};function f8(a,b){return a*8+b};function f9(a,b){return a*9+b};function f10(a,b){return a*10+b};function f11(a,b){return a*11+b};function f12(a,b){return a*12+b};function f13(a,b){return a*13+b};function f14(a,b){return a*14+b};function f15(a,b){return a*15+b};function f16(a,b){return a*16+b};function f17(a,b){return a*17+b};function f18(a,b){return a*18+b};function f19(a,b){return a*19+b};function f20(a,b){return a*20+b};function f21(a,b){return a*21+b};function f22(a,b){return a*22+b};function f23(a,b){return a*23+b};function f24(a,b){return a*24+b};function f25(a,b){return a*25+b};function f26(a,b){return a*26+b};function f27(a,b){return a*27+b};function f28(a,b){return a*28+b};function f29(a,b){return a*29+b};function f30(a,b){return a*30+b};function f31(a,b){return a*31+b};function f32(a,b){return a*32+b};function f33(a,b){return a*33+b};function f34(a,b){return a*34+b};function f35(a,b){return a*35+b};function f36(a,b){return a*36+b};function f37(a,b){return a*37+b};function f38(a,b){return a*38+b};function f39(a,b){return a*39+b};function f40(a,b){return a*40+b};function f41(a,b){return a*41+b};function f42(a,b){return a*42+b};function f43(a,b){return a*43+b};function f44(a,b){return a*44+b};function f45(a,b){return a*45+b};function f46(a,b){return a*46+b};function f47(a,b){return a*47+b};function f48(a,b){return a*48+b};function f49(a,b){return a*49+b};function f50(a,b){return a*50+b};function f51(a,b){return a*51+b};function f52(a,b){return a*52+b};function f53(a,b){return a*53+b};function f54(a,b){return a*54+b};function f55(a,b){return a*55+b};function f56(a,b){return a*56+b};function f57(a,b){return a*57+b};function f58(a,b){return a*58+b};function f59(a,b){return a*59+b};function f60(a,b){return a*60+b};function f61(a,b){return "
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 3687,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 1,
+    "metadata": {
+      "content_hash": "29f3cb4bda407637",
+      "end_byte": 3687,
+      "is_generated": true,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/static/app.js@main",
+      "start_byte": 1838,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 1838,
+    "text": "File: github://acme/widgets/static/app.js@main\npath: github://acme/widgets/static/app.js@main\neturn a*55+b};function f56(a,b){return a*56+b};function f57(a,b){return a*57+b};function f58(a,b){return a*58+b};function f59(a,b){return a*59+b};function f60(a,b){return a*60+b};function f61(a,b){return a*61+b};function f62(a,b){return a*62+b};function f63(a,b){return a*63+b};function f64(a,b){return a*64+b};function f65(a,b){return a*65+b};function f66(a,b){return a*66+b};function f67(a,b){return a*67+b};function f68(a,b){return a*68+b};function f69(a,b){return a*69+b};function f70(a,b){return a*70+b};function f71(a,b){return a*71+b};function f72(a,b){return a*72+b};function f73(a,b){return a*73+b};function f74(a,b){return a*74+b};function f75(a,b){return a*75+b};function f76(a,b){return a*76+b};function f77(a,b){return a*77+b};function f78(a,b){return a*78+b};function f79(a,b){return a*79+b};function f80(a,b){return a*80+b};function f81(a,b){return a*81+b};function f82(a,b){return a*82+b};function f83(a,b){return a*83+b};function f84(a,b){return a*84+b};function f85(a,b){return a*85+b};function f86(a,b){return a*86+b};function f87(a,b){return a*87+b};function f88(a,b){return a*88+b};function f89(a,b){return a*89+b};return{f0:f0,f1:f1,f2:f2,f3:f3,f4:f4,f5:f5,f6:f6,f7:f7,f8:f8,f9:f9,f10:f10,f11:f11,f12:f12,f13:f13,f14:f14,f15:f15,f16:f16,f17:f17,f18:f18,f19:f19,f20:f20,f21:f21,f22:f22,f23:f23,f24:f24,f25:f25,f26:f26,f27:f27,f28:f28,f29:f29,f30:f30,f31:f31,f32:f32,f33:f33,f34:f34,f35:f35,f36:f36,f37:f37,f38:f38,f39:f39,f40:f40,f41:f41,f42:f42,f43:f43,f44:f44,f45:f45,f46:f46,f47:f47,f48:f48,f49:f49,f50:f50,f51:f51,f52:f52,f53:f53,f54:f54,f55:f55,f56:f56,f57:f57,f58:f58,f59:f59,f60:f60,f61:f61,f62:f62,f63:f63,f64:f64,f65:f65,f66:f66,f67:f67,f68:f68,f69:f69,f70:f70,f71:f71,f72:f72,f73:f73,f74:f74,f75:f75,f76:f76,f77:f77,f78:f78,f79:f79,f80:f80,f81:f81,f82:f82,f83:f83,f84:f84,f85:f85,f86:f86,f87:f87,f88:f88,f89:f89}})();\n"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 3687,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 2,
+    "metadata": {
+      "content_hash": "3f52e620aed2c99f",
+      "end_byte": 3687,
+      "is_generated": true,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/static/app.js@main",
+      "start_byte": 3483,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 3483,
+    "text": "File: github://acme/widgets/static/app.js@main\npath: github://acme/widgets/static/app.js@main\n5:f65,f66:f66,f67:f67,f68:f68,f69:f69,f70:f70,f71:f71,f72:f72,f73:f73,f74:f74,f75:f75,f76:f76,f77:f77,f78:f78,f79:f79,f80:f80,f81:f81,f82:f82,f83:f83,f84:f84,f85:f85,f86:f86,f87:f87,f88:f88,f89:f89}})();\n"
+  }
+]

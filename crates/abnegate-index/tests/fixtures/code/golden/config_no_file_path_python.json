@@ -1,0 +1,895 @@
+[
+  {
+    "chunk_type": "FileHeader",
+    "end_offset": 238,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 0,
+    "metadata": {
+      "content_hash": "6b5ff192b6f8e0df",
+      "end_byte": 238,
+      "is_generated": false,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": null,
+      "start_byte": 97,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 97,
+    "text": "kind: file_header\n\nimport json\nimport logging\nfrom dataclasses import dataclass, field\nfrom typing import Iterable, Optional\nfrom .queue import FulfilmentQueue"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 380,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": [
+        "OrderLine"
+      ]
+    },
+    "index": 1,
+    "metadata": {
+      "content_hash": "f2c621a02e0de8e9",
+      "end_byte": 380,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": null,
+      "start_byte": 294,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 294,
+    "text": "Language: python\nkind: Other\nSignature: @dataclass\nclass OrderLine:\n\n// Imports:\nimport json\nimport logging\nfrom dataclasses import dataclass, field\nfrom typing import Iterable, Optional\nfrom .queue import FulfilmentQueue\n\n@dataclass\nclass OrderLine:\n    sku: str\n    quantity: int\n    unit_price: float = 0.0\n\n// Identifiers:\n// types: OrderLine\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 664,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "field",
+        "total",
+        "sum"
+      ],
+      "referenced_types": [
+        "Order",
+        "Optional",
+        "None",
+        "Sum"
+      ]
+    },
+    "index": 2,
+    "metadata": {
+      "content_hash": "99e55e2786990ea2",
+      "end_byte": 664,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": null,
+      "start_byte": 383,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 383,
+    "text": "Language: python\nkind: Other\nSignature: @dataclass\nclass Order:\n\n// Imports:\nfrom typing import Iterable, Optional\n\n@dataclass\nclass Order:\n    reference: str\n    lines: list = field(default_factory=list)\n    note: Optional[str] = None\n\n    def total(self) -> float:\n        \"\"\"Sum of every line's price times quantity.\"\"\"\n        return sum(line.quantity * line.unit_price for line in self.lines)\n\n// Identifiers:\n// types: Order, Optional, None, Sum\n// calls: field, total, sum\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 664,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "field",
+        "total",
+        "sum"
+      ],
+      "referenced_types": [
+        "Order",
+        "Optional",
+        "None",
+        "Sum"
+      ]
+    },
+    "index": 3,
+    "metadata": {
+      "content_hash": "f196fc7580019156",
+      "end_byte": 664,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": null,
+      "start_byte": 383,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 383,
+    "text": "Language: python\nkind: Other\nSignature: @dataclass\nclass Order:\n [skeleton]\n@dataclass\nclass Order:\n\n// Key identifiers:\n// types: Order, Optional, None, Sum\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 664,
+    "identifiers": {
+      "defined_symbol": "Order",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "field",
+        "total",
+        "sum"
+      ],
+      "referenced_types": [
+        "Order",
+        "Optional",
+        "None",
+        "Sum"
+      ]
+    },
+    "index": 4,
+    "metadata": {
+      "content_hash": "8e4fb841bd702d42",
+      "end_byte": 664,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Class",
+      "module": null,
+      "parents": [],
+      "path": null,
+      "start_byte": 394,
+      "symbol": "Order",
+      "visibility": "Private"
+    },
+    "start_offset": 394,
+    "text": "Language: python\nsymbol: Order\nSymbol: Order\nkind: Class\nSignature: class Order:\n\n// Imports:\nfrom typing import Iterable, Optional\n\nclass Order:\n    reference: str\n    lines: list = field(default_factory=list)\n    note: Optional[str] = None\n\n    def total(self) -> float:\n        \"\"\"Sum of every line's price times quantity.\"\"\"\n        return sum(line.quantity * line.unit_price for line in self.lines)\n\n// Identifiers:\n// symbol: Order\n// types: Order, Optional, None, Sum\n// calls: field, total, sum\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 664,
+    "identifiers": {
+      "defined_symbol": "total",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "total",
+        "sum"
+      ],
+      "referenced_types": [
+        "Sum"
+      ]
+    },
+    "index": 5,
+    "metadata": {
+      "content_hash": "1c8cdbccd1d3b0ec",
+      "end_byte": 664,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Order"
+      ],
+      "path": null,
+      "start_byte": 508,
+      "symbol": "total",
+      "visibility": "Private"
+    },
+    "start_offset": 508,
+    "text": "Language: python\nsymbol: Order.total\nSymbol: Order.total\nkind: Method\nParent: Order\nparents: Order\nSignature: def total(self) -> float:\n\n// Imports:\nimport json\nimport logging\nfrom dataclasses import dataclass, field\nfrom typing import Iterable, Optional\nfrom .queue import FulfilmentQueue\n\ndef total(self) -> float:\n        \"\"\"Sum of every line's price times quantity.\"\"\"\n        return sum(line.quantity * line.unit_price for line in self.lines)\n\n// Identifiers:\n// symbol: total\n// types: Sum\n// calls: total, sum\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 664,
+    "identifiers": {
+      "defined_symbol": "total",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "total",
+        "sum"
+      ],
+      "referenced_types": [
+        "Sum"
+      ]
+    },
+    "index": 6,
+    "metadata": {
+      "content_hash": "17d5094079ba5dce",
+      "end_byte": 664,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Order"
+      ],
+      "path": null,
+      "start_byte": 508,
+      "symbol": "total",
+      "visibility": "Private"
+    },
+    "start_offset": 508,
+    "text": "Language: python\nsymbol: Order.total\nSymbol: Order.total\nkind: Method\nParent: Order\nparents: Order\nSignature: def total(self) -> float:\n [skeleton]\ndef total(self) -> float:\n\n// Key identifiers:\n// defined: total\n// types: Sum\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 1685,
+    "identifiers": {
+      "defined_symbol": "OrderIntake",
+      "key_strings": [
+        "too many lines: {len(order.lines)}",
+        "bad quantity for {line.sku}"
+      ],
+      "parameters": [],
+      "referenced_functions": [
+        "validate",
+        "__init__",
+        "append",
+        "len",
+        "submit",
+        "warning",
+        "s",
+        "push",
+        "dumps",
+        "total"
+      ],
+      "referenced_types": [
+        "OrderIntake",
+        "Accept",
+        "FulfilmentQueue",
+        "True",
+        "Order",
+        "MAX_LINES",
+        "LOGGER",
+        "False"
+      ]
+    },
+    "index": 7,
+    "metadata": {
+      "content_hash": "baf3dbdad3ef0305",
+      "end_byte": 1685,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Class",
+      "module": null,
+      "parents": [],
+      "path": null,
+      "start_byte": 667,
+      "symbol": "OrderIntake",
+      "visibility": "Private"
+    },
+    "start_offset": 667,
+    "text": "Language: python\nsymbol: OrderIntake\nSymbol: OrderIntake\nkind: Class\nSignature: class OrderIntake:\n [skeleton]\nclass OrderIntake:\n\n// Key identifiers:\n// defined: OrderIntake\n// types: OrderIntake, Accept, FulfilmentQueue, True, Order\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 908,
+    "identifiers": {
+      "defined_symbol": "__init__",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "__init__"
+      ],
+      "referenced_types": [
+        "FulfilmentQueue",
+        "True"
+      ]
+    },
+    "index": 8,
+    "metadata": {
+      "content_hash": "6709969d9b2f0118",
+      "end_byte": 908,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "OrderIntake"
+      ],
+      "path": null,
+      "start_byte": 762,
+      "symbol": "__init__",
+      "visibility": "Private"
+    },
+    "start_offset": 762,
+    "text": "Language: python\nsymbol: OrderIntake.__init__\nSymbol: OrderIntake.__init__\nkind: Method\nParent: OrderIntake\nparents: OrderIntake\nSignature: def __init__(self, queue:\n\n// Imports:\nfrom .queue import FulfilmentQueue\n\ndef __init__(self, queue: FulfilmentQueue, strict: bool = True):\n        self.queue = queue\n        self.strict = strict\n        self.rejected = 0\n\n// Identifiers:\n// symbol: __init__\n// types: FulfilmentQueue, True\n// calls: __init__\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 908,
+    "identifiers": {
+      "defined_symbol": "__init__",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "__init__"
+      ],
+      "referenced_types": [
+        "FulfilmentQueue",
+        "True"
+      ]
+    },
+    "index": 9,
+    "metadata": {
+      "content_hash": "71d17ddbb15d39dd",
+      "end_byte": 908,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "OrderIntake"
+      ],
+      "path": null,
+      "start_byte": 762,
+      "symbol": "__init__",
+      "visibility": "Private"
+    },
+    "start_offset": 762,
+    "text": "Language: python\nsymbol: OrderIntake.__init__\nSymbol: OrderIntake.__init__\nkind: Method\nParent: OrderIntake\nparents: OrderIntake\nSignature: def __init__(self, queue:\n [skeleton]\ndef __init__(self, queue:\n\n// Key identifiers:\n// defined: __init__\n// types: FulfilmentQueue, True\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1421,
+    "identifiers": {
+      "defined_symbol": "validate",
+      "key_strings": [
+        "too many lines: {len(order.lines)}",
+        "bad quantity for {line.sku}"
+      ],
+      "parameters": [],
+      "referenced_functions": [
+        "validate",
+        "append",
+        "len"
+      ],
+      "referenced_types": [
+        "Order",
+        "MAX_LINES"
+      ]
+    },
+    "index": 10,
+    "metadata": {
+      "content_hash": "daff92a856589453",
+      "end_byte": 1421,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "OrderIntake"
+      ],
+      "path": null,
+      "start_byte": 914,
+      "symbol": "validate",
+      "visibility": "Private"
+    },
+    "start_offset": 914,
+    "text": "Language: python\nsymbol: OrderIntake.validate\nSymbol: OrderIntake.validate\nkind: Method\nParent: OrderIntake\nparents: OrderIntake\nSignature: def validate(self, order:\n\n// Imports:\nimport json\nimport logging\nfrom dataclasses import dataclass, field\nfrom typing import Iterable, Optional\nfrom .queue import FulfilmentQueue\n\ndef validate(self, order: Order) -> list:\n        problems = []\n        if not order.reference:\n            problems.append(\"missing reference\")\n        if len(order.lines) > MAX_LINES:\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1813,
+    "identifiers": {
+      "defined_symbol": "validate",
+      "key_strings": [
+        "too many lines: {len(order.lines)}",
+        "bad quantity for {line.sku}"
+      ],
+      "parameters": [],
+      "referenced_functions": [
+        "validate",
+        "append",
+        "len"
+      ],
+      "referenced_types": [
+        "Order",
+        "MAX_LINES"
+      ]
+    },
+    "index": 11,
+    "metadata": {
+      "content_hash": "fc3d2a06a4b1004f",
+      "end_byte": 1813,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "OrderIntake"
+      ],
+      "path": null,
+      "start_byte": 1373,
+      "symbol": "validate",
+      "visibility": "Private"
+    },
+    "start_offset": 1373,
+    "text": "ence\")\n        if len(order.lines) > MAX_LINES:\n            problems.append(f\"too many lines: {len(order.lines)}\")\n        for line in order.lines:\n            if line.quantity <= 0:\n                problems.append(f\"bad quantity for {line.sku}\")\n        return problems\n\n// Identifiers:\n// symbol: validate\n// types: Order, MAX_LINES\n// calls: validate, append, len\n// keys: too many lines: {len(order.lines)}, bad quantity for {line.sku}\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1813,
+    "identifiers": {
+      "defined_symbol": "validate",
+      "key_strings": [
+        "too many lines: {len(order.lines)}",
+        "bad quantity for {line.sku}"
+      ],
+      "parameters": [],
+      "referenced_functions": [
+        "validate",
+        "append",
+        "len"
+      ],
+      "referenced_types": [
+        "Order",
+        "MAX_LINES"
+      ]
+    },
+    "index": 12,
+    "metadata": {
+      "content_hash": "484a1131f2ca134d",
+      "end_byte": 1813,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "OrderIntake"
+      ],
+      "path": null,
+      "start_byte": 1765,
+      "symbol": "validate",
+      "visibility": "Private"
+    },
+    "start_offset": 1765,
+    "text": "{len(order.lines)}, bad quantity for {line.sku}\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 1322,
+    "identifiers": {
+      "defined_symbol": "validate",
+      "key_strings": [
+        "too many lines: {len(order.lines)}",
+        "bad quantity for {line.sku}"
+      ],
+      "parameters": [],
+      "referenced_functions": [
+        "validate",
+        "append",
+        "len"
+      ],
+      "referenced_types": [
+        "Order",
+        "MAX_LINES"
+      ]
+    },
+    "index": 13,
+    "metadata": {
+      "content_hash": "73412bd5e893325e",
+      "end_byte": 1322,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "OrderIntake"
+      ],
+      "path": null,
+      "start_byte": 914,
+      "symbol": "validate",
+      "visibility": "Private"
+    },
+    "start_offset": 914,
+    "text": "Language: python\nsymbol: OrderIntake.validate\nSymbol: OrderIntake.validate\nkind: Method\nParent: OrderIntake\nparents: OrderIntake\nSignature: def validate(self, order:\n [skeleton]\ndef validate(self, order:\n\n// Key identifiers:\n// defined: validate\n// types: Order, MAX_LINES\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1791,
+    "identifiers": {
+      "defined_symbol": "submit",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "submit",
+        "validate",
+        "warning",
+        "s",
+        "push",
+        "dumps",
+        "total"
+      ],
+      "referenced_types": [
+        "Order",
+        "LOGGER",
+        "False",
+        "True"
+      ]
+    },
+    "index": 14,
+    "metadata": {
+      "content_hash": "641924307aaef025",
+      "end_byte": 1791,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "OrderIntake"
+      ],
+      "path": null,
+      "start_byte": 1328,
+      "symbol": "submit",
+      "visibility": "Private"
+    },
+    "start_offset": 1328,
+    "text": "Language: python\nsymbol: OrderIntake.submit\nSymbol: OrderIntake.submit\nkind: Method\nParent: OrderIntake\nparents: OrderIntake\nSignature: def submit(self, order:\n\n// Imports:\nimport json\nimport logging\nfrom dataclasses import dataclass, field\nfrom typing import Iterable, Optional\nfrom .queue import FulfilmentQueue\n\ndef submit(self, order: Order) -> bool:\n        problems = self.validate(order)\n        if problems and self.strict:\n            self.rejected += 1\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 2132,
+    "identifiers": {
+      "defined_symbol": "submit",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "submit",
+        "validate",
+        "warning",
+        "s",
+        "push",
+        "dumps",
+        "total"
+      ],
+      "referenced_types": [
+        "Order",
+        "LOGGER",
+        "False",
+        "True"
+      ]
+    },
+    "index": 15,
+    "metadata": {
+      "content_hash": "86880a2e0bc6332f",
+      "end_byte": 2132,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "OrderIntake"
+      ],
+      "path": null,
+      "start_byte": 1743,
+      "symbol": "submit",
+      "visibility": "Private"
+    },
+    "start_offset": 1743,
+    "text": "and self.strict:\n            self.rejected += 1\n            LOGGER.warning(\"rejected %s: %s\", order.reference, problems)\n            return False\n        self.queue.push(json.dumps({\"reference\": order.reference, \"total\": order.total()}))\n        return True\n\n// Identifiers:\n// symbol: submit\n// types: Order, LOGGER, False, True\n// calls: submit, validate, warning, s, push, dumps, total\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 2132,
+    "identifiers": {
+      "defined_symbol": "submit",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "submit",
+        "validate",
+        "warning",
+        "s",
+        "push",
+        "dumps",
+        "total"
+      ],
+      "referenced_types": [
+        "Order",
+        "LOGGER",
+        "False",
+        "True"
+      ]
+    },
+    "index": 16,
+    "metadata": {
+      "content_hash": "51d6b7fd76784790",
+      "end_byte": 2132,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "OrderIntake"
+      ],
+      "path": null,
+      "start_byte": 2084,
+      "symbol": "submit",
+      "visibility": "Private"
+    },
+    "start_offset": 2084,
+    "text": "ubmit, validate, warning, s, push, dumps, total\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 1685,
+    "identifiers": {
+      "defined_symbol": "submit",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "submit",
+        "validate",
+        "warning",
+        "s",
+        "push",
+        "dumps",
+        "total"
+      ],
+      "referenced_types": [
+        "Order",
+        "LOGGER",
+        "False",
+        "True"
+      ]
+    },
+    "index": 17,
+    "metadata": {
+      "content_hash": "9801a167cdf8e420",
+      "end_byte": 1685,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "OrderIntake"
+      ],
+      "path": null,
+      "start_byte": 1328,
+      "symbol": "submit",
+      "visibility": "Private"
+    },
+    "start_offset": 1328,
+    "text": "Language: python\nsymbol: OrderIntake.submit\nSymbol: OrderIntake.submit\nkind: Method\nParent: OrderIntake\nparents: OrderIntake\nSignature: def submit(self, order:\n [skeleton]\ndef submit(self, order:\n\n// Key identifiers:\n// defined: submit\n// types: Order, LOGGER, False, True\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1835,
+    "identifiers": {
+      "defined_symbol": "parse_lines",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "parse_lines",
+        "int",
+        "float",
+        "get"
+      ],
+      "referenced_types": [
+        "Iterable",
+        "OrderLine"
+      ]
+    },
+    "index": 18,
+    "metadata": {
+      "content_hash": "e7e16fd98bf92ea7",
+      "end_byte": 1835,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": null,
+      "start_byte": 1688,
+      "symbol": "parse_lines",
+      "visibility": "Private"
+    },
+    "start_offset": 1688,
+    "text": "Language: python\nsymbol: parse_lines\nSymbol: parse_lines\nkind: Function\nSignature: def parse_lines(rows:\n\n// Imports:\nfrom typing import Iterable, Optional\n\ndef parse_lines(rows: Iterable[dict]) -> list:\n    return [OrderLine(row[\"sku\"], int(row[\"quantity\"]), float(row.get(\"price\", 0))) for row in rows]\n\n// Identifiers:\n// symbol: parse_lines\n// types: Iterable, OrderLine\n// calls: parse_lines, int, float, get\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 1835,
+    "identifiers": {
+      "defined_symbol": "parse_lines",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "parse_lines",
+        "int",
+        "float",
+        "get"
+      ],
+      "referenced_types": [
+        "Iterable",
+        "OrderLine"
+      ]
+    },
+    "index": 19,
+    "metadata": {
+      "content_hash": "a69fe9e6b3a41c34",
+      "end_byte": 1835,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": null,
+      "start_byte": 1688,
+      "symbol": "parse_lines",
+      "visibility": "Private"
+    },
+    "start_offset": 1688,
+    "text": "Language: python\nsymbol: parse_lines\nSymbol: parse_lines\nkind: Function\nSignature: def parse_lines(rows:\n [skeleton]\ndef parse_lines(rows:\n\n// Key identifiers:\n// defined: parse_lines\n// types: Iterable, OrderLine\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1985,
+    "identifiers": {
+      "defined_symbol": "test_parse_lines_reads_price",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "test_parse_lines_reads_price",
+        "lines",
+        "parse_lines",
+        "price"
+      ],
+      "referenced_types": [
+        "A1"
+      ]
+    },
+    "index": 20,
+    "metadata": {
+      "content_hash": "0e3a6d3f049d83ae",
+      "end_byte": 1985,
+      "is_generated": false,
+      "is_test": true,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": null,
+      "start_byte": 1838,
+      "symbol": "test_parse_lines_reads_price",
+      "visibility": "Private"
+    },
+    "start_offset": 1838,
+    "text": "Language: python\nsymbol: test_parse_lines_reads_price\nSymbol: test_parse_lines_reads_price\nkind: Function\nSignature: def test_parse_lines_reads_price():\n\n// Imports:\nimport json\nimport logging\nfrom dataclasses import dataclass, field\nfrom typing import Iterable, Optional\nfrom .queue import FulfilmentQueue\n\ndef test_parse_lines_reads_price():\n    lines = parse_lines([{\"sku\": \"A1\", \"quantity\": \"2\", \"price\": \"1.5\"}])\n    assert lines[0].unit_price == 1.5\n\n// Identifiers:\n// symbol: test_parse_lines_reads_price\n// types: A1\n// calls: test_parse_lines_reads_price, lines, parse_lines, price\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 1985,
+    "identifiers": {
+      "defined_symbol": "test_parse_lines_reads_price",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "test_parse_lines_reads_price",
+        "lines",
+        "parse_lines",
+        "price"
+      ],
+      "referenced_types": [
+        "A1"
+      ]
+    },
+    "index": 21,
+    "metadata": {
+      "content_hash": "ec83c76ad9bb1116",
+      "end_byte": 1985,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": null,
+      "start_byte": 1838,
+      "symbol": "test_parse_lines_reads_price",
+      "visibility": "Private"
+    },
+    "start_offset": 1838,
+    "text": "Language: python\nsymbol: test_parse_lines_reads_price\nSymbol: test_parse_lines_reads_price\nkind: Function\nSignature: def test_parse_lines_reads_price():\n [skeleton]\ndef test_parse_lines_reads_price():\n\n// Key identifiers:\n// defined: test_parse_lines_reads_price\n// types: A1\n"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 97,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 22,
+    "metadata": {
+      "content_hash": "cef824e330a2d054",
+      "end_byte": 97,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": null,
+      "start_byte": 0,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 0,
+    "text": "Language: python\nkind: top_level\n\n\"\"\"Order intake service.\n\nValidates incoming orders and hands them to the fulfilment queue.\n\"\"\"\n"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 292,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 23,
+    "metadata": {
+      "content_hash": "722a48924ae739bf",
+      "end_byte": 292,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": null,
+      "start_byte": 240,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 240,
+    "text": "Language: python\nkind: top_level\n\nLOGGER = logging.getLogger(__name__)\nMAX_LINES = 50"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 758,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 24,
+    "metadata": {
+      "content_hash": "bbad6c2fa7d07290",
+      "end_byte": 758,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": null,
+      "start_byte": 667,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 667,
+    "text": "Language: python\nkind: top_level\n\nclass OrderIntake:\n    \"\"\"Accept orders, validate them, and queue them for fulfilment.\"\"\"\n"
+  }
+]

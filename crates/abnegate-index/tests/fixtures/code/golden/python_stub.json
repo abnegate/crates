@@ -1,0 +1,416 @@
+[
+  {
+    "chunk_type": "FileHeader",
+    "end_offset": 47,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 0,
+    "metadata": {
+      "content_hash": "aae5ac10858a5f1f",
+      "end_byte": 47,
+      "is_generated": false,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/ledger/__init__.pyi@main",
+      "start_byte": 0,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 0,
+    "text": "path: github://acme/widgets/src/ledger/__init__.pyi@main\nkind: file_header\n\nfrom typing import Iterable, Optional, overload"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 427,
+    "identifiers": {
+      "defined_symbol": "Ledger",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "__init__",
+        "credit",
+        "debit",
+        "history"
+      ],
+      "referenced_types": [
+        "Ledger",
+        "None",
+        "Optional"
+      ]
+    },
+    "index": 1,
+    "metadata": {
+      "content_hash": "fb5c5d5751d7a568",
+      "end_byte": 427,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Class",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/ledger/__init__.pyi@main",
+      "start_byte": 49,
+      "symbol": "Ledger",
+      "visibility": "Private"
+    },
+    "start_offset": 49,
+    "text": "File: github://acme/widgets/src/ledger/__init__.pyi@main\npath: github://acme/widgets/src/ledger/__init__.pyi@main\nLanguage: python\nsymbol: Ledger\nSymbol: Ledger\nkind: Class\nSignature: class Ledger:\n\n// Imports:\nfrom typing import Iterable, Optional, overload\n\nclass Ledger:\n    name: str\n    balance: float\n    def __init__(self, name: str, opening: float = ...) -> None: ...\n    def credit(self, amount: float, memo: Optional[str] = ...) -> float: ...\n    def debit(self, amount: float, memo: Optional[str] = ...) -> float: ...\n    @overload\n    def history(self) -> list: ...\n    @overload\n    def history(self, limit: int) -> list: ...\n\n// Identifiers:\n// symbol: Ledger\n// types: Ledger, None, Optional\n// calls: __init__, credit, debit, history\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 164,
+    "identifiers": {
+      "defined_symbol": "__init__",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "__init__"
+      ],
+      "referenced_types": [
+        "None"
+      ]
+    },
+    "index": 2,
+    "metadata": {
+      "content_hash": "38a55a0687b67361",
+      "end_byte": 164,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Ledger"
+      ],
+      "path": "github://acme/widgets/src/ledger/__init__.pyi@main",
+      "start_byte": 100,
+      "symbol": "__init__",
+      "visibility": "Private"
+    },
+    "start_offset": 100,
+    "text": "File: github://acme/widgets/src/ledger/__init__.pyi@main\npath: github://acme/widgets/src/ledger/__init__.pyi@main\nLanguage: python\nsymbol: Ledger.__init__\nSymbol: Ledger.__init__\nkind: Method\nParent: Ledger\nparents: Ledger\nSignature: def __init__(self, name:\n\n// Imports:\nfrom typing import Iterable, Optional, overload\n\ndef __init__(self, name: str, opening: float = ...) -> None: ...\n\n// Identifiers:\n// symbol: __init__\n// types: None\n// calls: __init__\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 164,
+    "identifiers": {
+      "defined_symbol": "__init__",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "__init__"
+      ],
+      "referenced_types": [
+        "None"
+      ]
+    },
+    "index": 3,
+    "metadata": {
+      "content_hash": "b60deb485efdc597",
+      "end_byte": 164,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Ledger"
+      ],
+      "path": "github://acme/widgets/src/ledger/__init__.pyi@main",
+      "start_byte": 100,
+      "symbol": "__init__",
+      "visibility": "Private"
+    },
+    "start_offset": 100,
+    "text": "File: github://acme/widgets/src/ledger/__init__.pyi@main\npath: github://acme/widgets/src/ledger/__init__.pyi@main\nLanguage: python\nsymbol: Ledger.__init__\nSymbol: Ledger.__init__\nkind: Method\nParent: Ledger\nparents: Ledger\nSignature: def __init__(self, name:\n [skeleton]\ndef __init__(self, name:\n\n// Key identifiers:\n// defined: __init__\n// types: None\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 241,
+    "identifiers": {
+      "defined_symbol": "credit",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "credit"
+      ],
+      "referenced_types": [
+        "Optional"
+      ]
+    },
+    "index": 4,
+    "metadata": {
+      "content_hash": "0625ce1d8b906635",
+      "end_byte": 241,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Ledger"
+      ],
+      "path": "github://acme/widgets/src/ledger/__init__.pyi@main",
+      "start_byte": 169,
+      "symbol": "credit",
+      "visibility": "Private"
+    },
+    "start_offset": 169,
+    "text": "File: github://acme/widgets/src/ledger/__init__.pyi@main\npath: github://acme/widgets/src/ledger/__init__.pyi@main\nLanguage: python\nsymbol: Ledger.credit\nSymbol: Ledger.credit\nkind: Method\nParent: Ledger\nparents: Ledger\nSignature: def credit(self, amount:\n\n// Imports:\nfrom typing import Iterable, Optional, overload\n\ndef credit(self, amount: float, memo: Optional[str] = ...) -> float: ...\n\n// Identifiers:\n// symbol: credit\n// types: Optional\n// calls: credit\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 241,
+    "identifiers": {
+      "defined_symbol": "credit",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "credit"
+      ],
+      "referenced_types": [
+        "Optional"
+      ]
+    },
+    "index": 5,
+    "metadata": {
+      "content_hash": "ba70fe6175220895",
+      "end_byte": 241,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Ledger"
+      ],
+      "path": "github://acme/widgets/src/ledger/__init__.pyi@main",
+      "start_byte": 169,
+      "symbol": "credit",
+      "visibility": "Private"
+    },
+    "start_offset": 169,
+    "text": "File: github://acme/widgets/src/ledger/__init__.pyi@main\npath: github://acme/widgets/src/ledger/__init__.pyi@main\nLanguage: python\nsymbol: Ledger.credit\nSymbol: Ledger.credit\nkind: Method\nParent: Ledger\nparents: Ledger\nSignature: def credit(self, amount:\n [skeleton]\ndef credit(self, amount:\n\n// Key identifiers:\n// defined: credit\n// types: Optional\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 317,
+    "identifiers": {
+      "defined_symbol": "debit",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "debit"
+      ],
+      "referenced_types": [
+        "Optional"
+      ]
+    },
+    "index": 6,
+    "metadata": {
+      "content_hash": "8f594c02d4557e3f",
+      "end_byte": 317,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Ledger"
+      ],
+      "path": "github://acme/widgets/src/ledger/__init__.pyi@main",
+      "start_byte": 246,
+      "symbol": "debit",
+      "visibility": "Private"
+    },
+    "start_offset": 246,
+    "text": "File: github://acme/widgets/src/ledger/__init__.pyi@main\npath: github://acme/widgets/src/ledger/__init__.pyi@main\nLanguage: python\nsymbol: Ledger.debit\nSymbol: Ledger.debit\nkind: Method\nParent: Ledger\nparents: Ledger\nSignature: def debit(self, amount:\n\n// Imports:\nfrom typing import Iterable, Optional, overload\n\ndef debit(self, amount: float, memo: Optional[str] = ...) -> float: ...\n\n// Identifiers:\n// symbol: debit\n// types: Optional\n// calls: debit\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 317,
+    "identifiers": {
+      "defined_symbol": "debit",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "debit"
+      ],
+      "referenced_types": [
+        "Optional"
+      ]
+    },
+    "index": 7,
+    "metadata": {
+      "content_hash": "60bd75e3e2a36691",
+      "end_byte": 317,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Ledger"
+      ],
+      "path": "github://acme/widgets/src/ledger/__init__.pyi@main",
+      "start_byte": 246,
+      "symbol": "debit",
+      "visibility": "Private"
+    },
+    "start_offset": 246,
+    "text": "File: github://acme/widgets/src/ledger/__init__.pyi@main\npath: github://acme/widgets/src/ledger/__init__.pyi@main\nLanguage: python\nsymbol: Ledger.debit\nSymbol: Ledger.debit\nkind: Method\nParent: Ledger\nparents: Ledger\nSignature: def debit(self, amount:\n [skeleton]\ndef debit(self, amount:\n\n// Key identifiers:\n// defined: debit\n// types: Optional\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 427,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 8,
+    "metadata": {
+      "content_hash": "8b40f884b7a3410e",
+      "end_byte": 427,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "Ledger"
+      ],
+      "path": "github://acme/widgets/src/ledger/__init__.pyi@main",
+      "start_byte": 322,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 322,
+    "text": "@overload\n    def history(self) -> list: ...\n\n@overload\n    def history(self, limit: int) -> list: ..."
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 480,
+    "identifiers": {
+      "defined_symbol": "open_ledgers",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "open_ledgers"
+      ],
+      "referenced_types": [
+        "Iterable"
+      ]
+    },
+    "index": 9,
+    "metadata": {
+      "content_hash": "faa5fb56a7fd5e35",
+      "end_byte": 480,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/ledger/__init__.pyi@main",
+      "start_byte": 429,
+      "symbol": "open_ledgers",
+      "visibility": "Private"
+    },
+    "start_offset": 429,
+    "text": "File: github://acme/widgets/src/ledger/__init__.pyi@main\npath: github://acme/widgets/src/ledger/__init__.pyi@main\nLanguage: python\nsymbol: open_ledgers\nSymbol: open_ledgers\nkind: Function\nSignature: def open_ledgers(names:\n\n// Imports:\nfrom typing import Iterable, Optional, overload\n\ndef open_ledgers(names: Iterable[str]) -> list: ...\n\n// Identifiers:\n// symbol: open_ledgers\n// types: Iterable\n// calls: open_ledgers\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 480,
+    "identifiers": {
+      "defined_symbol": "open_ledgers",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "open_ledgers"
+      ],
+      "referenced_types": [
+        "Iterable"
+      ]
+    },
+    "index": 10,
+    "metadata": {
+      "content_hash": "9208e69add608f8e",
+      "end_byte": 480,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/ledger/__init__.pyi@main",
+      "start_byte": 429,
+      "symbol": "open_ledgers",
+      "visibility": "Private"
+    },
+    "start_offset": 429,
+    "text": "File: github://acme/widgets/src/ledger/__init__.pyi@main\npath: github://acme/widgets/src/ledger/__init__.pyi@main\nLanguage: python\nsymbol: open_ledgers\nSymbol: open_ledgers\nkind: Function\nSignature: def open_ledgers(names:\n [skeleton]\ndef open_ledgers(names:\n\n// Key identifiers:\n// defined: open_ledgers\n// types: Iterable\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 560,
+    "identifiers": {
+      "defined_symbol": "reconcile",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "reconcile"
+      ],
+      "referenced_types": [
+        "Ledger"
+      ]
+    },
+    "index": 11,
+    "metadata": {
+      "content_hash": "55a57a75674d7598",
+      "end_byte": 560,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/ledger/__init__.pyi@main",
+      "start_byte": 481,
+      "symbol": "reconcile",
+      "visibility": "Private"
+    },
+    "start_offset": 481,
+    "text": "File: github://acme/widgets/src/ledger/__init__.pyi@main\npath: github://acme/widgets/src/ledger/__init__.pyi@main\nLanguage: python\nsymbol: reconcile\nSymbol: reconcile\nkind: Function\nSignature: def reconcile(left:\n\n// Imports:\nfrom typing import Iterable, Optional, overload\n\ndef reconcile(left: Ledger, right: Ledger, tolerance: float = ...) -> bool: ...\n\n// Identifiers:\n// symbol: reconcile\n// types: Ledger\n// calls: reconcile\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 560,
+    "identifiers": {
+      "defined_symbol": "reconcile",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "reconcile"
+      ],
+      "referenced_types": [
+        "Ledger"
+      ]
+    },
+    "index": 12,
+    "metadata": {
+      "content_hash": "1ce658bcc666ed70",
+      "end_byte": 560,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/ledger/__init__.pyi@main",
+      "start_byte": 481,
+      "symbol": "reconcile",
+      "visibility": "Private"
+    },
+    "start_offset": 481,
+    "text": "File: github://acme/widgets/src/ledger/__init__.pyi@main\npath: github://acme/widgets/src/ledger/__init__.pyi@main\nLanguage: python\nsymbol: reconcile\nSymbol: reconcile\nkind: Function\nSignature: def reconcile(left:\n [skeleton]\ndef reconcile(left:\n\n// Key identifiers:\n// defined: reconcile\n// types: Ledger\n"
+  }
+]

@@ -1,0 +1,10 @@
+Release notes for widgets 1.4.
+
+The checkout flow now validates postcodes before asking for payment. Customers who
+enter an invalid postcode see the error next to the field instead of at the top of
+the page.
+
+Known issues: the wishlist export still uses the old date format. A fix is planned
+for the next minor release! Questions? Ask in the support channel.
+
+Thanks to everyone who reported bugs this cycle.

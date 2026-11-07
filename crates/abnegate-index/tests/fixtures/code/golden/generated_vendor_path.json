@@ -1,0 +1,56 @@
+[
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 1373,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 0,
+    "metadata": {
+      "content_hash": "ac95243bcedae7ac",
+      "end_byte": 1373,
+      "is_generated": true,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/vendor/catalog/server.go@main",
+      "start_byte": 0,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 0,
+    "text": "File: github://acme/widgets/vendor/catalog/server.go@main\npath: github://acme/widgets/vendor/catalog/server.go@main\n// Package catalog serves the product catalog over HTTP.\npackage catalog\n\nimport (\n\t\"encoding/json\"\n\t\"net/http\"\n\t\"sync\"\n\t\"testing\"\n)\n\n// Product is one catalog entry.\ntype Product struct {\n\tID    string  `json:\"id\"`\n\tName  string  `json:\"name\"`\n\tPrice float64 `json:\"price\"`\n}\n\n// Store keeps products in memory.\ntype Store struct {\n\tmu       sync.RWMutex\n\tproducts map[string]Product\n}\n\n// Lister lists products.\ntype Lister interface {\n\tList() []Product\n}\n\n// NewStore creates an empty store.\nfunc NewStore() *Store {\n\treturn &Store{products: make(map[string]Product)}\n}\n\n// Put inserts or replaces a product.\nfunc (s *Store) Put(product Product) {\n\ts.mu.Lock()\n\tdefer s.mu.Unlock()\n\ts.products[product.ID] = product\n}\n\n// List returns every product.\nfunc (s *Store) List() []Product {\n\ts.mu.RLock()\n\tdefer s.mu.RUnlock()\n\tout := make([]Product, 0, len(s.products))\n\tfor _, product := range s.products {\n\t\tout = append(out, product)\n\t}\n\treturn out\n}\n\nfunc handleList(lister Lister) http.HandlerFunc {\n\treturn func(writer http.ResponseWriter, request *http.Request) {\n\t\twriter.Header().Set(\"Content-Type\", \"application/json\")\n\t\t_ = json.NewEncoder(writer).Encode(lister.List())\n\t}\n}\n\nfunc TestStorePutThenList(t *testing.T) {\n\tstore := NewStore()\n\tstore.Put(Product{ID: \"a\", Name: \"Anchor\", Price: 3.5})\n\tif len(store.List()) != 1 {\n\t\tt.Fatal(\"expected one product\")\n\t}\n}\n"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 1373,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 1,
+    "metadata": {
+      "content_hash": "bedf6444418ac8cd",
+      "end_byte": 1373,
+      "is_generated": true,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/vendor/catalog/server.go@main",
+      "start_byte": 1169,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 1169,
+    "text": "File: github://acme/widgets/vendor/catalog/server.go@main\npath: github://acme/widgets/vendor/catalog/server.go@main\nr.List())\n\t}\n}\n\nfunc TestStorePutThenList(t *testing.T) {\n\tstore := NewStore()\n\tstore.Put(Product{ID: \"a\", Name: \"Anchor\", Price: 3.5})\n\tif len(store.List()) != 1 {\n\t\tt.Fatal(\"expected one product\")\n\t}\n}\n"
+  }
+]
