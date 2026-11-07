@@ -1,3 +1,11 @@
+use std::io::BufRead;
+use std::io::BufReader;
+use std::io::ErrorKind;
+use std::io::Write;
+use std::net::TcpListener;
+use std::time::Duration;
+
+use base64::engine::general_purpose::STANDARD;
 use chrono::TimeDelta;
 use serde_json::Value;
 use serde_json::json;
@@ -550,14 +558,14 @@ async fn an_explicit_proxy_carries_every_request() {
     );
 }
 
-const PROXY_USERNAME: &str = "svc-zone";
+const PROXY_USERNAME: &str = "svc-login";
 /// Written as a URL would escape `@`, which no layer may unescape.
 const PROXY_PASSWORD: &str = "pr0xy%40not-a-real-password";
-/// `svc-zone:pr0xy%40not-a-real-password`, as HTTP Basic carries it.
-const PROXY_AUTHORIZATION: &str = "Basic c3ZjLXpvbmU6cHIweHklNDBub3QtYS1yZWFsLXBhc3N3b3Jk";
+const PROXY_AUTHORIZATION: &str = "Basic c3ZjLWxvZ2luOnByMHh5JTQwbm90LWEtcmVhbC1wYXNzd29yZA==";
 
-/// A port nothing listens on: the first, which no service may bind unprivileged.
+const LOOPBACK_HTTPS_TOKEN: &str = "https://127.0.0.1:9/v1/oauth/token";
 const NOTHING_LISTENS: &str = "http://127.0.0.1:1";
+const STAND_IN_PATIENCE: Duration = Duration::from_secs(10);
 
 fn proxied(proxy: &str) -> Client {
     Client::new(unresolvable())
@@ -677,14 +685,14 @@ async fn an_unreachable_authenticated_proxy_fails_without_repeating_its_sign_in(
 
 #[test]
 fn a_username_escaping_a_colon_is_sent_as_written() {
-    let proxy = std::net::TcpListener::bind("127.0.0.1:0").expect("a stand-in proxy");
+    let proxy = TcpListener::bind("127.0.0.1:0").expect("a stand-in proxy");
     let address = proxy.local_addr().expect("its address");
     let accepting = std::thread::spawn(move || first_request(&proxy));
     let client = Client::new(unresolvable())
         .and_then(|client| {
             client.with_authenticated_proxy(
                 &format!("http://{address}"),
-                "svc%3Azone",
+                "svc%3Alogin",
                 PROXY_PASSWORD.to_string(),
             )
         })
@@ -696,23 +704,27 @@ fn a_username_escaping_a_colon_is_sent_as_written() {
         .expect("a runtime");
     let _ =
         runtime.block_on(client.exchange(&code(), &verifier(), Scope::Inference, Redirect::Paste));
-    let request = accepting.join().expect("the stand-in proxy");
+    let request = accepting
+        .join()
+        .expect("the stand-in proxy")
+        .expect("the client reached the proxy");
 
     assert_eq!(
         sent_credentials(&request).as_deref(),
-        Some(format!("svc%3Azone:{PROXY_PASSWORD}").as_str()),
+        Some(format!("svc%3Alogin:{PROXY_PASSWORD}").as_str()),
         "{request}"
     );
 }
 
-/// A token endpoint on https is reached through a `CONNECT` tunnel, and the
-/// sign-in goes on that request alone.
 #[test]
 fn a_tunnel_through_an_authenticated_proxy_carries_the_sign_in() {
-    let proxy = std::net::TcpListener::bind("127.0.0.1:0").expect("a stand-in proxy");
+    let proxy = TcpListener::bind("127.0.0.1:0").expect("a stand-in proxy");
     let address = proxy.local_addr().expect("its address");
     let accepting = std::thread::spawn(move || first_request(&proxy));
-    let client = Client::new(Endpoints::default())
+    let endpoints = Endpoints::default()
+        .with_token(LOOPBACK_HTTPS_TOKEN)
+        .expect("a loopback https token endpoint");
+    let client = Client::new(endpoints)
         .and_then(|client| {
             client.with_authenticated_proxy(
                 &format!("http://{address}"),
@@ -729,7 +741,10 @@ fn a_tunnel_through_an_authenticated_proxy_carries_the_sign_in() {
     let error = runtime
         .block_on(client.exchange(&code(), &verifier(), Scope::Inference, Redirect::Paste))
         .expect_err("a refused tunnel");
-    let request = accepting.join().expect("the stand-in proxy");
+    let request = accepting
+        .join()
+        .expect("the stand-in proxy")
+        .expect("the client reached the proxy");
 
     assert!(request.starts_with("CONNECT "), "{request}");
     assert_eq!(
@@ -769,13 +784,28 @@ async fn a_proxy_given_afterwards_without_credentials_is_sent_none() {
     );
 }
 
-/// The head of the first request `proxy` is sent, answered with a 407.
-fn first_request(proxy: &std::net::TcpListener) -> String {
-    use std::io::BufRead;
-    use std::io::Write;
-
-    let (stream, _) = proxy.accept().expect("a request");
-    let mut reader = std::io::BufReader::new(stream.try_clone().expect("the stream"));
+/// The head of the first request `proxy` is sent, answered with a 407, or
+/// `None` when nothing came within [`STAND_IN_PATIENCE`].
+fn first_request(proxy: &TcpListener) -> Option<String> {
+    proxy.set_nonblocking(true).expect("a pollable listener");
+    let deadline = std::time::Instant::now() + STAND_IN_PATIENCE;
+    let stream = loop {
+        match proxy.accept() {
+            Ok((stream, _)) => break stream,
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                if std::time::Instant::now() >= deadline {
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(_) => return None,
+        }
+    };
+    stream.set_nonblocking(false).expect("a blocking stream");
+    stream
+        .set_read_timeout(Some(STAND_IN_PATIENCE))
+        .expect("a read timeout");
+    let mut reader = BufReader::new(stream.try_clone().expect("the stream"));
     let mut head = String::new();
     loop {
         let mut line = String::new();
@@ -788,23 +818,63 @@ fn first_request(proxy: &std::net::TcpListener) -> String {
     let _ = stream.write_all(
         b"HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"proxy\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
     );
-    head
+    Some(head)
 }
 
-/// The `username:password` a request's `Proxy-Authorization` carries.
 fn sent_credentials(request: &str) -> Option<String> {
-    use base64::Engine;
-
     let encoded = request.lines().find_map(|line| {
         let (name, value) = line.split_once(':')?;
         name.eq_ignore_ascii_case("proxy-authorization")
             .then(|| value.trim().strip_prefix("Basic ").map(str::to_string))
             .flatten()
     })?;
-    let decoded = base64::engine::general_purpose::STANDARD
-        .decode(encoded)
-        .ok()?;
+    let decoded = STANDARD.decode(encoded).ok()?;
     String::from_utf8(decoded).ok()
+}
+
+#[test]
+fn an_empty_username_and_password_are_sent_as_such() {
+    let proxy = TcpListener::bind("127.0.0.1:0").expect("a stand-in proxy");
+    let address = proxy.local_addr().expect("its address");
+    let accepting = std::thread::spawn(move || first_request(&proxy));
+    let client = Client::new(unresolvable())
+        .and_then(|client| {
+            client.with_authenticated_proxy(&format!("http://{address}"), "", String::new())
+        })
+        .expect("empty credentials");
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime");
+    let _ =
+        runtime.block_on(client.exchange(&code(), &verifier(), Scope::Inference, Redirect::Paste));
+    let request = accepting
+        .join()
+        .expect("the stand-in proxy")
+        .expect("the client reached the proxy");
+
+    assert_eq!(
+        sent_credentials(&request).as_deref(),
+        Some(":"),
+        "{request}"
+    );
+}
+
+#[test]
+fn credentials_holding_a_control_character_are_refused() {
+    for (username, password) in [("svc-login", "pr0xy\n"), ("svc\tlogin", PROXY_PASSWORD)] {
+        let refused = Client::new(unresolvable()).and_then(|client| {
+            client.with_authenticated_proxy("http://127.0.0.1:3128", username, password.to_string())
+        });
+
+        let error = refused.expect_err("a control character");
+        assert!(
+            matches!(error, LoginError::Endpoint { name: "proxy", .. }),
+            "{error:?}"
+        );
+        holds_no_proxy_secret(&format!("{error} {error:?}"));
+    }
 }
 
 #[test]
@@ -833,7 +903,7 @@ fn a_username_http_basic_cannot_carry_is_refused() {
     let refused = Client::new(unresolvable()).and_then(|client| {
         client.with_authenticated_proxy(
             "http://127.0.0.1:3128",
-            "svc:zone",
+            "svc:login",
             PROXY_PASSWORD.to_string(),
         )
     });

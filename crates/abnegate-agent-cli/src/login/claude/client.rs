@@ -46,6 +46,7 @@ const PROXY: &str = "proxy";
 const BASIC_SCHEME: &str = "Basic ";
 const BASIC_SEPARATOR: char = ':';
 const USERNAME_REFUSED: &str = "a proxy username cannot hold a colon";
+const CONTROL_REFUSED: &str = "a proxy username or password cannot hold a control character";
 const CREDENTIALS_REFUSED: &str = "the proxy's username and password cannot be sent";
 
 /// Exchanges a sign-in's code for [`Tokens`], and renews them, at the
@@ -133,9 +134,11 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// [`LoginError::Endpoint`] naming the `proxy` when its URL is refused or
-    /// `username` holds a colon, which HTTP Basic cannot carry, and
-    /// [`LoginError::Transport`] when the HTTP client cannot be built.
+    /// [`LoginError::Endpoint`] naming the `proxy` when its URL is refused,
+    /// `username` holds a colon or either holds a control character, which
+    /// HTTP Basic cannot carry, or, defensively, when the header cannot be
+    /// built, which base64 never causes. [`LoginError::Transport`] when the
+    /// HTTP client cannot be built.
     pub fn with_authenticated_proxy(
         self,
         proxy: &str,
@@ -143,21 +146,29 @@ impl Client {
         password: impl Into<SecretValue>,
     ) -> Result<Self, LoginError> {
         let proxy = checked(PROXY, proxy)?;
-        if username.contains(BASIC_SEPARATOR) {
-            return Err(LoginError::Endpoint {
-                name: PROXY,
-                reason: USERNAME_REFUSED.to_string(),
-            });
-        }
         let password = password.into();
-        let mut authorization = HeaderValue::from_str(&format!(
-            "{BASIC_SCHEME}{}",
-            STANDARD.encode(format!("{username}{BASIC_SEPARATOR}{}", password.expose()))
-        ))
-        .map_err(|_| LoginError::Endpoint {
+        let refused = |reason: &str| LoginError::Endpoint {
             name: PROXY,
-            reason: CREDENTIALS_REFUSED.to_string(),
-        })?;
+            reason: reason.to_string(),
+        };
+        if username.contains(BASIC_SEPARATOR) {
+            return Err(refused(USERNAME_REFUSED));
+        }
+        if username
+            .chars()
+            .chain(password.expose().chars())
+            .any(char::is_control)
+        {
+            return Err(refused(CONTROL_REFUSED));
+        }
+        let credentials =
+            SecretValue::new(format!("{username}{BASIC_SEPARATOR}{}", password.expose()));
+        let encoded = SecretValue::new(format!(
+            "{BASIC_SCHEME}{}",
+            STANDARD.encode(credentials.expose())
+        ));
+        let mut authorization =
+            HeaderValue::from_str(encoded.expose()).map_err(|_| refused(CREDENTIALS_REFUSED))?;
         authorization.set_sensitive(true);
         Ok(Self {
             http: http(Some((&proxy, Some(authorization))))?,
