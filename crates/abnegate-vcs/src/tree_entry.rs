@@ -1,5 +1,5 @@
 use crate::object_id::ObjectId;
-use crate::pull_request::TreeEntryKind;
+use crate::tree_entry_kind::TreeEntryKind;
 
 /// The modes git gives a blob that is a regular file: one not executable, and
 /// one executable. A symbolic link is a blob too, with mode `120000`.
@@ -21,7 +21,8 @@ pub struct TreeEntry {
     pub kind: TreeEntryKind,
     /// The object it points at: a blob, a tree, or a submodule's commit.
     pub sha: ObjectId,
-    /// The size of a blob in bytes, or `None` for an entry that is not one.
+    /// The size of a blob in bytes, or `None` for an entry that is not one
+    /// or whose forge did not report its size.
     pub size: Option<u64>,
 }
 

@@ -1,6 +1,6 @@
 [package]
 name = "abnegate-vcs"
-description = "Git operations over the git command line: branches, worktrees, merge-conflict reproduction, dependency discovery and GitHub pull requests"
+description = "Git operations over the git command line: branches, worktrees, merge-conflict reproduction, dependency discovery, GitHub pull requests and GitLab repository reads"
 keywords = ["git", "worktree", "merge", "pull-request", "github"]
 categories = ["development-tools"]
 readme = "README.md"
@@ -21,6 +21,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 default = []
 github = ["dep:abnegate-http", "dep:chrono", "dep:hex", "dep:hmac", "dep:reqwest", "dep:sha2"]
 github-app = ["github", "dep:jsonwebtoken"]
+gitlab = ["dep:abnegate-http", "dep:reqwest"]
 testing = []
 
 [dependencies]

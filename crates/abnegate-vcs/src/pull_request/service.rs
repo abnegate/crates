@@ -21,6 +21,8 @@ use crate::pull_request::origin::host_of;
 use crate::pull_request::rate_limit;
 use crate::pull_request::repository_detail::RepositoryDetail;
 use crate::pull_request::tally;
+use crate::redirect::MAXIMUM_REDIRECTS;
+use crate::redirect::within_origin;
 use abnegate_http::RetryAfter;
 use abnegate_secret::SecretValue;
 use abnegate_secret::sanitize;
@@ -99,9 +101,6 @@ pub(super) const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Longest a connection may take to open.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Redirects within the origin a request follows before it stops.
-const MAXIMUM_REDIRECTS: usize = 10;
-
 /// What GitHub says of a spent rate limit on a 403 that carries no header
 /// saying so.
 const RATE_LIMIT: &str = "rate limit";
@@ -139,7 +138,7 @@ pub(super) const MAXIMUM_ANSWER_BYTES: usize = 16 * 1024 * 1024;
 /// parser's own message, which quotes the answer.
 const UNREADABLE: &str = "GitHub answered in a form this crate cannot read";
 
-/// What an answer longer than [`MAXIMUM_ANSWER_BYTES`] is reported as.
+/// What an answer longer than the bound it is read within is reported as.
 const OVERSIZED: &str = "GitHub's answer was larger than this crate reads";
 
 /// What a request that is not a read is reported as when GitHub answers it
@@ -171,8 +170,8 @@ const GIT_SUFFIX: &str = ".git";
 ///   [`Self::pull_request_exists_for_branch`],
 ///   [`Self::create_pull_request`] and [`Self::create_pull_request_from`].
 /// - Reading: [`Self::fetch_pull`], [`Self::fetch_files`],
-///   [`Self::fetch_diff`], [`Self::fetch_file`], [`Self::fetch_mergeability`]
-///   and [`Self::fetch_reception`].
+///   [`Self::fetch_diff`], [`Self::fetch_file`], [`Self::fetch_contents`],
+///   [`Self::fetch_mergeability`] and [`Self::fetch_reception`].
 /// - Resolving a branch, tag or commit to the commit it names:
 ///   [`Self::resolve_commit`].
 /// - Checking: [`Self::fetch_checks`], [`Self::collect_check_runs`] and
@@ -199,7 +198,8 @@ const GIT_SUFFIX: &str = ".git";
 /// - Issues: [`Self::list_issues`], [`Self::fetch_issue`],
 ///   [`Self::list_comments`], [`Self::create_issue`], [`Self::update_issue`],
 ///   [`Self::close_issue`] and [`Self::post_comment`].
-/// - Trees and blobs: [`Self::fetch_tree`] and [`Self::fetch_blob`].
+/// - Trees and blobs: [`Self::fetch_tree`], [`Self::fetch_tree_at`] and
+///   [`Self::fetch_blob`].
 /// - Branches: [`Self::list_branches`].
 ///
 /// Review threads, resolving one, an administrator's merge, auto-merge,
@@ -274,6 +274,8 @@ const GIT_SUFFIX: &str = ".git";
 /// [`Page::next`](crate::pull_request::Page::next) which page follows. Every JSON answer,
 /// each page included, is read up to 16 MiB and never parsed in part, so a
 /// longer page is [`PullRequestError::GitHubApi`] rather than a shorter list.
+/// A git tree alone is read up to 128 MiB, because a recursive one outgrows
+/// that bound, and is refused past it the same way.
 /// [`Self::fetch_diff`], [`Self::fetch_file`] and [`Self::fetch_blob`] read
 /// only as far as the limit their caller passes, and [`Self::fetch_blob`]
 /// reports a blob past it as [`PullRequestError::TooLarge`].
@@ -938,22 +940,6 @@ pub(super) fn client(
         .https_only(https_only)
         .redirect(redirect)
         .build()?)
-}
-
-/// Reads follow a redirect only while it stays on the origin the read was sent
-/// to, and for no more than [`MAXIMUM_REDIRECTS`] hops.
-fn within_origin() -> Policy {
-    Policy::custom(|attempt| {
-        let previous = attempt.previous();
-        let within = previous
-            .first()
-            .is_some_and(|sent| sent.origin() == attempt.url().origin());
-        if within && previous.len() <= MAXIMUM_REDIRECTS {
-            attempt.follow()
-        } else {
-            attempt.stop()
-        }
-    })
 }
 
 /// Whether a request sent with `method` is a read, and so goes out on the

@@ -21,7 +21,12 @@
 //! - A rule nothing can satisfy answers `None` after a bounded search.
 //!
 //! [`Recurrence::period`] is the shortest gap between two firings, so a host
-//! that holds rules to a minimum cadence applies its own floor to it.
+//! that holds rules to a minimum cadence applies its own floor to it. Apart
+//! from an hourly rule, which counts elapsed hours, the gap is measured on the
+//! wall clock, so a daylight-saving change can bring two firings closer in
+//! elapsed time by the size of that change. The gap out of an anchor that
+//! carries whole seconds can run up to a minute shorter, because later firings
+//! drop them: an hourly rule anchored at 09:17:42.5 next fires at 10:17:00.5.
 //!
 //! ```
 //! use abnegate_recurrence::Recurrence;

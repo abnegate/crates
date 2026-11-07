@@ -1,5 +1,7 @@
 #[cfg(feature = "github")]
 use crate::parse_error::ParseError;
+#[cfg(feature = "github")]
+use crate::remote_branch_name::CURRENT;
 use crate::remote_branch_name::RemoteBranchName;
 
 /// The name `git tag` refuses, since git reads it as the checked-out commit.
@@ -9,8 +11,8 @@ const HEAD: &str = "HEAD";
 /// `refs/tags/`, and that `git tag` does not refuse for being `HEAD` or for
 /// being led by `-`.
 ///
-/// Every branch name git accepts is one too, so these are the rules any name
-/// of a ref under `refs/` is held to before it is sent as a path segment.
+/// Every name `git branch` accepts is one too, so these are the rules a commit
+/// is resolved by before its name is sent as a path segment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TagName(String);
 
@@ -31,6 +33,14 @@ impl TagName {
     /// starts with `.` or ends in `.lock`.
     pub(crate) fn refuses(value: &str) -> bool {
         RemoteBranchName::refuses(value) || value == HEAD || value.starts_with('-')
+    }
+
+    /// Whether `value` may be sent as a ref: `HEAD`, the tip of the default
+    /// branch, or a name git accepts as a tag other than `@`, git's
+    /// shorthand for `HEAD`.
+    #[cfg(feature = "github")]
+    pub(crate) fn accepts_reference(value: &str) -> bool {
+        value == HEAD || (value != CURRENT && !Self::refuses(value))
     }
 
     /// The name as git spells it.
@@ -91,6 +101,27 @@ mod tests {
             assert!(
                 TagName::refuses(name),
                 "{name:?} must not be accepted as a tag"
+            );
+        }
+    }
+
+    #[cfg(feature = "github")]
+    #[test]
+    fn a_reference_is_head_or_a_tag_name_other_than_its_shorthand() {
+        for (value, accepted) in [
+            ("HEAD", true),
+            ("main", true),
+            ("feature/x", true),
+            ("v1.2.3", true),
+            ("@", false),
+            ("-dash", false),
+            ("a..b", false),
+            ("", false),
+        ] {
+            assert_eq!(
+                TagName::accepts_reference(value),
+                accepted,
+                "{value:?} accepted as a reference"
             );
         }
     }
