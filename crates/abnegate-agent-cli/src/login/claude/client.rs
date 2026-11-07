@@ -12,10 +12,13 @@ use abnegate_http::read_capped;
 use abnegate_secret::REDACTED;
 use abnegate_secret::SecretValue;
 use abnegate_secret::redact;
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use chrono::Utc;
 use reqwest::Proxy;
 use reqwest::Url;
 use reqwest::header::ACCEPT;
+use reqwest::header::HeaderValue;
 use reqwest::redirect::Policy;
 use serde::Serialize;
 
@@ -40,8 +43,10 @@ const REFRESH_TOKEN: &str = "refresh_token";
 const UNREADABLE: &str = "Claude's token endpoint sent a grant that could not be read";
 const UNRENEWABLE: &str = "This Claude sign-in has no refresh token";
 const PROXY: &str = "proxy";
+const BASIC_SCHEME: &str = "Basic ";
 const BASIC_SEPARATOR: char = ':';
 const USERNAME_REFUSED: &str = "a proxy username cannot hold a colon";
+const CREDENTIALS_REFUSED: &str = "the proxy's username and password cannot be sent";
 
 /// Exchanges a sign-in's code for [`Tokens`], and renews them, at the
 /// [`Endpoints::token`] endpoint.
@@ -61,8 +66,6 @@ pub struct Client {
     http: reqwest::Client,
     endpoints: Endpoints,
     proxy: Option<Url>,
-    /// Kept only to scrub from what a failed request reports.
-    proxy_password: Option<SecretValue>,
 }
 
 impl fmt::Debug for Client {
@@ -87,7 +90,6 @@ impl Client {
             http: http(None)?,
             endpoints,
             proxy: None,
-            proxy_password: None,
         })
     }
 
@@ -110,7 +112,6 @@ impl Client {
         Ok(Self {
             http: http(Some((&proxy, None)))?,
             proxy: Some(proxy),
-            proxy_password: None,
             ..self
         })
     }
@@ -120,7 +121,15 @@ impl Client {
     ///
     /// The URL is checked as [`Client::with_proxy`] checks it, so credentials
     /// still may not be written in it: they are given here so they stay out of
-    /// [`Client::proxy`], `Debug` and every error.
+    /// [`Client::proxy`], `Debug` and every error. They are sent exactly as
+    /// given, a `%` included, and only to the proxy: on the request it
+    /// forwards for an `http` endpoint, and on the `CONNECT` that opens the
+    /// tunnel to an `https` one. An empty username and password are sent as
+    /// such.
+    ///
+    /// A proxy that refuses them answers a forwarded request with a 407, which
+    /// is a [`LoginError::Rejected`], and refuses a tunnel, which is a
+    /// [`LoginError::Transport`].
     ///
     /// # Errors
     ///
@@ -141,10 +150,18 @@ impl Client {
             });
         }
         let password = password.into();
+        let mut authorization = HeaderValue::from_str(&format!(
+            "{BASIC_SCHEME}{}",
+            STANDARD.encode(format!("{username}{BASIC_SEPARATOR}{}", password.expose()))
+        ))
+        .map_err(|_| LoginError::Endpoint {
+            name: PROXY,
+            reason: CREDENTIALS_REFUSED.to_string(),
+        })?;
+        authorization.set_sensitive(true);
         Ok(Self {
-            http: http(Some((&proxy, Some((username, &password)))))?,
+            http: http(Some((&proxy, Some(authorization))))?,
             proxy: Some(proxy),
-            proxy_password: Some(password),
             ..self
         })
     }
@@ -241,9 +258,6 @@ impl Client {
     }
 
     async fn grant(&self, request: &impl Serialize, sent: &[&str]) -> Result<Granted, LoginError> {
-        let mut secrets = sent.to_vec();
-        secrets.extend(self.proxy_password.as_ref().map(SecretValue::expose));
-        let sent = secrets.as_slice();
         let response = self
             .http
             .post(self.endpoints.token().clone())
@@ -276,9 +290,7 @@ impl Client {
     }
 }
 
-fn http(
-    proxy: Option<(&Url, Option<(&str, &SecretValue)>)>,
-) -> Result<reqwest::Client, LoginError> {
+fn http(proxy: Option<(&Url, Option<HeaderValue>)>) -> Result<reqwest::Client, LoginError> {
     let builder = reqwest::Client::builder()
         .timeout(TIMEOUT)
         .no_proxy()
@@ -289,7 +301,7 @@ fn http(
         Some((proxy, credentials)) => {
             let proxy = Proxy::all(proxy.clone()).map_err(|error| transport(error, &[]))?;
             builder.proxy(match credentials {
-                Some((username, password)) => proxy.basic_auth(username, password.expose()),
+                Some(authorization) => proxy.custom_http_auth(authorization),
                 None => proxy,
             })
         }

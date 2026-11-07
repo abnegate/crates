@@ -551,9 +551,13 @@ async fn an_explicit_proxy_carries_every_request() {
 }
 
 const PROXY_USERNAME: &str = "svc-zone";
-const PROXY_PASSWORD: &str = "pr0xy-not-a-real-password";
-/// `svc-zone:pr0xy-not-a-real-password`, as HTTP Basic carries it.
-const PROXY_AUTHORIZATION: &str = "Basic c3ZjLXpvbmU6cHIweHktbm90LWEtcmVhbC1wYXNzd29yZA==";
+/// Written as a URL would escape `@`, which no layer may unescape.
+const PROXY_PASSWORD: &str = "pr0xy%40not-a-real-password";
+/// `svc-zone:pr0xy%40not-a-real-password`, as HTTP Basic carries it.
+const PROXY_AUTHORIZATION: &str = "Basic c3ZjLXpvbmU6cHIweHklNDBub3QtYS1yZWFsLXBhc3N3b3Jk";
+
+/// A port nothing listens on: the first, which no service may bind unprivileged.
+const NOTHING_LISTENS: &str = "http://127.0.0.1:1";
 
 fn proxied(proxy: &str) -> Client {
     Client::new(unresolvable())
@@ -660,10 +664,7 @@ async fn a_proxy_that_refuses_the_sign_in_is_rejected_without_repeating_it() {
 
 #[tokio::test]
 async fn an_unreachable_authenticated_proxy_fails_without_repeating_its_sign_in() {
-    let unused = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
-    let address = unused.local_addr().expect("its address");
-    drop(unused);
-    let client = proxied(&format!("http://{address}"));
+    let client = proxied(NOTHING_LISTENS);
 
     let error = client
         .exchange(&code(), &verifier(), Scope::Inference, Redirect::Paste)
@@ -672,6 +673,138 @@ async fn an_unreachable_authenticated_proxy_fails_without_repeating_its_sign_in(
 
     assert!(matches!(error, LoginError::Transport(_)), "{error:?}");
     holds_no_proxy_secret(&format!("{error} {error:?}"));
+}
+
+#[test]
+fn a_username_escaping_a_colon_is_sent_as_written() {
+    let proxy = std::net::TcpListener::bind("127.0.0.1:0").expect("a stand-in proxy");
+    let address = proxy.local_addr().expect("its address");
+    let accepting = std::thread::spawn(move || first_request(&proxy));
+    let client = Client::new(unresolvable())
+        .and_then(|client| {
+            client.with_authenticated_proxy(
+                &format!("http://{address}"),
+                "svc%3Azone",
+                PROXY_PASSWORD.to_string(),
+            )
+        })
+        .expect("a username with no colon in it");
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime");
+    let _ =
+        runtime.block_on(client.exchange(&code(), &verifier(), Scope::Inference, Redirect::Paste));
+    let request = accepting.join().expect("the stand-in proxy");
+
+    assert_eq!(
+        sent_credentials(&request).as_deref(),
+        Some(format!("svc%3Azone:{PROXY_PASSWORD}").as_str()),
+        "{request}"
+    );
+}
+
+/// A token endpoint on https is reached through a `CONNECT` tunnel, and the
+/// sign-in goes on that request alone.
+#[test]
+fn a_tunnel_through_an_authenticated_proxy_carries_the_sign_in() {
+    let proxy = std::net::TcpListener::bind("127.0.0.1:0").expect("a stand-in proxy");
+    let address = proxy.local_addr().expect("its address");
+    let accepting = std::thread::spawn(move || first_request(&proxy));
+    let client = Client::new(Endpoints::default())
+        .and_then(|client| {
+            client.with_authenticated_proxy(
+                &format!("http://{address}"),
+                PROXY_USERNAME,
+                PROXY_PASSWORD.to_string(),
+            )
+        })
+        .expect("a loopback proxy");
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime");
+    let error = runtime
+        .block_on(client.exchange(&code(), &verifier(), Scope::Inference, Redirect::Paste))
+        .expect_err("a refused tunnel");
+    let request = accepting.join().expect("the stand-in proxy");
+
+    assert!(request.starts_with("CONNECT "), "{request}");
+    assert_eq!(
+        sent_credentials(&request).as_deref(),
+        Some(format!("{PROXY_USERNAME}:{PROXY_PASSWORD}").as_str()),
+        "{request}"
+    );
+    assert!(matches!(error, LoginError::Transport(_)), "{error:?}");
+    holds_no_proxy_secret(&format!("{error} {error:?}"));
+}
+
+#[tokio::test]
+async fn a_proxy_given_afterwards_without_credentials_is_sent_none() {
+    let proxy = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"access_token": ACCESS, "expires_in": GRANTED})),
+        )
+        .mount(&proxy)
+        .await;
+    let client = proxied(&proxy.uri())
+        .with_proxy(&proxy.uri())
+        .expect("the same proxy without a sign-in");
+
+    client
+        .exchange(&code(), &verifier(), Scope::Inference, Redirect::Paste)
+        .await
+        .expect("an answer");
+
+    let requests = proxy.received_requests().await.expect("recorded requests");
+    assert!(
+        requests
+            .iter()
+            .all(|request| !request.headers.contains_key("proxy-authorization")),
+        "{requests:?}"
+    );
+}
+
+/// The head of the first request `proxy` is sent, answered with a 407.
+fn first_request(proxy: &std::net::TcpListener) -> String {
+    use std::io::BufRead;
+    use std::io::Write;
+
+    let (stream, _) = proxy.accept().expect("a request");
+    let mut reader = std::io::BufReader::new(stream.try_clone().expect("the stream"));
+    let mut head = String::new();
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+            break;
+        }
+        head.push_str(&line);
+    }
+    let mut stream = stream;
+    let _ = stream.write_all(
+        b"HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"proxy\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+    );
+    head
+}
+
+/// The `username:password` a request's `Proxy-Authorization` carries.
+fn sent_credentials(request: &str) -> Option<String> {
+    use base64::Engine;
+
+    let encoded = request.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("proxy-authorization")
+            .then(|| value.trim().strip_prefix("Basic ").map(str::to_string))
+            .flatten()
+    })?;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok()?;
+    String::from_utf8(decoded).ok()
 }
 
 #[test]
