@@ -316,7 +316,8 @@ impl JobDirectory {
     }
 
     /// Opens the job's lock file, creating it when it is missing. `None` when
-    /// the directory is no longer there.
+    /// the directory is no longer there, which macOS can report as `EINVAL`
+    /// when a [discard](JobDirectory::discard) moves it during the open.
     fn open_lock(&self) -> Result<Option<File>, TrainError> {
         let path = self.path.join(LOCK_FILE);
         let mut options = OpenOptions::new();
@@ -341,6 +342,12 @@ impl JobDirectory {
         match opened {
             Ok(file) => Ok(Some(file)),
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+            Err(error)
+                if error.kind() == ErrorKind::InvalidInput
+                    && fs::symlink_metadata(&self.path).is_err() =>
+            {
+                Ok(None)
+            }
             Err(error) => Err(failed(error)),
         }
     }

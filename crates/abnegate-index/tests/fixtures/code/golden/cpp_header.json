@@ -1,0 +1,196 @@
+[
+  {
+    "chunk_type": "FileHeader",
+    "end_offset": 50,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 0,
+    "metadata": {
+      "content_hash": "bae6bd2c6cee68eb",
+      "end_byte": 50,
+      "is_generated": false,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/native/renderer.hpp@main",
+      "start_byte": 14,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 14,
+    "text": "path: github://acme/widgets/native/renderer.hpp@main\nkind: file_header\n\n// namespace widgets\n\n#include <string>\n\n#include <memory>\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 493,
+    "identifiers": {
+      "defined_symbol": "widgets",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "draw",
+        "frames",
+        "make_renderer"
+      ],
+      "referenced_types": [
+        "Renderer",
+        "ConsoleRenderer"
+      ]
+    },
+    "index": 1,
+    "metadata": {
+      "content_hash": "5198bd73fe1da566",
+      "end_byte": 493,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/native/renderer.hpp@main",
+      "start_byte": 51,
+      "symbol": "widgets",
+      "visibility": "Private"
+    },
+    "start_offset": 51,
+    "text": "File: github://acme/widgets/native/renderer.hpp@main\npath: github://acme/widgets/native/renderer.hpp@main\nLanguage: cpp\nsymbol: widgets\nSymbol: widgets\nkind: Other\nSignature: namespace widgets\n\n// Imports:\n#include <string>\n\n#include <memory>\n\nnamespace widgets {\n\nclass Renderer {\npublic:\n    virtual ~Renderer() = default;\n    virtual void draw(const std::string& label) = 0;\n    virtual std::size_t frames() const = 0;\n};\n\nclass ConsoleRenderer : public Renderer {\npublic:\n    void draw(const std::string& label) override;\n    std::size_t frames() const override { return frames_; }\n\nprivate:\n    std::size_t frames_ = 0;\n};\n\nstd::unique_ptr<Renderer> make_renderer(bool console);\n\n}\n\n// Identifiers:\n// symbol: widgets\n// types: Renderer, ConsoleRenderer\n// calls: draw, frames, make_renderer\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 230,
+    "identifiers": {
+      "defined_symbol": "Renderer",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "draw",
+        "frames"
+      ],
+      "referenced_types": [
+        "Renderer"
+      ]
+    },
+    "index": 2,
+    "metadata": {
+      "content_hash": "132251728271e37b",
+      "end_byte": 230,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "widgets"
+      ],
+      "path": "github://acme/widgets/native/renderer.hpp@main",
+      "start_byte": 72,
+      "symbol": "Renderer",
+      "visibility": "Private"
+    },
+    "start_offset": 72,
+    "text": "File: github://acme/widgets/native/renderer.hpp@main\npath: github://acme/widgets/native/renderer.hpp@main\nLanguage: cpp\nsymbol: widgets.Renderer\nSymbol: widgets.Renderer\nkind: Other\nParent: widgets\nparents: widgets\nSignature: class Renderer\n\n// Imports:\n#include <string>\n\n#include <memory>\n\nclass Renderer {\npublic:\n    virtual ~Renderer() = default;\n    virtual void draw(const std::string& label) = 0;\n    virtual std::size_t frames() const = 0;\n}\n\n// Identifiers:\n// symbol: Renderer\n// types: Renderer\n// calls: draw, frames\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 131,
+    "identifiers": {
+      "defined_symbol": "~Renderer",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": [
+        "Renderer"
+      ]
+    },
+    "index": 3,
+    "metadata": {
+      "content_hash": "87b9ef1a01815db9",
+      "end_byte": 131,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "widgets",
+        "Renderer"
+      ],
+      "path": "github://acme/widgets/native/renderer.hpp@main",
+      "start_byte": 101,
+      "symbol": "~Renderer",
+      "visibility": "Private"
+    },
+    "start_offset": 101,
+    "text": "File: github://acme/widgets/native/renderer.hpp@main\npath: github://acme/widgets/native/renderer.hpp@main\nLanguage: cpp\nsymbol: widgets.Renderer.~Renderer\nSymbol: widgets.Renderer.~Renderer\nkind: Other\nParent: widgets.Renderer\nparents: widgets.Renderer\nSignature: virtual ~Renderer() = default;\n\n// Imports:\n#include <string>\n\n#include <memory>\n\nvirtual ~Renderer() = default;\n\n// Identifiers:\n// symbol: ~Renderer\n// types: Renderer\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 433,
+    "identifiers": {
+      "defined_symbol": "ConsoleRenderer",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "draw",
+        "frames"
+      ],
+      "referenced_types": [
+        "ConsoleRenderer",
+        "Renderer"
+      ]
+    },
+    "index": 4,
+    "metadata": {
+      "content_hash": "41a261427ea81e46",
+      "end_byte": 433,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "widgets"
+      ],
+      "path": "github://acme/widgets/native/renderer.hpp@main",
+      "start_byte": 233,
+      "symbol": "ConsoleRenderer",
+      "visibility": "Private"
+    },
+    "start_offset": 233,
+    "text": "File: github://acme/widgets/native/renderer.hpp@main\npath: github://acme/widgets/native/renderer.hpp@main\nLanguage: cpp\nsymbol: widgets.ConsoleRenderer\nSymbol: widgets.ConsoleRenderer\nkind: Other\nParent: widgets\nparents: widgets\nSignature: class ConsoleRenderer : public Renderer\n\n// Imports:\n#include <string>\n\n#include <memory>\n\nclass ConsoleRenderer : public Renderer {\npublic:\n    void draw(const std::string& label) override;\n    std::size_t frames() const override { return frames_; }\n\nprivate:\n    std::size_t frames_ = 0;\n}\n\n// Identifiers:\n// symbol: ConsoleRenderer\n// types: ConsoleRenderer, Renderer\n// calls: draw, frames\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 392,
+    "identifiers": {
+      "defined_symbol": "frames",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "frames"
+      ],
+      "referenced_types": []
+    },
+    "index": 5,
+    "metadata": {
+      "content_hash": "587d182255bc3e87",
+      "end_byte": 392,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "widgets",
+        "ConsoleRenderer"
+      ],
+      "path": "github://acme/widgets/native/renderer.hpp@main",
+      "start_byte": 337,
+      "symbol": "frames",
+      "visibility": "Private"
+    },
+    "start_offset": 337,
+    "text": "File: github://acme/widgets/native/renderer.hpp@main\npath: github://acme/widgets/native/renderer.hpp@main\nLanguage: cpp\nsymbol: widgets.ConsoleRenderer.frames\nSymbol: widgets.ConsoleRenderer.frames\nkind: Other\nParent: widgets.ConsoleRenderer\nparents: widgets.ConsoleRenderer\nSignature: std::size_t frames() const override\n\n// Imports:\n#include <string>\n\n#include <memory>\n\nstd::size_t frames() const override { return frames_; }\n\n// Identifiers:\n// symbol: frames\n// calls: frames\n"
+  }
+]

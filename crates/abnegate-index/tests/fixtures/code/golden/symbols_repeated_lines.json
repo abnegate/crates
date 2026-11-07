@@ -1,0 +1,189 @@
+[
+  {
+    "chunk_type": "Body",
+    "end_offset": 1292,
+    "identifiers": {
+      "defined_symbol": "emit_banner",
+      "key_strings": [
+        "Write the same banner line many times.",
+        "\n    stream.write(",
+        ")\n    stream.write(",
+        ")\n    stream.write(",
+        ")\n    stream.write(",
+        ")\n    stream.write(",
+        ")\n    stream.write(",
+        ")\n    stream.write(",
+        ")\n    stream.write(",
+        ")\n    stream.write("
+      ],
+      "parameters": [
+        "stream"
+      ],
+      "referenced_functions": [
+        "emit_banner",
+        "banner",
+        "write",
+        "flush"
+      ],
+      "referenced_types": [
+        "Write"
+      ]
+    },
+    "index": 0,
+    "metadata": {
+      "content_hash": "d58dbae3232735c0",
+      "end_byte": 1292,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/banner.py@main",
+      "start_byte": 0,
+      "symbol": "emit_banner",
+      "visibility": "Private"
+    },
+    "start_offset": 0,
+    "text": "File: github://acme/widgets/src/banner.py@main\npath: github://acme/widgets/src/banner.py@main\nLanguage: python\nsymbol: emit_banner\nSymbol: emit_banner\nkind: Function\nSignature: def emit_banner(stream):\n\ndef emit_banner(stream):\n    \"\"\"Write the same banner line many times.\"\"\"\n    stream.write(\"= = = = = = = = = =\")\n    stream.write(\"= = = = = = = = = =\")\n    stream.write(\"= = = = = = = = = =\")\n    stream.write(\"= = = = = = = = = =\")\n    stream.write(\"= = = = = = = = = =\")\n    stream.write(\"= = = = = = = = = =\")\n    stream.write(\"= = = = = = = = = =\")\n    stream.write(\"= = = = = = = = = =\")\n    stream.write(\"= = = = = = = = = =\")\n    stream.write(\"= = = = = = = = = =\")\n    stream.write(\"= = = = = = = = = =\")\n    stream.write(\"= = = = = = = = = =\")\n    stream.write(\"= = = = = = = = = =\")\n    stream.write(\"= = = = = = = = = =\")\n    stream.write(\"= = = = = = = = = =\")\n    stream.write(\"= = = = = = = = = =\")\n    stream.write(\"= = = = = = = = = =\")\n    stream.write(\"= = = = = = = = = =\")\n    stream.write(\"= = = = = = = = = =\")\n    stream.write(\"= = = = = = = = = =\")\n    stream.write(\"= = = = = = = = = =\")\n    stream.write(\"= = = = = = = = = =\")\n    stream.write(\"= = = = = = = = = =\")\n    stream.write(\"= = = = = = = = = =\")\n    stream.write(\"= = = = = = = = = =\")\n    stream.write(\"= = = = = = = = = =\")\n    stream.write(\"= = = = = = = = = =\")\n    stream.write(\"= = = = = = = = = =\")\n    stream.write(\"= = = = = = = = = =\")\n    stream.write(\"= = = = = = = = = =\")\n    stream.flush()\n\n// Identifiers:\n// symbol: emit_banner\n// params: stream\n// types: Write\n// calls: emit_banner, banner, write, flush\n// keys: Write the same banner line many times., \n    stream.write(, )\n    stream.write(, )\n    stream.write(, )\n    stream.write(, )\n    stream.write(, )\n    stream.write(, )\n    stream.write(, )\n    stream.write(, )\n    stream.write(\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 1292,
+    "identifiers": {
+      "defined_symbol": "emit_banner",
+      "key_strings": [
+        "Write the same banner line many times.",
+        "\n    stream.write(",
+        ")\n    stream.write(",
+        ")\n    stream.write(",
+        ")\n    stream.write(",
+        ")\n    stream.write(",
+        ")\n    stream.write(",
+        ")\n    stream.write(",
+        ")\n    stream.write(",
+        ")\n    stream.write("
+      ],
+      "parameters": [
+        "stream"
+      ],
+      "referenced_functions": [
+        "emit_banner",
+        "banner",
+        "write",
+        "flush"
+      ],
+      "referenced_types": [
+        "Write"
+      ]
+    },
+    "index": 1,
+    "metadata": {
+      "content_hash": "819a7114f96340b0",
+      "end_byte": 1292,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/banner.py@main",
+      "start_byte": 0,
+      "symbol": "emit_banner",
+      "visibility": "Private"
+    },
+    "start_offset": 0,
+    "text": "File: github://acme/widgets/src/banner.py@main\npath: github://acme/widgets/src/banner.py@main\nLanguage: python\nsymbol: emit_banner\nSymbol: emit_banner\nkind: Function\nSignature: def emit_banner(stream):\n [skeleton]\ndef emit_banner(stream):\n\n// Key identifiers:\n// defined: emit_banner\n// params: stream\n// types: Write\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1418,
+    "identifiers": {
+      "defined_symbol": "emit_footer",
+      "key_strings": [],
+      "parameters": [
+        "stream"
+      ],
+      "referenced_functions": [
+        "emit_footer",
+        "write",
+        "flush"
+      ],
+      "referenced_types": []
+    },
+    "index": 2,
+    "metadata": {
+      "content_hash": "74b221dc3a250d44",
+      "end_byte": 1418,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/banner.py@main",
+      "start_byte": 1295,
+      "symbol": "emit_footer",
+      "visibility": "Private"
+    },
+    "start_offset": 1295,
+    "text": "File: github://acme/widgets/src/banner.py@main\npath: github://acme/widgets/src/banner.py@main\nLanguage: python\nsymbol: emit_footer\nSymbol: emit_footer\nkind: Function\nSignature: def emit_footer(stream):\n\ndef emit_footer(stream):\n    stream.write(\"= = = = = = = = = =\")\n    stream.write(\"= = = = = = = = = =\")\n    stream.flush()\n\n// Identifiers:\n// symbol: emit_footer\n// params: stream\n// calls: emit_footer, write, flush\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 1418,
+    "identifiers": {
+      "defined_symbol": "emit_footer",
+      "key_strings": [],
+      "parameters": [
+        "stream"
+      ],
+      "referenced_functions": [
+        "emit_footer",
+        "write",
+        "flush"
+      ],
+      "referenced_types": []
+    },
+    "index": 3,
+    "metadata": {
+      "content_hash": "f97627e7f8efbebe",
+      "end_byte": 1418,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/banner.py@main",
+      "start_byte": 1295,
+      "symbol": "emit_footer",
+      "visibility": "Private"
+    },
+    "start_offset": 1295,
+    "text": "File: github://acme/widgets/src/banner.py@main\npath: github://acme/widgets/src/banner.py@main\nLanguage: python\nsymbol: emit_footer\nSymbol: emit_footer\nkind: Function\nSignature: def emit_footer(stream):\n [skeleton]\ndef emit_footer(stream):\n\n// Key identifiers:\n// defined: emit_footer\n// params: stream\n"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 1768,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 4,
+    "metadata": {
+      "content_hash": "31a5fffdcfe351c9",
+      "end_byte": 1768,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/banner.py@main",
+      "start_byte": 1420,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 1420,
+    "text": "File: github://acme/widgets/src/banner.py@main\npath: github://acme/widgets/src/banner.py@main\nLanguage: python\nkind: top_level\n\nRULE = \"- - - - - - - - - -\"\nRULE = \"- - - - - - - - - -\"\nRULE = \"- - - - - - - - - -\"\nRULE = \"- - - - - - - - - -\"\nRULE = \"- - - - - - - - - -\"\nRULE = \"- - - - - - - - - -\"\nRULE = \"- - - - - - - - - -\"\nRULE = \"- - - - - - - - - -\"\nRULE = \"- - - - - - - - - -\"\nRULE = \"- - - - - - - - - -\"\nRULE = \"- - - - - - - - - -\"\nRULE = \"- - - - - - - - - -\""
+  }
+]

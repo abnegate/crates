@@ -1,0 +1,422 @@
+[
+  {
+    "chunk_type": "FileHeader",
+    "end_offset": 0,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 0,
+    "metadata": {
+      "content_hash": "165ed80776d34a7a",
+      "end_byte": 0,
+      "is_generated": false,
+      "is_test": false,
+      "kind": null,
+      "module": "pub mod outer {\n    pub mod middle {\n        pub mod inner {\n            pub fn deepest(value: u32) -> u32 {\n                value.wrapping_mul(31).wrapping_add(7)\n            }\n\n            pub struct InnerState {\n                pub counter: u64,\n            }\n        }\n\n        pub fn middle_helper(values: &[u32]) -> u32 {\n            values.iter().map(|value| inner::deepest(*value)).sum()\n        }\n    }\n\n    pub fn outer_entry() -> u32 {\n        middle::middle_helper(&[1, 2, 3])\n    }\n}",
+      "parents": [],
+      "path": "github://acme/widgets/src/outer.rs@main",
+      "start_byte": 0,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 0,
+    "text": "path: github://acme/widgets/src/outer.rs@main\nkind: file_header\n\npub mod outer {\n    pub mod middle {\n        pub mod inner {\n            pub fn deepest(value: u32) -> u32 {\n                value.wrapping_mul(31).wrapping_add(7)\n            }\n\n            pub struct InnerState {\n                pub counter: u64,\n            }\n        }\n\n        pub fn middle_helper(values: &[u32]) -> u32 {\n            values.iter().map(|value| inner::deepest(*value)).sum()\n        }\n    }\n\n    pub fn outer_entry() -> u32 {\n        middle::middle_helper(&[1, 2, 3])\n    }\n}\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 496,
+    "identifiers": {
+      "defined_symbol": "outer",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "deepest",
+        "wrapping_mul",
+        "wrapping_add",
+        "middle_helper",
+        "iter",
+        "map",
+        "sum",
+        "outer_entry"
+      ],
+      "referenced_types": [
+        "InnerState"
+      ]
+    },
+    "index": 1,
+    "metadata": {
+      "content_hash": "0cc335225055eb78",
+      "end_byte": 496,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Module",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/outer.rs@main",
+      "start_byte": 0,
+      "symbol": "outer",
+      "visibility": "Public"
+    },
+    "start_offset": 0,
+    "text": "File: github://acme/widgets/src/outer.rs@main\npath: github://acme/widgets/src/outer.rs@main\nLanguage: rust\nsymbol: outer\nSymbol: outer\nkind: Module\nSignature: pub mod outer\n\npub mod outer {\n    pub mod middle {\n        pub mod inner {\n            pub fn deepest(value: u32) -> u32 {\n                value.wrapping_mul(31).wrapping_add(7)\n            }\n\n            pub struct InnerState {\n                pub counter: u64,\n            }\n        }\n\n        pub fn middle_helper(values: &[u32]) -> u32 {\n            values.iter().map(|value| inner::deepest(*value)).sum()\n        }\n    }\n\n    pub fn outer_entry() -> u32 {\n        middle::middle_helper(&[1, 2, 3])\n    }\n}\n\n// Identifiers:\n// symbol: outer\n// types: InnerState\n// calls: deepest, wrapping_mul, wrapping_add, middle_helper, iter, map, sum, outer_entry\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 411,
+    "identifiers": {
+      "defined_symbol": "middle",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "deepest",
+        "wrapping_mul",
+        "wrapping_add",
+        "middle_helper",
+        "iter",
+        "map",
+        "sum"
+      ],
+      "referenced_types": [
+        "InnerState"
+      ]
+    },
+    "index": 2,
+    "metadata": {
+      "content_hash": "8f64f0726cd41376",
+      "end_byte": 411,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Module",
+      "module": null,
+      "parents": [
+        "outer"
+      ],
+      "path": "github://acme/widgets/src/outer.rs@main",
+      "start_byte": 20,
+      "symbol": "middle",
+      "visibility": "Public"
+    },
+    "start_offset": 20,
+    "text": "File: github://acme/widgets/src/outer.rs@main\npath: github://acme/widgets/src/outer.rs@main\nLanguage: rust\nsymbol: outer.middle\nSymbol: outer.middle\nkind: Module\nParent: outer\nparents: outer\nSignature: pub mod middle\n\npub mod middle {\n        pub mod inner {\n            pub fn deepest(value: u32) -> u32 {\n                value.wrapping_mul(31).wrapping_add(7)\n            }\n\n            pub struct InnerState {\n                pub counter: u64,\n            }\n        }\n\n        pub fn middle_helper(values: &[u32]) -> u32 {\n            values.iter().map(|value| inner::deepest(*value)).sum()\n        }\n    }\n\n// Identifiers:\n// symbol: middle\n// types: InnerState\n// calls: deepest, wrapping_mul, wrapping_add, middle_helper, iter, map, sum\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 272,
+    "identifiers": {
+      "defined_symbol": "inner",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "deepest",
+        "wrapping_mul",
+        "wrapping_add"
+      ],
+      "referenced_types": [
+        "InnerState"
+      ]
+    },
+    "index": 3,
+    "metadata": {
+      "content_hash": "9b15bb5600b07445",
+      "end_byte": 272,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Module",
+      "module": null,
+      "parents": [
+        "outer",
+        "middle"
+      ],
+      "path": "github://acme/widgets/src/outer.rs@main",
+      "start_byte": 45,
+      "symbol": "inner",
+      "visibility": "Public"
+    },
+    "start_offset": 45,
+    "text": "File: github://acme/widgets/src/outer.rs@main\npath: github://acme/widgets/src/outer.rs@main\nLanguage: rust\nsymbol: outer.middle.inner\nSymbol: outer.middle.inner\nkind: Module\nParent: outer.middle\nparents: outer.middle\nSignature: pub mod inner\n\npub mod inner {\n            pub fn deepest(value: u32) -> u32 {\n                value.wrapping_mul(31).wrapping_add(7)\n            }\n\n            pub struct InnerState {\n                pub counter: u64,\n            }\n        }\n\n// Identifiers:\n// symbol: inner\n// types: InnerState\n// calls: deepest, wrapping_mul, wrapping_add\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 177,
+    "identifiers": {
+      "defined_symbol": "deepest",
+      "key_strings": [],
+      "parameters": [
+        "value",
+        "u32"
+      ],
+      "referenced_functions": [
+        "deepest",
+        "wrapping_mul",
+        "wrapping_add"
+      ],
+      "referenced_types": []
+    },
+    "index": 4,
+    "metadata": {
+      "content_hash": "310ed8db63159339",
+      "end_byte": 177,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "outer",
+        "middle",
+        "inner"
+      ],
+      "path": "github://acme/widgets/src/outer.rs@main",
+      "start_byte": 73,
+      "symbol": "deepest",
+      "visibility": "Public"
+    },
+    "start_offset": 73,
+    "text": "File: github://acme/widgets/src/outer.rs@main\npath: github://acme/widgets/src/outer.rs@main\nLanguage: rust\nsymbol: outer.middle.inner.deepest\nSymbol: outer.middle.inner.deepest\nkind: Method\nParent: outer.middle.inner\nparents: outer.middle.inner\nSignature: pub fn deepest(value: u32) -> u32\n\npub fn deepest(value: u32) -> u32 {\n                value.wrapping_mul(31).wrapping_add(7)\n            }\n\n// Identifiers:\n// symbol: deepest\n// params: value, u32\n// calls: deepest, wrapping_mul, wrapping_add\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 177,
+    "identifiers": {
+      "defined_symbol": "deepest",
+      "key_strings": [],
+      "parameters": [
+        "value",
+        "u32"
+      ],
+      "referenced_functions": [
+        "deepest",
+        "wrapping_mul",
+        "wrapping_add"
+      ],
+      "referenced_types": []
+    },
+    "index": 5,
+    "metadata": {
+      "content_hash": "dc5811eadf94bb2e",
+      "end_byte": 177,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "outer",
+        "middle",
+        "inner"
+      ],
+      "path": "github://acme/widgets/src/outer.rs@main",
+      "start_byte": 73,
+      "symbol": "deepest",
+      "visibility": "Public"
+    },
+    "start_offset": 73,
+    "text": "File: github://acme/widgets/src/outer.rs@main\npath: github://acme/widgets/src/outer.rs@main\nLanguage: rust\nsymbol: outer.middle.inner.deepest\nSymbol: outer.middle.inner.deepest\nkind: Method\nParent: outer.middle.inner\nparents: outer.middle.inner\nSignature: pub fn deepest(value: u32) -> u32\n [skeleton]\npub fn deepest(value: u32) -> u32\n\n// Key identifiers:\n// defined: deepest\n// params: value, u32\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 262,
+    "identifiers": {
+      "defined_symbol": "InnerState",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": [
+        "InnerState"
+      ]
+    },
+    "index": 6,
+    "metadata": {
+      "content_hash": "1debd72e3e5ee80d",
+      "end_byte": 262,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Struct",
+      "module": null,
+      "parents": [
+        "outer",
+        "middle",
+        "inner"
+      ],
+      "path": "github://acme/widgets/src/outer.rs@main",
+      "start_byte": 191,
+      "symbol": "InnerState",
+      "visibility": "Public"
+    },
+    "start_offset": 191,
+    "text": "File: github://acme/widgets/src/outer.rs@main\npath: github://acme/widgets/src/outer.rs@main\nLanguage: rust\nsymbol: outer.middle.inner.InnerState\nSymbol: outer.middle.inner.InnerState\nkind: Struct\nParent: outer.middle.inner\nparents: outer.middle.inner\nSignature: pub struct InnerState\n\npub struct InnerState {\n                pub counter: u64,\n            }\n\n// Identifiers:\n// symbol: InnerState\n// types: InnerState\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 405,
+    "identifiers": {
+      "defined_symbol": "middle_helper",
+      "key_strings": [],
+      "parameters": [
+        "values",
+        "u32"
+      ],
+      "referenced_functions": [
+        "middle_helper",
+        "iter",
+        "map",
+        "deepest",
+        "sum"
+      ],
+      "referenced_types": []
+    },
+    "index": 7,
+    "metadata": {
+      "content_hash": "a463967a4fdf37fa",
+      "end_byte": 405,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "outer",
+        "middle"
+      ],
+      "path": "github://acme/widgets/src/outer.rs@main",
+      "start_byte": 282,
+      "symbol": "middle_helper",
+      "visibility": "Public"
+    },
+    "start_offset": 282,
+    "text": "File: github://acme/widgets/src/outer.rs@main\npath: github://acme/widgets/src/outer.rs@main\nLanguage: rust\nsymbol: outer.middle.middle_helper\nSymbol: outer.middle.middle_helper\nkind: Method\nParent: outer.middle\nparents: outer.middle\nSignature: pub fn middle_helper(values: &[u32]) -> u32\n\npub fn middle_helper(values: &[u32]) -> u32 {\n            values.iter().map(|value| inner::deepest(*value)).sum()\n        }\n\n// Identifiers:\n// symbol: middle_helper\n// params: values, u32\n// calls: middle_helper, iter, map, deepest, sum\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 405,
+    "identifiers": {
+      "defined_symbol": "middle_helper",
+      "key_strings": [],
+      "parameters": [
+        "values",
+        "u32"
+      ],
+      "referenced_functions": [
+        "middle_helper",
+        "iter",
+        "map",
+        "deepest",
+        "sum"
+      ],
+      "referenced_types": []
+    },
+    "index": 8,
+    "metadata": {
+      "content_hash": "fad00437cc00e2a1",
+      "end_byte": 405,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "outer",
+        "middle"
+      ],
+      "path": "github://acme/widgets/src/outer.rs@main",
+      "start_byte": 282,
+      "symbol": "middle_helper",
+      "visibility": "Public"
+    },
+    "start_offset": 282,
+    "text": "File: github://acme/widgets/src/outer.rs@main\npath: github://acme/widgets/src/outer.rs@main\nLanguage: rust\nsymbol: outer.middle.middle_helper\nSymbol: outer.middle.middle_helper\nkind: Method\nParent: outer.middle\nparents: outer.middle\nSignature: pub fn middle_helper(values: &[u32]) -> u32\n [skeleton]\npub fn middle_helper(values: &[u32]) -> u32\n\n// Key identifiers:\n// defined: middle_helper\n// params: values, u32\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 494,
+    "identifiers": {
+      "defined_symbol": "outer_entry",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "outer_entry",
+        "middle_helper"
+      ],
+      "referenced_types": []
+    },
+    "index": 9,
+    "metadata": {
+      "content_hash": "6642031735c8e4a1",
+      "end_byte": 494,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "outer"
+      ],
+      "path": "github://acme/widgets/src/outer.rs@main",
+      "start_byte": 417,
+      "symbol": "outer_entry",
+      "visibility": "Public"
+    },
+    "start_offset": 417,
+    "text": "File: github://acme/widgets/src/outer.rs@main\npath: github://acme/widgets/src/outer.rs@main\nLanguage: rust\nsymbol: outer.outer_entry\nSymbol: outer.outer_entry\nkind: Method\nParent: outer\nparents: outer\nSignature: pub fn outer_entry() -> u32\n\npub fn outer_entry() -> u32 {\n        middle::middle_helper(&[1, 2, 3])\n    }\n\n// Identifiers:\n// symbol: outer_entry\n// calls: outer_entry, middle_helper\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 494,
+    "identifiers": {
+      "defined_symbol": "outer_entry",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "outer_entry",
+        "middle_helper"
+      ],
+      "referenced_types": []
+    },
+    "index": 10,
+    "metadata": {
+      "content_hash": "c8b65be5342a3b0f",
+      "end_byte": 494,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "outer"
+      ],
+      "path": "github://acme/widgets/src/outer.rs@main",
+      "start_byte": 417,
+      "symbol": "outer_entry",
+      "visibility": "Public"
+    },
+    "start_offset": 417,
+    "text": "File: github://acme/widgets/src/outer.rs@main\npath: github://acme/widgets/src/outer.rs@main\nLanguage: rust\nsymbol: outer.outer_entry\nSymbol: outer.outer_entry\nkind: Method\nParent: outer\nparents: outer\nSignature: pub fn outer_entry() -> u32\n [skeleton]\npub fn outer_entry() -> u32\n\n// Key identifiers:\n// defined: outer_entry\n"
+  },
+  {
+    "chunk_type": "ApiSurface",
+    "end_offset": 496,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": [
+        "outer"
+      ]
+    },
+    "index": 11,
+    "metadata": {
+      "content_hash": "a00d12050d191a88",
+      "end_byte": 496,
+      "is_generated": false,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/outer.rs@main",
+      "start_byte": 0,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 0,
+    "text": "path: github://acme/widgets/src/outer.rs@main\nkind: api_surface\n\n// Public API:\n\npub mod outer\n\n"
+  }
+]

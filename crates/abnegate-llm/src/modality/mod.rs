@@ -32,6 +32,7 @@ mod model3d_provider;
 mod model3d_request;
 mod model3d_response;
 mod music_request;
+mod rerank_provider;
 mod response_format;
 mod sound_effect_request;
 mod structured_response;
@@ -73,6 +74,7 @@ pub use crate::modality::model3d_provider::Model3DProvider;
 pub use crate::modality::model3d_request::Model3DRequest;
 pub use crate::modality::model3d_response::Model3DResponse;
 pub use crate::modality::music_request::MusicRequest;
+pub use crate::modality::rerank_provider::RerankProvider;
 pub use crate::modality::response_format::ResponseFormat;
 pub use crate::modality::sound_effect_request::SoundEffectRequest;
 pub use crate::modality::structured_response::StructuredResponse;
@@ -296,6 +298,25 @@ mod tests {
     }
 
     #[async_trait]
+    impl RerankProvider for Everything {
+        fn name(&self) -> &str {
+            "everything"
+        }
+
+        async fn rerank(
+            &self,
+            _query: &str,
+            _documents: &[String],
+        ) -> Result<Vec<f32>, ProviderError> {
+            Err(ProviderError::unsupported("rerank"))
+        }
+
+        async fn score(&self, _query: &str, _document: &str) -> Result<f32, ProviderError> {
+            Err(ProviderError::unsupported("score"))
+        }
+    }
+
+    #[async_trait]
     impl TranscriptionProvider for Everything {
         fn name(&self) -> &str {
             "everything"
@@ -319,6 +340,14 @@ mod tests {
         let _model3d: Box<dyn Model3DProvider> = Box::new(Everything);
         let _embedding: Box<dyn EmbeddingProvider> = Box::new(Everything);
         let _transcription: Box<dyn TranscriptionProvider> = Box::new(Everything);
+        let _rerank: Box<dyn RerankProvider> = Box::new(Everything);
+    }
+
+    #[test]
+    fn a_rerank_provider_reports_its_name_as_its_model_by_default() {
+        let rerank: Box<dyn RerankProvider> = Box::new(Everything);
+
+        assert_eq!(rerank.model(), "everything");
     }
 
     #[test]

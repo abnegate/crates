@@ -1,0 +1,201 @@
+[
+  {
+    "chunk_type": "Body",
+    "end_offset": 405,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [
+        "1.4.0",
+        "tsc -p .",
+        "^18.3.1",
+        "^3.23.8"
+      ],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 0,
+    "metadata": {
+      "content_hash": "d5293e8bad239fe5",
+      "end_byte": 405,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/package.json@main",
+      "start_byte": 0,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 0,
+    "text": "File: github://acme/widgets/package.json@main\npath: github://acme/widgets/package.json@main\nLanguage: json\nkind: Other\nSignature: {\n\n{\n  \"name\": \"widgets\",\n  \"version\": \"1.4.0\",\n  \"scripts\": {\n    \"build\": \"tsc -p .\",\n    \"test\": \"vitest run\",\n    \"lint\": \"eslint src\"\n  },\n  \"dependencies\": {\n    \"react\": \"^18.3.1\",\n    \"zod\": \"^3.23.8\"\n  },\n  \"features\": [\n    { \"id\": \"checkout\", \"enabled\": true, \"rollout\": 0.5 },\n    { \"id\": \"wishlist\", \"enabled\": false, \"rollout\": 0 }\n  ],\n  \"nested\": { \"deep\": { \"deeper\": { \"value\": null } } }\n}"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 405,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [
+        "1.4.0",
+        "tsc -p .",
+        "^18.3.1",
+        "^3.23.8"
+      ],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 1,
+    "metadata": {
+      "content_hash": "1f5aa2a2c4d49561",
+      "end_byte": 405,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/package.json@main",
+      "start_byte": 0,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 0,
+    "text": "File: github://acme/widgets/package.json@main\npath: github://acme/widgets/package.json@main\nLanguage: json\nkind: Other\nSignature: {\n [skeleton]\n{\n\n// Key identifiers:\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 209,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 2,
+    "metadata": {
+      "content_hash": "57b35b8d4c3adad4",
+      "end_byte": 209,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/package.json@main",
+      "start_byte": 58,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 58,
+    "text": "{\n    \"build\": \"tsc -p .\",\n    \"test\": \"vitest run\",\n    \"lint\": \"eslint src\"\n  }\n\n{\n    \"react\": \"^18.3.1\",\n    \"zod\": \"^3.23.8\"\n  }"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 346,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 3,
+    "metadata": {
+      "content_hash": "d804df90fc83ffd2",
+      "end_byte": 346,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/package.json@main",
+      "start_byte": 225,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 225,
+    "text": "File: github://acme/widgets/package.json@main\npath: github://acme/widgets/package.json@main\nLanguage: json\nkind: Other\nSignature: [\n\n[\n    { \"id\": \"checkout\", \"enabled\": true, \"rollout\": 0.5 },\n    { \"id\": \"wishlist\", \"enabled\": false, \"rollout\": 0 }\n  ]"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 346,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 4,
+    "metadata": {
+      "content_hash": "b43f33e5ba37cf9f",
+      "end_byte": 346,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/package.json@main",
+      "start_byte": 225,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 225,
+    "text": "File: github://acme/widgets/package.json@main\npath: github://acme/widgets/package.json@main\nLanguage: json\nkind: Other\nSignature: [\n [skeleton]\n[\n\n// Key identifiers:\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 342,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 5,
+    "metadata": {
+      "content_hash": "0e3ace0558d03434",
+      "end_byte": 342,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/package.json@main",
+      "start_byte": 231,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 231,
+    "text": "{ \"id\": \"checkout\", \"enabled\": true, \"rollout\": 0.5 }\n\n{ \"id\": \"wishlist\", \"enabled\": false, \"rollout\": 0 }"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 403,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 6,
+    "metadata": {
+      "content_hash": "84f77390d3e7cb3e",
+      "end_byte": 403,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/package.json@main",
+      "start_byte": 360,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 360,
+    "text": "File: github://acme/widgets/package.json@main\npath: github://acme/widgets/package.json@main\nLanguage: json\nkind: Other\nSignature: { \"deep\": { \"deeper\": { \"value\": null } } }\n\n{ \"deep\": { \"deeper\": { \"value\": null } } }"
+  }
+]

@@ -1,0 +1,29 @@
+[
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 166,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 0,
+    "metadata": {
+      "content_hash": "d0ba65a9b3701199",
+      "end_byte": 166,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/layout.rs@main",
+      "start_byte": 0,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 0,
+    "text": "File: github://acme/widgets/src/layout.rs@main\npath: github://acme/widgets/src/layout.rs@main\nLanguage: rust\nkind: top_level\n\n// This file intentionally holds only comments.\n// It documents the layout of the widgets crate.\n\n/* Block comment describing\n   the module tree. */\n\n// End of file."
+  }
+]

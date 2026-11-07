@@ -1,0 +1,666 @@
+[
+  {
+    "chunk_type": "FileHeader",
+    "end_offset": 79,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 0,
+    "metadata": {
+      "content_hash": "a2cbaab885ab799e",
+      "end_byte": 79,
+      "is_generated": false,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/status/poller.js@main",
+      "start_byte": 0,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 0,
+    "text": "path: github://acme/widgets/src/status/poller.js@main\nkind: file_header\n\n/**\n * Polls a status endpoint and emits changes.\n */\n\nimport { EventEmitter } from 'events';\nimport fetchJson from './fetch-json.js';"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 110,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": [
+        "DEFAULT_TIMEOUT"
+      ]
+    },
+    "index": 1,
+    "metadata": {
+      "content_hash": "3c69121d4d7f2e67",
+      "end_byte": 110,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/status/poller.js@main",
+      "start_byte": 81,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 81,
+    "text": "File: github://acme/widgets/src/status/poller.js@main\npath: github://acme/widgets/src/status/poller.js@main\nLanguage: javascript\nkind: Other\nSignature: const DEFAULT_TIMEOUT = 2500;\n\n// Imports:\nimport { EventEmitter } from 'events';\nimport fetchJson from './fetch-json.js';\n\nconst DEFAULT_TIMEOUT = 2500;\n\n// Identifiers:\n// types: DEFAULT_TIMEOUT\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 787,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "constructor",
+        "super",
+        "start",
+        "setInterval",
+        "poll",
+        "stop",
+        "clearInterval",
+        "fetchJson",
+        "emit"
+      ],
+      "referenced_types": [
+        "StatusPoller",
+        "EventEmitter",
+        "DEFAULT_TIMEOUT"
+      ]
+    },
+    "index": 2,
+    "metadata": {
+      "content_hash": "6ae34bbb0fcfe1f4",
+      "end_byte": 787,
+      "is_generated": false,
+      "is_test": true,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/status/poller.js@main",
+      "start_byte": 166,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 166,
+    "text": "File: github://acme/widgets/src/status/poller.js@main\npath: github://acme/widgets/src/status/poller.js@main\nLanguage: javascript\nkind: Other\nSignature: export class StatusPoller extends EventEmitter\n\n/**\n * Polls a status endpoint and emits changes.\n */\n// Imports:\nimport { EventEmitter } from 'events';\n\nexport class StatusPoller extends EventEmitter {\n  constructor(url, interval = 1000) {\n    super();\n    this.url = url;\n    this.interval = interval;\n    this.timer = null;\n    this.lastStatus = null;\n  }\n\n  start() {\n    if (this.timer) {\n      return;\n    }\n    this.timer = setInterval(() => this.poll(), this.interval);\n  }\n\n  stop() {\n    clearInterval(this.timer);\n    this.timer = null;\n  }\n\n  async poll() {\n    const body = await fetchJson(this.url, { timeout: DEFAULT_TIMEOUT });\n    if (body.status !== this.lastStatus) {\n      this.lastStatus = body.status;\n      this.emit('change', body.status);\n    }\n  }\n}\n\n// Identifiers:\n// types: StatusPoller, EventEmitter, DEFAULT_TIMEOUT\n// calls: constructor, super, start, setInterval, poll, stop, clearInterval, fetchJson, emit\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 787,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "constructor",
+        "super",
+        "start",
+        "setInterval",
+        "poll",
+        "stop",
+        "clearInterval",
+        "fetchJson",
+        "emit"
+      ],
+      "referenced_types": [
+        "StatusPoller",
+        "EventEmitter",
+        "DEFAULT_TIMEOUT"
+      ]
+    },
+    "index": 3,
+    "metadata": {
+      "content_hash": "b3ef729701c34c47",
+      "end_byte": 787,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/status/poller.js@main",
+      "start_byte": 166,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 166,
+    "text": "File: github://acme/widgets/src/status/poller.js@main\npath: github://acme/widgets/src/status/poller.js@main\nLanguage: javascript\nkind: Other\nSignature: export class StatusPoller extends EventEmitter\n [skeleton]\n/**\n * Polls a status endpoint and emits changes.\n */\nexport class StatusPoller extends EventEmitter\n\n// Key identifiers:\n// types: StatusPoller, EventEmitter, DEFAULT_TIMEOUT\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 787,
+    "identifiers": {
+      "defined_symbol": "StatusPoller",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "constructor",
+        "super",
+        "start",
+        "setInterval",
+        "poll",
+        "stop",
+        "clearInterval",
+        "fetchJson",
+        "emit"
+      ],
+      "referenced_types": [
+        "StatusPoller",
+        "EventEmitter",
+        "DEFAULT_TIMEOUT"
+      ]
+    },
+    "index": 4,
+    "metadata": {
+      "content_hash": "c6a610d2fa474b76",
+      "end_byte": 787,
+      "is_generated": false,
+      "is_test": true,
+      "kind": "Class",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/status/poller.js@main",
+      "start_byte": 173,
+      "symbol": "StatusPoller",
+      "visibility": "Private"
+    },
+    "start_offset": 173,
+    "text": "File: github://acme/widgets/src/status/poller.js@main\npath: github://acme/widgets/src/status/poller.js@main\nLanguage: javascript\nsymbol: StatusPoller\nSymbol: StatusPoller\nkind: Class\nSignature: class StatusPoller extends EventEmitter\n\n// Imports:\nimport { EventEmitter } from 'events';\n\nclass StatusPoller extends EventEmitter {\n  constructor(url, interval = 1000) {\n    super();\n    this.url = url;\n    this.interval = interval;\n    this.timer = null;\n    this.lastStatus = null;\n  }\n\n  start() {\n    if (this.timer) {\n      return;\n    }\n    this.timer = setInterval(() => this.poll(), this.interval);\n  }\n\n  stop() {\n    clearInterval(this.timer);\n    this.timer = null;\n  }\n\n  async poll() {\n    const body = await fetchJson(this.url, { timeout: DEFAULT_TIMEOUT });\n    if (body.status !== this.lastStatus) {\n      this.lastStatus = body.status;\n      this.emit('change', body.status);\n    }\n  }\n}\n\n// Identifiers:\n// symbol: StatusPoller\n// types: StatusPoller, EventEmitter, DEFAULT_TIMEOUT\n// calls: constructor, super, start, setInterval, poll, stop, clearInterval, fetchJson, emit\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 370,
+    "identifiers": {
+      "defined_symbol": "constructor",
+      "key_strings": [],
+      "parameters": [
+        "url",
+        "interval"
+      ],
+      "referenced_functions": [
+        "constructor",
+        "super"
+      ],
+      "referenced_types": []
+    },
+    "index": 5,
+    "metadata": {
+      "content_hash": "60e41ed5932d78fd",
+      "end_byte": 370,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "StatusPoller"
+      ],
+      "path": "github://acme/widgets/src/status/poller.js@main",
+      "start_byte": 217,
+      "symbol": "constructor",
+      "visibility": "Private"
+    },
+    "start_offset": 217,
+    "text": "File: github://acme/widgets/src/status/poller.js@main\npath: github://acme/widgets/src/status/poller.js@main\nLanguage: javascript\nsymbol: StatusPoller.constructor\nSymbol: StatusPoller.constructor\nkind: Method\nParent: StatusPoller\nparents: StatusPoller\nSignature: constructor(url, interval = 1000)\n\n// Imports:\nimport { EventEmitter } from 'events';\nimport fetchJson from './fetch-json.js';\n\nconstructor(url, interval = 1000) {\n    super();\n    this.url = url;\n    this.interval = interval;\n    this.timer = null;\n    this.lastStatus = null;\n  }\n\n// Identifiers:\n// symbol: constructor\n// params: url, interval\n// calls: constructor, super\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 370,
+    "identifiers": {
+      "defined_symbol": "constructor",
+      "key_strings": [],
+      "parameters": [
+        "url",
+        "interval"
+      ],
+      "referenced_functions": [
+        "constructor",
+        "super"
+      ],
+      "referenced_types": []
+    },
+    "index": 6,
+    "metadata": {
+      "content_hash": "cca31d3d11185747",
+      "end_byte": 370,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "StatusPoller"
+      ],
+      "path": "github://acme/widgets/src/status/poller.js@main",
+      "start_byte": 217,
+      "symbol": "constructor",
+      "visibility": "Private"
+    },
+    "start_offset": 217,
+    "text": "File: github://acme/widgets/src/status/poller.js@main\npath: github://acme/widgets/src/status/poller.js@main\nLanguage: javascript\nsymbol: StatusPoller.constructor\nSymbol: StatusPoller.constructor\nkind: Method\nParent: StatusPoller\nparents: StatusPoller\nSignature: constructor(url, interval = 1000)\n [skeleton]\nconstructor(url, interval = 1000)\n\n// Key identifiers:\n// defined: constructor\n// params: url, interval\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 493,
+    "identifiers": {
+      "defined_symbol": "start",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "start",
+        "setInterval",
+        "poll"
+      ],
+      "referenced_types": []
+    },
+    "index": 7,
+    "metadata": {
+      "content_hash": "5d6de1cb06e164d5",
+      "end_byte": 493,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "StatusPoller"
+      ],
+      "path": "github://acme/widgets/src/status/poller.js@main",
+      "start_byte": 374,
+      "symbol": "start",
+      "visibility": "Private"
+    },
+    "start_offset": 374,
+    "text": "File: github://acme/widgets/src/status/poller.js@main\npath: github://acme/widgets/src/status/poller.js@main\nLanguage: javascript\nsymbol: StatusPoller.start\nSymbol: StatusPoller.start\nkind: Method\nParent: StatusPoller\nparents: StatusPoller\nSignature: start()\n\n// Imports:\nimport { EventEmitter } from 'events';\nimport fetchJson from './fetch-json.js';\n\nstart() {\n    if (this.timer) {\n      return;\n    }\n    this.timer = setInterval(() => this.poll(), this.interval);\n  }\n\n// Identifiers:\n// symbol: start\n// calls: start, setInterval, poll\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 493,
+    "identifiers": {
+      "defined_symbol": "start",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "start",
+        "setInterval",
+        "poll"
+      ],
+      "referenced_types": []
+    },
+    "index": 8,
+    "metadata": {
+      "content_hash": "a8d9a406e1801947",
+      "end_byte": 493,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "StatusPoller"
+      ],
+      "path": "github://acme/widgets/src/status/poller.js@main",
+      "start_byte": 374,
+      "symbol": "start",
+      "visibility": "Private"
+    },
+    "start_offset": 374,
+    "text": "File: github://acme/widgets/src/status/poller.js@main\npath: github://acme/widgets/src/status/poller.js@main\nLanguage: javascript\nsymbol: StatusPoller.start\nSymbol: StatusPoller.start\nkind: Method\nParent: StatusPoller\nparents: StatusPoller\nSignature: start()\n [skeleton]\nstart()\n\n// Key identifiers:\n// defined: start\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 472,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [
+        "poll"
+      ],
+      "referenced_functions": [
+        "poll"
+      ],
+      "referenced_types": []
+    },
+    "index": 9,
+    "metadata": {
+      "content_hash": "d0e3ac7febc36567",
+      "end_byte": 472,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "StatusPoller",
+        "start"
+      ],
+      "path": "github://acme/widgets/src/status/poller.js@main",
+      "start_byte": 455,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 455,
+    "text": "File: github://acme/widgets/src/status/poller.js@main\npath: github://acme/widgets/src/status/poller.js@main\nLanguage: javascript\nkind: Method\nParent: StatusPoller.start\nparents: StatusPoller.start\nSignature: () => this.poll()\n\n// Imports:\nimport { EventEmitter } from 'events';\nimport fetchJson from './fetch-json.js';\n\n() => this.poll()\n\n// Identifiers:\n// params: poll\n// calls: poll\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 563,
+    "identifiers": {
+      "defined_symbol": "stop",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "stop",
+        "clearInterval"
+      ],
+      "referenced_types": []
+    },
+    "index": 10,
+    "metadata": {
+      "content_hash": "11425f83d7ebd0f5",
+      "end_byte": 563,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "StatusPoller"
+      ],
+      "path": "github://acme/widgets/src/status/poller.js@main",
+      "start_byte": 497,
+      "symbol": "stop",
+      "visibility": "Private"
+    },
+    "start_offset": 497,
+    "text": "File: github://acme/widgets/src/status/poller.js@main\npath: github://acme/widgets/src/status/poller.js@main\nLanguage: javascript\nsymbol: StatusPoller.stop\nSymbol: StatusPoller.stop\nkind: Method\nParent: StatusPoller\nparents: StatusPoller\nSignature: stop()\n\n// Imports:\nimport { EventEmitter } from 'events';\nimport fetchJson from './fetch-json.js';\n\nstop() {\n    clearInterval(this.timer);\n    this.timer = null;\n  }\n\n// Identifiers:\n// symbol: stop\n// calls: stop, clearInterval\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 563,
+    "identifiers": {
+      "defined_symbol": "stop",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "stop",
+        "clearInterval"
+      ],
+      "referenced_types": []
+    },
+    "index": 11,
+    "metadata": {
+      "content_hash": "f917b45b7470f4b2",
+      "end_byte": 563,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "StatusPoller"
+      ],
+      "path": "github://acme/widgets/src/status/poller.js@main",
+      "start_byte": 497,
+      "symbol": "stop",
+      "visibility": "Private"
+    },
+    "start_offset": 497,
+    "text": "File: github://acme/widgets/src/status/poller.js@main\npath: github://acme/widgets/src/status/poller.js@main\nLanguage: javascript\nsymbol: StatusPoller.stop\nSymbol: StatusPoller.stop\nkind: Method\nParent: StatusPoller\nparents: StatusPoller\nSignature: stop()\n [skeleton]\nstop()\n\n// Key identifiers:\n// defined: stop\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 785,
+    "identifiers": {
+      "defined_symbol": "poll",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "poll",
+        "fetchJson",
+        "emit"
+      ],
+      "referenced_types": [
+        "DEFAULT_TIMEOUT"
+      ]
+    },
+    "index": 12,
+    "metadata": {
+      "content_hash": "a3144b208d4319a5",
+      "end_byte": 785,
+      "is_generated": false,
+      "is_test": true,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "StatusPoller"
+      ],
+      "path": "github://acme/widgets/src/status/poller.js@main",
+      "start_byte": 567,
+      "symbol": "poll",
+      "visibility": "Private"
+    },
+    "start_offset": 567,
+    "text": "File: github://acme/widgets/src/status/poller.js@main\npath: github://acme/widgets/src/status/poller.js@main\nLanguage: javascript\nsymbol: StatusPoller.poll\nSymbol: StatusPoller.poll\nkind: Method\nParent: StatusPoller\nparents: StatusPoller\nSignature: async poll()\n\n// Imports:\nimport { EventEmitter } from 'events';\nimport fetchJson from './fetch-json.js';\n\nasync poll() {\n    const body = await fetchJson(this.url, { timeout: DEFAULT_TIMEOUT });\n    if (body.status !== this.lastStatus) {\n      this.lastStatus = body.status;\n      this.emit('change', body.status);\n    }\n  }\n\n// Identifiers:\n// symbol: poll\n// types: DEFAULT_TIMEOUT\n// calls: poll, fetchJson, emit\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 785,
+    "identifiers": {
+      "defined_symbol": "poll",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "poll",
+        "fetchJson",
+        "emit"
+      ],
+      "referenced_types": [
+        "DEFAULT_TIMEOUT"
+      ]
+    },
+    "index": 13,
+    "metadata": {
+      "content_hash": "eca683b5b20fb35c",
+      "end_byte": 785,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "StatusPoller"
+      ],
+      "path": "github://acme/widgets/src/status/poller.js@main",
+      "start_byte": 567,
+      "symbol": "poll",
+      "visibility": "Private"
+    },
+    "start_offset": 567,
+    "text": "File: github://acme/widgets/src/status/poller.js@main\npath: github://acme/widgets/src/status/poller.js@main\nLanguage: javascript\nsymbol: StatusPoller.poll\nSymbol: StatusPoller.poll\nkind: Method\nParent: StatusPoller\nparents: StatusPoller\nSignature: async poll()\n [skeleton]\nasync poll()\n\n// Key identifiers:\n// defined: poll\n// types: DEFAULT_TIMEOUT\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 655,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "fetchJson"
+      ],
+      "referenced_types": [
+        "DEFAULT_TIMEOUT"
+      ]
+    },
+    "index": 14,
+    "metadata": {
+      "content_hash": "3f7491f7830037ac",
+      "end_byte": 655,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "StatusPoller",
+        "poll"
+      ],
+      "path": "github://acme/widgets/src/status/poller.js@main",
+      "start_byte": 586,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 586,
+    "text": "File: github://acme/widgets/src/status/poller.js@main\npath: github://acme/widgets/src/status/poller.js@main\nLanguage: javascript\nkind: Other\nParent: StatusPoller.poll\nparents: StatusPoller.poll\nSignature: const body = await fetchJson(this.url,\n\n// Imports:\nimport { EventEmitter } from 'events';\nimport fetchJson from './fetch-json.js';\n\nconst body = await fetchJson(this.url, { timeout: DEFAULT_TIMEOUT });\n\n// Identifiers:\n// types: DEFAULT_TIMEOUT\n// calls: fetchJson\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 865,
+    "identifiers": {
+      "defined_symbol": "formatStatus",
+      "key_strings": [],
+      "parameters": [
+        "status"
+      ],
+      "referenced_functions": [
+        "formatStatus"
+      ],
+      "referenced_types": []
+    },
+    "index": 15,
+    "metadata": {
+      "content_hash": "f0b472cae6a888ca",
+      "end_byte": 865,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/status/poller.js@main",
+      "start_byte": 789,
+      "symbol": "formatStatus",
+      "visibility": "Private"
+    },
+    "start_offset": 789,
+    "text": "File: github://acme/widgets/src/status/poller.js@main\npath: github://acme/widgets/src/status/poller.js@main\nLanguage: javascript\nsymbol: formatStatus\nSymbol: formatStatus\nkind: Function\nSignature: function formatStatus(status)\n\n// Imports:\nimport { EventEmitter } from 'events';\nimport fetchJson from './fetch-json.js';\n\nfunction formatStatus(status) {\n  return `status: ${status ?? 'unknown'}`;\n}\n\n// Identifiers:\n// symbol: formatStatus\n// params: status\n// calls: formatStatus\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 865,
+    "identifiers": {
+      "defined_symbol": "formatStatus",
+      "key_strings": [],
+      "parameters": [
+        "status"
+      ],
+      "referenced_functions": [
+        "formatStatus"
+      ],
+      "referenced_types": []
+    },
+    "index": 16,
+    "metadata": {
+      "content_hash": "ef3fefd28a3850ba",
+      "end_byte": 865,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/status/poller.js@main",
+      "start_byte": 789,
+      "symbol": "formatStatus",
+      "visibility": "Private"
+    },
+    "start_offset": 789,
+    "text": "File: github://acme/widgets/src/status/poller.js@main\npath: github://acme/widgets/src/status/poller.js@main\nLanguage: javascript\nsymbol: formatStatus\nSymbol: formatStatus\nkind: Function\nSignature: function formatStatus(status)\n [skeleton]\nfunction formatStatus(status)\n\n// Key identifiers:\n// defined: formatStatus\n// params: status\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1120,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [
+        "status",
+        "formatStatus",
+        "toUpperCase"
+      ],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 17,
+    "metadata": {
+      "content_hash": "e8d5034a3d769c92",
+      "end_byte": 1120,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/status/poller.js@main",
+      "start_byte": 867,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 867,
+    "text": "const describeStatus = (status) => formatStatus(status).toUpperCase();\n\nexport { formatStatus, describeStatus };\n\n() => {\n  it('falls back to unknown', () => {\n    expect(formatStatus(undefined)).toBe('status: unknown');\n  });\n}"
+  },
+  {
+    "chunk_type": "ApiSurface",
+    "end_offset": 979,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 18,
+    "metadata": {
+      "content_hash": "8b30510e8396aba2",
+      "end_byte": 979,
+      "is_generated": false,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/status/poller.js@main",
+      "start_byte": 166,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 166,
+    "text": "path: github://acme/widgets/src/status/poller.js@main\nkind: api_surface\n\n// Public API:\n\n/**\nexport class StatusPoller extends EventEmitter\n\nexport\n\n"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 166,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 19,
+    "metadata": {
+      "content_hash": "5ac2028a3e8dc9e9",
+      "end_byte": 166,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/status/poller.js@main",
+      "start_byte": 112,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 112,
+    "text": "File: github://acme/widgets/src/status/poller.js@main\npath: github://acme/widgets/src/status/poller.js@main\nLanguage: javascript\nkind: top_level\n\n/**\n * Polls a status endpoint and emits changes.\n */"
+  }
+]

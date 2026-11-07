@@ -1,0 +1,1247 @@
+[
+  {
+    "chunk_type": "FileHeader",
+    "end_offset": 211,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 0,
+    "metadata": {
+      "content_hash": "cfdbde65d5b05105",
+      "end_byte": 211,
+      "is_generated": false,
+      "is_test": false,
+      "kind": null,
+      "module": "mod tests {\n    use super::*;\n\n    #[test]\n    fn reserve_reduces_availability() {\n        let warehouse = Warehouse::new();\n        warehouse.restock(7, \"bolts\", 10).unwrap();\n        assert_eq!(warehouse.reserve(7, 4).unwrap(), 6);\n        assert_eq!(warehouse.available(7), Some(6));\n    }\n}",
+      "parents": [],
+      "path": "github://acme/widgets/src/inventory/warehouse.rs@main",
+      "start_byte": 107,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 107,
+    "text": "path: github://acme/widgets/src/inventory/warehouse.rs@main\nkind: file_header\n\n//! Inventory bookkeeping for the widget warehouse.\n\n\nmod tests {\n    use super::*;\n\n    #[test]\n    fn reserve_reduces_availability() {\n        let warehouse = Warehouse::new();\n        warehouse.restock(7, \"bolts\", 10).unwrap();\n        assert_eq!(warehouse.reserve(7, 4).unwrap(), 6);\n        assert_eq!(warehouse.available(7), Some(6));\n    }\n}\nuse std::collections::HashMap;\nuse std::fmt;\nuse std::sync::{Arc, Mutex};\nuse crate::error::StockError;"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 563,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "DEFAULT_BINS",
+        "GLOBAL_COUNTER",
+        "BinId",
+        "Bin"
+      ],
+      "referenced_types": [
+        "DEFAULT_BINS",
+        "GLOBAL_COUNTER",
+        "AtomicCounter",
+        "BinId",
+        "Bin",
+        "BinId",
+        "String"
+      ]
+    },
+    "index": 1,
+    "metadata": {
+      "content_hash": "63797b3cfd30161c",
+      "end_byte": 563,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/inventory/warehouse.rs@main",
+      "start_byte": 265,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 265,
+    "text": "/// Default number of bins a warehouse starts with.\n\npub const DEFAULT_BINS: usize = 16;\n\nstatic GLOBAL_COUNTER: AtomicCounter = AtomicCounter::new();\n\npub type BinId = u32;\n\npub struct Bin {\n    pub id: BinId,\n    pub label: String,\n    quantity: u64,\n    reserved: u64,\n}"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 740,
+    "identifiers": {
+      "defined_symbol": "ReservationError",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": [
+        "ReservationError",
+        "UnknownBin",
+        "BinId",
+        "Insufficient",
+        "Locked"
+      ]
+    },
+    "index": 2,
+    "metadata": {
+      "content_hash": "ec6f36a82a136a85",
+      "end_byte": 740,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Enum",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/inventory/warehouse.rs@main",
+      "start_byte": 623,
+      "symbol": "ReservationError",
+      "visibility": "Public"
+    },
+    "start_offset": 623,
+    "text": "File: github://acme/widgets/src/inventory/warehouse.rs@main\npath: github://acme/widgets/src/inventory/warehouse.rs@main\nLanguage: rust\nsymbol: ReservationError\nSymbol: ReservationError\nkind: Enum\nSignature: pub enum ReservationError\n\n// Imports:\nuse std::collections::HashMap;\nuse std::fmt;\nuse std::sync::{Arc, Mutex};\nuse crate::error::StockError;\n\npub enum ReservationError {\n    UnknownBin(BinId),\n    Insufficient { requested: u64, available: u64 },\n    Locked,\n}\n\n// Identifiers:\n// symbol: ReservationError\n// types: ReservationError, UnknownBin, BinId, Insufficient, Locked\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 740,
+    "identifiers": {
+      "defined_symbol": "ReservationError",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": [
+        "ReservationError",
+        "UnknownBin",
+        "BinId",
+        "Insufficient",
+        "Locked"
+      ]
+    },
+    "index": 3,
+    "metadata": {
+      "content_hash": "49c9f552d714fc56",
+      "end_byte": 740,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Enum",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/inventory/warehouse.rs@main",
+      "start_byte": 623,
+      "symbol": "ReservationError",
+      "visibility": "Public"
+    },
+    "start_offset": 623,
+    "text": "File: github://acme/widgets/src/inventory/warehouse.rs@main\npath: github://acme/widgets/src/inventory/warehouse.rs@main\nLanguage: rust\nsymbol: ReservationError\nSymbol: ReservationError\nkind: Enum\nSignature: pub enum ReservationError\n [skeleton]\npub enum ReservationError\n\n// Key identifiers:\n// defined: ReservationError\n// types: ReservationError, UnknownBin, BinId, Insufficient, Locked\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1199,
+    "identifiers": {
+      "defined_symbol": "ReservationError",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "fmt"
+      ],
+      "referenced_types": [
+        "Display",
+        "ReservationError",
+        "Formatter",
+        "Result",
+        "Self",
+        "UnknownBin",
+        "Insufficient",
+        "Locked"
+      ]
+    },
+    "index": 4,
+    "metadata": {
+      "content_hash": "3c37d8567419be72",
+      "end_byte": 1199,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Impl",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/inventory/warehouse.rs@main",
+      "start_byte": 742,
+      "symbol": "ReservationError",
+      "visibility": "Private"
+    },
+    "start_offset": 742,
+    "text": "File: github://acme/widgets/src/inventory/warehouse.rs@main\npath: github://acme/widgets/src/inventory/warehouse.rs@main\nLanguage: rust\nsymbol: ReservationError\nSymbol: ReservationError\nkind: Impl\nSignature: impl fmt::Display for ReservationError\n\n// Imports:\nuse std::collections::HashMap;\nuse std::fmt;\nuse std::sync::{Arc, Mutex};\nuse crate::error::StockError;\n\nimpl fmt::Display for ReservationError {\n    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {\n        match self {\n            Self::UnknownBin(id) => write!(formatter, \"unknown bin {id}\"),\n            Self::Insufficient { requested, available } => {\n                write!(formatter, \"requested {requested}, only {available} available\")\n            }\n            Self::Locked => write!(formatter, \"warehouse is locked\"),\n        }\n    }\n}\n\n// Identifiers:\n// symbol: ReservationError\n// types: Display, ReservationError, Formatter, Result, Self, UnknownBin, Insufficient, Locked\n// calls: fmt\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1197,
+    "identifiers": {
+      "defined_symbol": "fmt",
+      "key_strings": [],
+      "parameters": [
+        "formatter",
+        "fmt",
+        "Formatter",
+        "_"
+      ],
+      "referenced_functions": [
+        "fmt"
+      ],
+      "referenced_types": [
+        "Formatter",
+        "Result",
+        "Self",
+        "UnknownBin",
+        "Insufficient",
+        "Locked"
+      ]
+    },
+    "index": 5,
+    "metadata": {
+      "content_hash": "b1b0d2fbb7ee8b63",
+      "end_byte": 1197,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "ReservationError"
+      ],
+      "path": "github://acme/widgets/src/inventory/warehouse.rs@main",
+      "start_byte": 787,
+      "symbol": "fmt",
+      "visibility": "Private"
+    },
+    "start_offset": 787,
+    "text": "File: github://acme/widgets/src/inventory/warehouse.rs@main\npath: github://acme/widgets/src/inventory/warehouse.rs@main\nLanguage: rust\nsymbol: ReservationError.fmt\nSymbol: ReservationError.fmt\nkind: Method\nParent: ReservationError\nparents: ReservationError\nSignature: fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result\n\n// Imports:\nuse std::collections::HashMap;\nuse std::fmt;\nuse std::sync::{Arc, Mutex};\nuse crate::error::StockError;\n\nfn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {\n        match self {\n            Self::UnknownBin(id) => write!(formatter, \"unknown bin {id}\"),\n            Self::Insufficient { requested, available } => {\n                write!(formatter, \"requested {requested}, only {available} available\")\n            }\n            Self::Locked => write!(formatter, \"warehouse is locked\"),\n        }\n    }\n\n// Identifiers:\n// symbol: fmt\n// params: formatter, fmt, Formatter, _\n// types: Formatter, Result, Self, UnknownBin, Insufficient, Locked\n// calls: fmt\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 1197,
+    "identifiers": {
+      "defined_symbol": "fmt",
+      "key_strings": [],
+      "parameters": [
+        "formatter",
+        "fmt",
+        "Formatter",
+        "_"
+      ],
+      "referenced_functions": [
+        "fmt"
+      ],
+      "referenced_types": [
+        "Formatter",
+        "Result",
+        "Self",
+        "UnknownBin",
+        "Insufficient",
+        "Locked"
+      ]
+    },
+    "index": 6,
+    "metadata": {
+      "content_hash": "b08eac2acacb9b3f",
+      "end_byte": 1197,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "ReservationError"
+      ],
+      "path": "github://acme/widgets/src/inventory/warehouse.rs@main",
+      "start_byte": 787,
+      "symbol": "fmt",
+      "visibility": "Private"
+    },
+    "start_offset": 787,
+    "text": "File: github://acme/widgets/src/inventory/warehouse.rs@main\npath: github://acme/widgets/src/inventory/warehouse.rs@main\nLanguage: rust\nsymbol: ReservationError.fmt\nSymbol: ReservationError.fmt\nkind: Method\nParent: ReservationError\nparents: ReservationError\nSignature: fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result\n [skeleton]\nfn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result\n\n// Key identifiers:\n// defined: fmt\n// params: formatter, fmt, Formatter, _\n// types: Formatter, Result, Self, UnknownBin, Insufficient\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1371,
+    "identifiers": {
+      "defined_symbol": "StockSource",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "available",
+        "label"
+      ],
+      "referenced_types": [
+        "StockSource",
+        "BinId",
+        "Option"
+      ]
+    },
+    "index": 7,
+    "metadata": {
+      "content_hash": "35e16e861eea5398",
+      "end_byte": 1371,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Trait",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/inventory/warehouse.rs@main",
+      "start_byte": 1245,
+      "symbol": "StockSource",
+      "visibility": "Public"
+    },
+    "start_offset": 1245,
+    "text": "File: github://acme/widgets/src/inventory/warehouse.rs@main\npath: github://acme/widgets/src/inventory/warehouse.rs@main\nLanguage: rust\nsymbol: StockSource\nSymbol: StockSource\nkind: Trait\nSignature: pub trait StockSource\n\n/// Anything that can report a stock level.\n\n// Imports:\nuse std::collections::HashMap;\nuse std::fmt;\nuse std::sync::{Arc, Mutex};\nuse crate::error::StockError;\n\npub trait StockSource {\n    fn available(&self, bin: BinId) -> Option<u64>;\n    fn label(&self, bin: BinId) -> Option<&str>;\n}\n\n// Identifiers:\n// symbol: StockSource\n// types: StockSource, BinId, Option\n// calls: available, label\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1507,
+    "identifiers": {
+      "defined_symbol": "Warehouse",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": [
+        "Warehouse",
+        "Arc",
+        "Mutex",
+        "HashMap",
+        "BinId",
+        "Bin"
+      ]
+    },
+    "index": 8,
+    "metadata": {
+      "content_hash": "371f4eb5ee2f67fc",
+      "end_byte": 1507,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Struct",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/inventory/warehouse.rs@main",
+      "start_byte": 1422,
+      "symbol": "Warehouse",
+      "visibility": "Public"
+    },
+    "start_offset": 1422,
+    "text": "File: github://acme/widgets/src/inventory/warehouse.rs@main\npath: github://acme/widgets/src/inventory/warehouse.rs@main\nLanguage: rust\nsymbol: Warehouse\nSymbol: Warehouse\nkind: Struct\nSignature: pub struct Warehouse\n\n/// The warehouse holds every bin behind a lock.\n\n// Imports:\nuse std::collections::HashMap;\nuse std::sync::{Arc, Mutex};\n\npub struct Warehouse {\n    bins: Arc<Mutex<HashMap<BinId, Bin>>>,\n    locked: bool,\n}\n\n// Identifiers:\n// symbol: Warehouse\n// types: Warehouse, Arc, Mutex, HashMap, BinId, Bin\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 2952,
+    "identifiers": {
+      "defined_symbol": "Warehouse",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "with",
+        "capacity",
+        "new",
+        "with_capacity",
+        "stock",
+        "restock",
+        "mut",
+        "lock",
+        "map_err",
+        "entry",
+        "or_insert_with",
+        "to_string",
+        "saturating_add",
+        "reserve",
+        "get_mut",
+        "ok_or"
+      ],
+      "referenced_types": [
+        "Warehouse",
+        "Create",
+        "Self",
+        "Arc",
+        "Mutex",
+        "HashMap",
+        "DEFAULT_BINS",
+        "Add",
+        "BinId",
+        "Result",
+        "StockError",
+        "Poisoned",
+        "Bin",
+        "Ok",
+        "Reserve",
+        "ReservationError",
+        "Err",
+        "Locked",
+        "UnknownBin",
+        "Insufficient"
+      ]
+    },
+    "index": 9,
+    "metadata": {
+      "content_hash": "4403cd5a940b0c6c",
+      "end_byte": 2952,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Impl",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/inventory/warehouse.rs@main",
+      "start_byte": 1509,
+      "symbol": "Warehouse",
+      "visibility": "Private"
+    },
+    "start_offset": 1509,
+    "text": "File: github://acme/widgets/src/inventory/warehouse.rs@main\npath: github://acme/widgets/src/inventory/warehouse.rs@main\nLanguage: rust\nsymbol: Warehouse\nSymbol: Warehouse\nkind: Impl\nSignature: impl Warehouse\n\n// Imports:\nuse std::collections::HashMap;\nuse std::sync::{Arc, Mutex};\nuse crate::error::StockError;\n\nimpl Warehouse {\n    /// Create an empty warehouse with the default bin capacity.\n    pub fn new() -> Self {\n        Self {\n            bins: Arc::new(Mutex::new(HashMap::with_capacity(DEFAULT_BINS))),\n            locked: false,\n        }\n    }\n\n    /// Add stock to a bin, creating it when missing.\n    pub fn restock(&self, id: BinId, label: &str, quantity: u64) -> Result<u64, StockError> {\n        let mut bins = self.bins.lock().map_err(|_| StockError::Poisoned)?;\n        let bin = bins.entry(id).or_insert_with(|| Bin {\n            id,\n            label: label.to_string(),\n            quantity: 0,\n            reserved: 0,\n        });\n        bin.quantity = bin.quantity.saturating_add(quantity);\n        Ok(bin.quantity)\n    }\n\n    /// Reserve stock for an order without removing it yet.\n    pub fn reserve(&self, id: BinId, requested: u64) -> Result<u64, ReservationError> {\n        if self.locked {\n            return Err(ReservationError::Locked);\n        }\n        let mut bins = self.bins.lock().map_err(|_| ReservationError::Locked)?;\n        let bin = bins.get_mut(&id).ok_or(ReservationError::UnknownBin(id))?;\n        let available = bin.quantity - bin.reserved;\n        if requested > available {\n            return Err(ReservationError::Insufficient { requested, available });\n        }\n        bin.reserved += requested;\n        Ok(available - requested)\n    }\n\n    fn lock(&mut self) {\n        self.locked = true;\n    }\n}\n\n// Identifiers:\n// symbol: Warehouse\n// types: Warehouse, Create, Self, Arc, Mutex, HashMap, DEFAULT_BINS, Add, BinId, Result, StockError, Poisoned, Bin, Ok, Reserve, ReservationError, Err, Locked, UnknownBin, Insufficient\n// calls: with, capacity, new, with_capacity, stock, restock, mut, lock, map_err, entry, or_insert_with, to_string, saturating_add, reserve, get_mut, ok_or\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1753,
+    "identifiers": {
+      "defined_symbol": "new",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "new",
+        "with_capacity"
+      ],
+      "referenced_types": [
+        "Self",
+        "Arc",
+        "Mutex",
+        "HashMap",
+        "DEFAULT_BINS"
+      ]
+    },
+    "index": 10,
+    "metadata": {
+      "content_hash": "4bfbf42a1305be48",
+      "end_byte": 1753,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Warehouse"
+      ],
+      "path": "github://acme/widgets/src/inventory/warehouse.rs@main",
+      "start_byte": 1595,
+      "symbol": "new",
+      "visibility": "Public"
+    },
+    "start_offset": 1595,
+    "text": "File: github://acme/widgets/src/inventory/warehouse.rs@main\npath: github://acme/widgets/src/inventory/warehouse.rs@main\nLanguage: rust\nsymbol: Warehouse.new\nSymbol: Warehouse.new\nkind: Method\nParent: Warehouse\nparents: Warehouse\nSignature: pub fn new() -> Self\n\n/// Create an empty warehouse with the default bin capacity.\n\n// Imports:\nuse std::collections::HashMap;\nuse std::sync::{Arc, Mutex};\n\npub fn new() -> Self {\n        Self {\n            bins: Arc::new(Mutex::new(HashMap::with_capacity(DEFAULT_BINS))),\n            locked: false,\n        }\n    }\n\n// Identifiers:\n// symbol: new\n// types: Self, Arc, Mutex, HashMap, DEFAULT_BINS\n// calls: new, with_capacity\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 1753,
+    "identifiers": {
+      "defined_symbol": "new",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "new",
+        "with_capacity"
+      ],
+      "referenced_types": [
+        "Self",
+        "Arc",
+        "Mutex",
+        "HashMap",
+        "DEFAULT_BINS"
+      ]
+    },
+    "index": 11,
+    "metadata": {
+      "content_hash": "8de618e485efb0b0",
+      "end_byte": 1753,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Warehouse"
+      ],
+      "path": "github://acme/widgets/src/inventory/warehouse.rs@main",
+      "start_byte": 1595,
+      "symbol": "new",
+      "visibility": "Public"
+    },
+    "start_offset": 1595,
+    "text": "File: github://acme/widgets/src/inventory/warehouse.rs@main\npath: github://acme/widgets/src/inventory/warehouse.rs@main\nLanguage: rust\nsymbol: Warehouse.new\nSymbol: Warehouse.new\nkind: Method\nParent: Warehouse\nparents: Warehouse\nSignature: pub fn new() -> Self\n [skeleton]\n/// Create an empty warehouse with the default bin capacity.\n\npub fn new() -> Self\n\n// Key identifiers:\n// defined: new\n// types: Self, Arc, Mutex, HashMap, DEFAULT_BINS\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 2244,
+    "identifiers": {
+      "defined_symbol": "restock",
+      "key_strings": [],
+      "parameters": [
+        "id",
+        "BinId",
+        "label",
+        "str",
+        "quantity",
+        "u64"
+      ],
+      "referenced_functions": [
+        "restock",
+        "lock",
+        "map_err",
+        "entry",
+        "or_insert_with",
+        "to_string",
+        "saturating_add"
+      ],
+      "referenced_types": [
+        "BinId",
+        "Result",
+        "StockError",
+        "Poisoned",
+        "Bin",
+        "Ok"
+      ]
+    },
+    "index": 12,
+    "metadata": {
+      "content_hash": "55a0324162b8841d",
+      "end_byte": 2244,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Warehouse"
+      ],
+      "path": "github://acme/widgets/src/inventory/warehouse.rs@main",
+      "start_byte": 1813,
+      "symbol": "restock",
+      "visibility": "Public"
+    },
+    "start_offset": 1813,
+    "text": "File: github://acme/widgets/src/inventory/warehouse.rs@main\npath: github://acme/widgets/src/inventory/warehouse.rs@main\nLanguage: rust\nsymbol: Warehouse.restock\nSymbol: Warehouse.restock\nkind: Method\nParent: Warehouse\nparents: Warehouse\nSignature: pub fn restock(&self, id: BinId, label: &str, quantity: u64) -> Result<u64, StockError>\n\n/// Add stock to a bin, creating it when missing.\n\n// Imports:\nuse crate::error::StockError;\n\npub fn restock(&self, id: BinId, label: &str, quantity: u64) -> Result<u64, StockError> {\n        let mut bins = self.bins.lock().map_err(|_| StockError::Poisoned)?;\n        let bin = bins.entry(id).or_insert_with(|| Bin {\n            id,\n            label: label.to_string(),\n            quantity: 0,\n            reserved: 0,\n        });\n        bin.quantity = bin.quantity.saturating_add(quantity);\n        Ok(bin.quantity)\n    }\n\n// Identifiers:\n// symbol: restock\n// params: id, BinId, label, str, quantity, u64\n// types: BinId, Result, StockError, Poisoned, Bin, Ok\n// calls: restock, lock, map_err, entry, or_insert_with, to_string, saturating_add\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 2244,
+    "identifiers": {
+      "defined_symbol": "restock",
+      "key_strings": [],
+      "parameters": [
+        "id",
+        "BinId",
+        "label",
+        "str",
+        "quantity",
+        "u64"
+      ],
+      "referenced_functions": [
+        "restock",
+        "lock",
+        "map_err",
+        "entry",
+        "or_insert_with",
+        "to_string",
+        "saturating_add"
+      ],
+      "referenced_types": [
+        "BinId",
+        "Result",
+        "StockError",
+        "Poisoned",
+        "Bin",
+        "Ok"
+      ]
+    },
+    "index": 13,
+    "metadata": {
+      "content_hash": "03b13b16f8f06993",
+      "end_byte": 2244,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Warehouse"
+      ],
+      "path": "github://acme/widgets/src/inventory/warehouse.rs@main",
+      "start_byte": 1813,
+      "symbol": "restock",
+      "visibility": "Public"
+    },
+    "start_offset": 1813,
+    "text": "File: github://acme/widgets/src/inventory/warehouse.rs@main\npath: github://acme/widgets/src/inventory/warehouse.rs@main\nLanguage: rust\nsymbol: Warehouse.restock\nSymbol: Warehouse.restock\nkind: Method\nParent: Warehouse\nparents: Warehouse\nSignature: pub fn restock(&self, id: BinId, label: &str, quantity: u64) -> Result<u64, StockError>\n [skeleton]\n/// Add stock to a bin, creating it when missing.\n\npub fn restock(&self, id: BinId, label: &str, quantity: u64) -> Result<u64, StockError>\n\n// Key identifiers:\n// defined: restock\n// params: id, BinId, label, str, quantity, u64\n// types: BinId, Result, StockError, Poisoned, Bin\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 2890,
+    "identifiers": {
+      "defined_symbol": "reserve",
+      "key_strings": [],
+      "parameters": [
+        "id",
+        "BinId",
+        "requested",
+        "u64"
+      ],
+      "referenced_functions": [
+        "reserve",
+        "mut",
+        "lock",
+        "map_err",
+        "get_mut",
+        "ok_or"
+      ],
+      "referenced_types": [
+        "BinId",
+        "Result",
+        "ReservationError",
+        "Err",
+        "Locked",
+        "UnknownBin",
+        "Insufficient",
+        "Ok"
+      ]
+    },
+    "index": 14,
+    "metadata": {
+      "content_hash": "e3502b990e374c43",
+      "end_byte": 2890,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Warehouse"
+      ],
+      "path": "github://acme/widgets/src/inventory/warehouse.rs@main",
+      "start_byte": 2310,
+      "symbol": "reserve",
+      "visibility": "Public"
+    },
+    "start_offset": 2310,
+    "text": "File: github://acme/widgets/src/inventory/warehouse.rs@main\npath: github://acme/widgets/src/inventory/warehouse.rs@main\nLanguage: rust\nsymbol: Warehouse.reserve\nSymbol: Warehouse.reserve\nkind: Method\nParent: Warehouse\nparents: Warehouse\nSignature: pub fn reserve(&self, id: BinId, requested: u64) -> Result<u64, ReservationError>\n\n/// Reserve stock for an order without removing it yet.\n\n// Imports:\nuse crate::error::StockError;\n\npub fn reserve(&self, id: BinId, requested: u64) -> Result<u64, ReservationError> {\n        if self.locked {\n            return Err(ReservationError::Locked);\n        }\n        let mut bins = self.bins.lock().map_err(|_| ReservationError::Locked)?;\n        let bin = bins.get_mut(&id).ok_or(ReservationError::UnknownBin(id))?;\n        let available = bin.quantity - bin.reserved;\n        if requested > available {\n            return Err(ReservationError::Insufficient { requested, available });\n        }\n        bin.reserved += requested;\n        Ok(available - requested)\n    }\n\n// Identifiers:\n// symbol: reserve\n// params: id, BinId, requested, u64\n// types: BinId, Result, ReservationError, Err, Locked, UnknownBin, Insufficient, Ok\n// calls: reserve, mut, lock, map_err, get_mut, ok_or\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 2890,
+    "identifiers": {
+      "defined_symbol": "reserve",
+      "key_strings": [],
+      "parameters": [
+        "id",
+        "BinId",
+        "requested",
+        "u64"
+      ],
+      "referenced_functions": [
+        "reserve",
+        "mut",
+        "lock",
+        "map_err",
+        "get_mut",
+        "ok_or"
+      ],
+      "referenced_types": [
+        "BinId",
+        "Result",
+        "ReservationError",
+        "Err",
+        "Locked",
+        "UnknownBin",
+        "Insufficient",
+        "Ok"
+      ]
+    },
+    "index": 15,
+    "metadata": {
+      "content_hash": "cb991aed4151fbd2",
+      "end_byte": 2890,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Warehouse"
+      ],
+      "path": "github://acme/widgets/src/inventory/warehouse.rs@main",
+      "start_byte": 2310,
+      "symbol": "reserve",
+      "visibility": "Public"
+    },
+    "start_offset": 2310,
+    "text": "File: github://acme/widgets/src/inventory/warehouse.rs@main\npath: github://acme/widgets/src/inventory/warehouse.rs@main\nLanguage: rust\nsymbol: Warehouse.reserve\nSymbol: Warehouse.reserve\nkind: Method\nParent: Warehouse\nparents: Warehouse\nSignature: pub fn reserve(&self, id: BinId, requested: u64) -> Result<u64, ReservationError>\n [skeleton]\n/// Reserve stock for an order without removing it yet.\n\npub fn reserve(&self, id: BinId, requested: u64) -> Result<u64, ReservationError>\n\n// Key identifiers:\n// defined: reserve\n// params: id, BinId, requested, u64\n// types: BinId, Result, ReservationError, Err, Locked\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 2950,
+    "identifiers": {
+      "defined_symbol": "lock",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "lock"
+      ],
+      "referenced_types": []
+    },
+    "index": 16,
+    "metadata": {
+      "content_hash": "19acf170dabf01df",
+      "end_byte": 2950,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Warehouse"
+      ],
+      "path": "github://acme/widgets/src/inventory/warehouse.rs@main",
+      "start_byte": 2896,
+      "symbol": "lock",
+      "visibility": "Private"
+    },
+    "start_offset": 2896,
+    "text": "File: github://acme/widgets/src/inventory/warehouse.rs@main\npath: github://acme/widgets/src/inventory/warehouse.rs@main\nLanguage: rust\nsymbol: Warehouse.lock\nSymbol: Warehouse.lock\nkind: Method\nParent: Warehouse\nparents: Warehouse\nSignature: fn lock(&mut self)\n\n// Imports:\nuse std::collections::HashMap;\nuse std::fmt;\nuse std::sync::{Arc, Mutex};\nuse crate::error::StockError;\n\nfn lock(&mut self) {\n        self.locked = true;\n    }\n\n// Identifiers:\n// symbol: lock\n// calls: lock\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 2950,
+    "identifiers": {
+      "defined_symbol": "lock",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "lock"
+      ],
+      "referenced_types": []
+    },
+    "index": 17,
+    "metadata": {
+      "content_hash": "e7616eda8e35d2d0",
+      "end_byte": 2950,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Warehouse"
+      ],
+      "path": "github://acme/widgets/src/inventory/warehouse.rs@main",
+      "start_byte": 2896,
+      "symbol": "lock",
+      "visibility": "Private"
+    },
+    "start_offset": 2896,
+    "text": "File: github://acme/widgets/src/inventory/warehouse.rs@main\npath: github://acme/widgets/src/inventory/warehouse.rs@main\nLanguage: rust\nsymbol: Warehouse.lock\nSymbol: Warehouse.lock\nkind: Method\nParent: Warehouse\nparents: Warehouse\nSignature: fn lock(&mut self)\n [skeleton]\nfn lock(&mut self)\n\n// Key identifiers:\n// defined: lock\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 3223,
+    "identifiers": {
+      "defined_symbol": "Warehouse",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "available",
+        "lock",
+        "ok",
+        "get",
+        "map",
+        "label"
+      ],
+      "referenced_types": [
+        "StockSource",
+        "Warehouse",
+        "BinId",
+        "Option",
+        "None"
+      ]
+    },
+    "index": 18,
+    "metadata": {
+      "content_hash": "1981c2f03abb83e1",
+      "end_byte": 3223,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Impl",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/inventory/warehouse.rs@main",
+      "start_byte": 2954,
+      "symbol": "Warehouse",
+      "visibility": "Private"
+    },
+    "start_offset": 2954,
+    "text": "File: github://acme/widgets/src/inventory/warehouse.rs@main\npath: github://acme/widgets/src/inventory/warehouse.rs@main\nLanguage: rust\nsymbol: Warehouse\nSymbol: Warehouse\nkind: Impl\nSignature: impl StockSource for Warehouse\n\n// Imports:\nuse std::collections::HashMap;\nuse std::fmt;\nuse std::sync::{Arc, Mutex};\nuse crate::error::StockError;\n\nimpl StockSource for Warehouse {\n    fn available(&self, bin: BinId) -> Option<u64> {\n        let bins = self.bins.lock().ok()?;\n        bins.get(&bin).map(|bin| bin.quantity - bin.reserved)\n    }\n\n    fn label(&self, _bin: BinId) -> Option<&str> {\n        None\n    }\n}\n\n// Identifiers:\n// symbol: Warehouse\n// types: StockSource, Warehouse, BinId, Option, None\n// calls: available, lock, ok, get, map, label\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 3150,
+    "identifiers": {
+      "defined_symbol": "available",
+      "key_strings": [],
+      "parameters": [
+        "bin",
+        "BinId"
+      ],
+      "referenced_functions": [
+        "available",
+        "lock",
+        "ok",
+        "get",
+        "map"
+      ],
+      "referenced_types": [
+        "BinId",
+        "Option"
+      ]
+    },
+    "index": 19,
+    "metadata": {
+      "content_hash": "da1c6eca9d0cae7e",
+      "end_byte": 3150,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Warehouse"
+      ],
+      "path": "github://acme/widgets/src/inventory/warehouse.rs@main",
+      "start_byte": 2991,
+      "symbol": "available",
+      "visibility": "Private"
+    },
+    "start_offset": 2991,
+    "text": "File: github://acme/widgets/src/inventory/warehouse.rs@main\npath: github://acme/widgets/src/inventory/warehouse.rs@main\nLanguage: rust\nsymbol: Warehouse.available\nSymbol: Warehouse.available\nkind: Method\nParent: Warehouse\nparents: Warehouse\nSignature: fn available(&self, bin: BinId) -> Option<u64>\n\n// Imports:\nuse std::collections::HashMap;\nuse std::fmt;\nuse std::sync::{Arc, Mutex};\nuse crate::error::StockError;\n\nfn available(&self, bin: BinId) -> Option<u64> {\n        let bins = self.bins.lock().ok()?;\n        bins.get(&bin).map(|bin| bin.quantity - bin.reserved)\n    }\n\n// Identifiers:\n// symbol: available\n// params: bin, BinId\n// types: BinId, Option\n// calls: available, lock, ok, get, map\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 3150,
+    "identifiers": {
+      "defined_symbol": "available",
+      "key_strings": [],
+      "parameters": [
+        "bin",
+        "BinId"
+      ],
+      "referenced_functions": [
+        "available",
+        "lock",
+        "ok",
+        "get",
+        "map"
+      ],
+      "referenced_types": [
+        "BinId",
+        "Option"
+      ]
+    },
+    "index": 20,
+    "metadata": {
+      "content_hash": "0072ed575ca55a8b",
+      "end_byte": 3150,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Warehouse"
+      ],
+      "path": "github://acme/widgets/src/inventory/warehouse.rs@main",
+      "start_byte": 2991,
+      "symbol": "available",
+      "visibility": "Private"
+    },
+    "start_offset": 2991,
+    "text": "File: github://acme/widgets/src/inventory/warehouse.rs@main\npath: github://acme/widgets/src/inventory/warehouse.rs@main\nLanguage: rust\nsymbol: Warehouse.available\nSymbol: Warehouse.available\nkind: Method\nParent: Warehouse\nparents: Warehouse\nSignature: fn available(&self, bin: BinId) -> Option<u64>\n [skeleton]\nfn available(&self, bin: BinId) -> Option<u64>\n\n// Key identifiers:\n// defined: available\n// params: bin, BinId\n// types: BinId, Option\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 3221,
+    "identifiers": {
+      "defined_symbol": "label",
+      "key_strings": [],
+      "parameters": [
+        "_bin",
+        "BinId"
+      ],
+      "referenced_functions": [
+        "label"
+      ],
+      "referenced_types": [
+        "BinId",
+        "Option",
+        "None"
+      ]
+    },
+    "index": 21,
+    "metadata": {
+      "content_hash": "a3139b6e53937c1c",
+      "end_byte": 3221,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Warehouse"
+      ],
+      "path": "github://acme/widgets/src/inventory/warehouse.rs@main",
+      "start_byte": 3156,
+      "symbol": "label",
+      "visibility": "Private"
+    },
+    "start_offset": 3156,
+    "text": "File: github://acme/widgets/src/inventory/warehouse.rs@main\npath: github://acme/widgets/src/inventory/warehouse.rs@main\nLanguage: rust\nsymbol: Warehouse.label\nSymbol: Warehouse.label\nkind: Method\nParent: Warehouse\nparents: Warehouse\nSignature: fn label(&self, _bin: BinId) -> Option<&str>\n\n// Imports:\nuse std::collections::HashMap;\nuse std::fmt;\nuse std::sync::{Arc, Mutex};\nuse crate::error::StockError;\n\nfn label(&self, _bin: BinId) -> Option<&str> {\n        None\n    }\n\n// Identifiers:\n// symbol: label\n// params: _bin, BinId\n// types: BinId, Option, None\n// calls: label\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 3221,
+    "identifiers": {
+      "defined_symbol": "label",
+      "key_strings": [],
+      "parameters": [
+        "_bin",
+        "BinId"
+      ],
+      "referenced_functions": [
+        "label"
+      ],
+      "referenced_types": [
+        "BinId",
+        "Option",
+        "None"
+      ]
+    },
+    "index": 22,
+    "metadata": {
+      "content_hash": "27462e43c445ecf1",
+      "end_byte": 3221,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "Warehouse"
+      ],
+      "path": "github://acme/widgets/src/inventory/warehouse.rs@main",
+      "start_byte": 3156,
+      "symbol": "label",
+      "visibility": "Private"
+    },
+    "start_offset": 3156,
+    "text": "File: github://acme/widgets/src/inventory/warehouse.rs@main\npath: github://acme/widgets/src/inventory/warehouse.rs@main\nLanguage: rust\nsymbol: Warehouse.label\nSymbol: Warehouse.label\nkind: Method\nParent: Warehouse\nparents: Warehouse\nSignature: fn label(&self, _bin: BinId) -> Option<&str>\n [skeleton]\nfn label(&self, _bin: BinId) -> Option<&str>\n\n// Key identifiers:\n// defined: label\n// params: _bin, BinId\n// types: BinId, Option, None\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 3334,
+    "identifiers": {
+      "defined_symbol": "audit",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "pub",
+        "summarize",
+        "iter",
+        "copied",
+        "sum"
+      ],
+      "referenced_types": []
+    },
+    "index": 23,
+    "metadata": {
+      "content_hash": "ed0307bcdfbbd0c2",
+      "end_byte": 3334,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Module",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/inventory/warehouse.rs@main",
+      "start_byte": 3225,
+      "symbol": "audit",
+      "visibility": "Private"
+    },
+    "start_offset": 3225,
+    "text": "File: github://acme/widgets/src/inventory/warehouse.rs@main\npath: github://acme/widgets/src/inventory/warehouse.rs@main\nLanguage: rust\nsymbol: audit\nSymbol: audit\nkind: Module\nSignature: mod audit\n\n// Imports:\nuse std::collections::HashMap;\nuse std::fmt;\nuse std::sync::{Arc, Mutex};\nuse crate::error::StockError;\n\nmod audit {\n    pub(crate) fn summarize(totals: &[u64]) -> u64 {\n        totals.iter().copied().sum()\n    }\n}\n\n// Identifiers:\n// symbol: audit\n// calls: pub, summarize, iter, copied, sum\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 3643,
+    "identifiers": {
+      "defined_symbol": "tests",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "reserve_reduces_availability",
+        "new",
+        "restock",
+        "unwrap",
+        "reserve",
+        "available"
+      ],
+      "referenced_types": [
+        "Warehouse",
+        "Some"
+      ]
+    },
+    "index": 24,
+    "metadata": {
+      "content_hash": "c25156f78f774890",
+      "end_byte": 3643,
+      "is_generated": false,
+      "is_test": true,
+      "kind": "Module",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/inventory/warehouse.rs@main",
+      "start_byte": 3349,
+      "symbol": "tests",
+      "visibility": "Private"
+    },
+    "start_offset": 3349,
+    "text": "File: github://acme/widgets/src/inventory/warehouse.rs@main\npath: github://acme/widgets/src/inventory/warehouse.rs@main\nLanguage: rust\nsymbol: tests\nSymbol: tests\nkind: Module\nSignature: mod tests\n\n// Imports:\nuse std::collections::HashMap;\nuse std::fmt;\nuse std::sync::{Arc, Mutex};\nuse crate::error::StockError;\n\nmod tests {\n    use super::*;\n\n    #[test]\n    fn reserve_reduces_availability() {\n        let warehouse = Warehouse::new();\n        warehouse.restock(7, \"bolts\", 10).unwrap();\n        assert_eq!(warehouse.reserve(7, 4).unwrap(), 6);\n        assert_eq!(warehouse.available(7), Some(6));\n    }\n}\n\n// Identifiers:\n// symbol: tests\n// types: Warehouse, Some\n// calls: reserve_reduces_availability, new, restock, unwrap, reserve, available\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 3641,
+    "identifiers": {
+      "defined_symbol": "reserve_reduces_availability",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "reserve_reduces_availability",
+        "new",
+        "restock",
+        "unwrap",
+        "reserve",
+        "available"
+      ],
+      "referenced_types": [
+        "Warehouse",
+        "Some"
+      ]
+    },
+    "index": 25,
+    "metadata": {
+      "content_hash": "3b1f877c8fbbe1b4",
+      "end_byte": 3641,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "tests"
+      ],
+      "path": "github://acme/widgets/src/inventory/warehouse.rs@main",
+      "start_byte": 3396,
+      "symbol": "reserve_reduces_availability",
+      "visibility": "Private"
+    },
+    "start_offset": 3396,
+    "text": "File: github://acme/widgets/src/inventory/warehouse.rs@main\npath: github://acme/widgets/src/inventory/warehouse.rs@main\nLanguage: rust\nsymbol: tests.reserve_reduces_availability\nSymbol: tests.reserve_reduces_availability\nkind: Method\nParent: tests\nparents: tests\nSignature: fn reserve_reduces_availability()\n\n// Imports:\nuse std::collections::HashMap;\nuse std::fmt;\nuse std::sync::{Arc, Mutex};\nuse crate::error::StockError;\n\nfn reserve_reduces_availability() {\n        let warehouse = Warehouse::new();\n        warehouse.restock(7, \"bolts\", 10).unwrap();\n        assert_eq!(warehouse.reserve(7, 4).unwrap(), 6);\n        assert_eq!(warehouse.available(7), Some(6));\n    }\n\n// Identifiers:\n// symbol: reserve_reduces_availability\n// types: Warehouse, Some\n// calls: reserve_reduces_availability, new, restock, unwrap, reserve, available\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 3641,
+    "identifiers": {
+      "defined_symbol": "reserve_reduces_availability",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "reserve_reduces_availability",
+        "new",
+        "restock",
+        "unwrap",
+        "reserve",
+        "available"
+      ],
+      "referenced_types": [
+        "Warehouse",
+        "Some"
+      ]
+    },
+    "index": 26,
+    "metadata": {
+      "content_hash": "1871aa5eaa7fd880",
+      "end_byte": 3641,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [
+        "tests"
+      ],
+      "path": "github://acme/widgets/src/inventory/warehouse.rs@main",
+      "start_byte": 3396,
+      "symbol": "reserve_reduces_availability",
+      "visibility": "Private"
+    },
+    "start_offset": 3396,
+    "text": "File: github://acme/widgets/src/inventory/warehouse.rs@main\npath: github://acme/widgets/src/inventory/warehouse.rs@main\nLanguage: rust\nsymbol: tests.reserve_reduces_availability\nSymbol: tests.reserve_reduces_availability\nkind: Method\nParent: tests\nparents: tests\nSignature: fn reserve_reduces_availability()\n [skeleton]\nfn reserve_reduces_availability()\n\n// Key identifiers:\n// defined: reserve_reduces_availability\n// types: Warehouse, Some\n"
+  },
+  {
+    "chunk_type": "ApiSurface",
+    "end_offset": 1507,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": [
+        "DEFAULT_BINS",
+        "BinId",
+        "Bin",
+        "ReservationError",
+        "StockSource",
+        "Warehouse"
+      ]
+    },
+    "index": 27,
+    "metadata": {
+      "content_hash": "2a318ffee95502a0",
+      "end_byte": 1507,
+      "is_generated": false,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/inventory/warehouse.rs@main",
+      "start_byte": 265,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 265,
+    "text": "path: github://acme/widgets/src/inventory/warehouse.rs@main\nkind: api_surface\n\n// Public API:\n\n/// Default number of bins a warehouse starts with.\npub const DEFAULT_BINS: usize = 16;\n\npub type BinId = u32;\n\npub struct Bin\n\npub enum ReservationError\n\n/// Anything that can report a stock level.\npub trait StockSource\n\n/// The warehouse holds every bin behind a lock.\npub struct Warehouse\n\n"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 107,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 28,
+    "metadata": {
+      "content_hash": "4ffa6c635cdad1c7",
+      "end_byte": 107,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/inventory/warehouse.rs@main",
+      "start_byte": 0,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 0,
+    "text": "File: github://acme/widgets/src/inventory/warehouse.rs@main\npath: github://acme/widgets/src/inventory/warehouse.rs@main\nLanguage: rust\nkind: top_level\n\n//! Inventory bookkeeping for the widget warehouse.\n//!\n//! Tracks stock levels and reservations per bin.\n"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 265,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 29,
+    "metadata": {
+      "content_hash": "61571a9b99ac74f4",
+      "end_byte": 265,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/inventory/warehouse.rs@main",
+      "start_byte": 213,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 213,
+    "text": "File: github://acme/widgets/src/inventory/warehouse.rs@main\npath: github://acme/widgets/src/inventory/warehouse.rs@main\nLanguage: rust\nkind: top_level\n\n/// Default number of bins a warehouse starts with."
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 623,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 30,
+    "metadata": {
+      "content_hash": "dcd60ac694518bdd",
+      "end_byte": 623,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/inventory/warehouse.rs@main",
+      "start_byte": 565,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 565,
+    "text": "File: github://acme/widgets/src/inventory/warehouse.rs@main\npath: github://acme/widgets/src/inventory/warehouse.rs@main\nLanguage: rust\nkind: top_level\n\n/// Why a reservation could not be made.\n#[derive(Debug)]"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 1245,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 31,
+    "metadata": {
+      "content_hash": "93feacf9b38aa93b",
+      "end_byte": 1245,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/inventory/warehouse.rs@main",
+      "start_byte": 1201,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 1201,
+    "text": "File: github://acme/widgets/src/inventory/warehouse.rs@main\npath: github://acme/widgets/src/inventory/warehouse.rs@main\nLanguage: rust\nkind: top_level\n\n/// Anything that can report a stock level."
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 1422,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 32,
+    "metadata": {
+      "content_hash": "59c17e10d93d5439",
+      "end_byte": 1422,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/inventory/warehouse.rs@main",
+      "start_byte": 1373,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 1373,
+    "text": "File: github://acme/widgets/src/inventory/warehouse.rs@main\npath: github://acme/widgets/src/inventory/warehouse.rs@main\nLanguage: rust\nkind: top_level\n\n/// The warehouse holds every bin behind a lock."
+  }
+]
