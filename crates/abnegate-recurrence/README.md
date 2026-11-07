@@ -36,7 +36,9 @@ refusal is an `Error` whose text names the clause and what it wanted.
 
 `period()` is the shortest gap between two firings rather than the average one,
 so a host that holds rules to a minimum cadence compares it against its own
-floor. This crate applies none.
+floor. This crate applies none. Apart from an hourly rule, which counts elapsed
+hours, the gap is measured on the wall clock, so a daylight-saving change can
+bring two firings closer in elapsed time by the size of that change.
 
 ## Features
 
