@@ -90,8 +90,8 @@ fn unread_clauses_are_named_in_a_fixed_order() {
 #[test]
 fn a_later_clause_of_the_same_name_replaces_the_earlier_one() {
     assert_eq!(
-        Recurrence::parse("FREQ=DAILY;BYHOUR=9;BYHOUR=17"),
-        Recurrence::parse("FREQ=DAILY;BYHOUR=17")
+        Recurrence::parse("FREQ=DAILY;BYHOUR=9;BYHOUR=17").expect("the repeated rule is accepted"),
+        Recurrence::parse("FREQ=DAILY;BYHOUR=17").expect("the single rule is accepted")
     );
     assert!(
         Recurrence::parse("FREQ=HOURLY;FREQ=DAILY;BYHOUR=9").is_ok(),

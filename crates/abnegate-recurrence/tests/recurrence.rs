@@ -422,3 +422,142 @@ fn a_weekly_period_at_the_start_of_the_calendar_keeps_the_days_inside_it() {
         }
     }
 }
+
+#[test]
+fn the_prefix_is_matched_in_upper_case_exactly_as_written() {
+    assert_eq!(
+        refusal("rrule:FREQ=DAILY"),
+        "RRULE:FREQ is not a clause this build accepts. Use FREQ, INTERVAL, BYDAY, BYHOUR, \
+         BYMINUTE, BYMONTHDAY, UNTIL or COUNT."
+    );
+}
+
+#[test]
+fn until_is_read_only_in_its_upper_case_utc_form() {
+    assert_eq!(
+        refusal("FREQ=DAILY;until=20260914t090000z"),
+        "UNTIL=20260914t090000z must read as 20260914T090000Z."
+    );
+    assert!(Recurrence::parse("FREQ=DAILY;until=20260914T090000Z").is_ok());
+}
+
+#[test]
+fn an_after_before_the_anchor_reads_the_periods_before_it_in_its_phase() {
+    let anchor = at_utc("2026-09-14T09:00:00Z");
+    let daily = Recurrence::parse("FREQ=DAILY").expect("accepted");
+    assert_eq!(
+        daily.next_after(anchor, at_utc("2026-09-01T12:00:00Z"), 1, Timezone::UTC),
+        Some(at_utc("2026-09-02T09:00:00Z"))
+    );
+
+    let alternate = Recurrence::parse("FREQ=DAILY;INTERVAL=2").expect("accepted");
+    assert_eq!(
+        alternate.next_after(anchor, at_utc("2026-09-02T12:00:00Z"), 1, Timezone::UTC),
+        Some(at_utc("2026-09-04T09:00:00Z")),
+        "every other day counted back from the anchor, so 4 September and not 3"
+    );
+
+    assert!(daily.fires_at(anchor, Timezone::UTC));
+    assert_eq!(
+        daily.next_after(anchor, anchor, 1, Timezone::UTC),
+        Some(at_utc("2026-09-15T09:00:00Z")),
+        "asked at the anchor, the next firing is the one after it"
+    );
+}
+
+#[test]
+fn a_period_is_measured_on_the_wall_clock_not_in_elapsed_time() {
+    let london = Timezone::parse("Europe/London").expect("a timezone");
+    let rule = Recurrence::parse("FREQ=DAILY;BYHOUR=0,2").expect("accepted");
+    assert_eq!(rule.period(), TimeDelta::hours(2));
+
+    let anchor = at_utc("2027-03-27T00:00:00Z");
+    let midnight = rule
+        .next_after(anchor, at_utc("2027-03-27T23:00:00Z"), 1, london)
+        .expect("a firing");
+    let two = rule
+        .next_after(anchor, midnight, 2, london)
+        .expect("a firing");
+    assert_eq!(midnight, at_utc("2027-03-28T00:00:00Z"));
+    assert_eq!(two, at_utc("2027-03-28T01:00:00Z"));
+    assert_eq!(
+        two - midnight,
+        TimeDelta::hours(1),
+        "London springs forward between the two"
+    );
+}
+
+#[test]
+fn an_interval_past_the_largest_i32_counts_in_full() {
+    for (rule, period) in [
+        (
+            "FREQ=HOURLY;INTERVAL=2147483648",
+            TimeDelta::hours(2_147_483_648),
+        ),
+        (
+            "FREQ=HOURLY;INTERVAL=4294967295",
+            TimeDelta::hours(4_294_967_295),
+        ),
+        (
+            "FREQ=DAILY;INTERVAL=4294967295",
+            TimeDelta::days(4_294_967_295),
+        ),
+        (
+            "FREQ=WEEKLY;INTERVAL=4294967295",
+            TimeDelta::weeks(4_294_967_295),
+        ),
+        (
+            "FREQ=MONTHLY;INTERVAL=2147483648",
+            TimeDelta::days(28 * 2_147_483_648),
+        ),
+        ("FREQ=MONTHLY;INTERVAL=4294967295", TimeDelta::MAX),
+    ] {
+        assert_eq!(
+            Recurrence::parse(rule).expect(rule).period(),
+            period,
+            "{rule}"
+        );
+    }
+
+    let anchor = at_utc("2027-01-15T09:00:00Z");
+    let hourly = Recurrence::parse("FREQ=HOURLY;INTERVAL=2147483648").expect("accepted");
+    let next = hourly
+        .next_after(anchor, anchor, 1, Timezone::UTC)
+        .expect("2^31 hours on still lies inside the calendar");
+    assert_eq!(next, anchor + TimeDelta::hours(2_147_483_648));
+    assert!(hourly.fires_at(anchor, Timezone::UTC));
+    assert!(hourly.fires_at(next, Timezone::UTC));
+
+    let longest = Recurrence::parse("FREQ=HOURLY;INTERVAL=4294967295").expect("accepted");
+    assert_eq!(
+        longest.next_after(anchor, anchor, 1, Timezone::UTC),
+        None,
+        "2^32 - 1 hours on lies past the end of the calendar"
+    );
+}
+
+#[test]
+fn a_monthly_rule_keeps_the_31st_of_the_calendars_last_december() {
+    let last_year = NaiveDate::MAX.year();
+    let december = NaiveDate::from_ymd_opt(last_year, 12, 31)
+        .and_then(|date| date.and_hms_opt(9, 0, 0))
+        .expect("the calendar ends on 31 December")
+        .and_utc();
+    let january = NaiveDate::from_ymd_opt(last_year, 1, 31)
+        .and_then(|date| date.and_hms_opt(9, 0, 0))
+        .expect("a date in the calendar's last year")
+        .and_utc();
+    let november = NaiveDate::from_ymd_opt(last_year, 11, 30)
+        .and_then(|date| date.and_hms_opt(9, 0, 0))
+        .expect("a date in the calendar's last year")
+        .and_utc();
+    let rule = Recurrence::parse("FREQ=MONTHLY").expect("accepted");
+
+    assert!(rule.fires_at(december, Timezone::UTC));
+    assert_eq!(
+        rule.next_after(january, november, 11, Timezone::UTC),
+        Some(december),
+        "the 31st, not the 28th"
+    );
+    assert_eq!(rule.next_after(january, december, 12, Timezone::UTC), None);
+}

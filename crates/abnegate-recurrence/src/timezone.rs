@@ -23,8 +23,9 @@ const LONGEST_GAP: TimeDelta = TimeDelta::hours(25);
 /// the same way every time by [`Timezone::instant`]:
 ///
 /// - A time the clocks skip, in the hour a spring-forward removes, moves
-///   forward to the first time the clocks do show, which is the instant they
-///   change. 01:30 on the morning London skips is 02:00 BST.
+///   forward to the first whole minute the clocks show after the gap, which
+///   is the instant they change wherever both offsets are whole minutes.
+///   01:30 on the morning London skips is 02:00 BST.
 /// - A time the clocks show twice, in the hour a fall-back repeats, is the
 ///   first of the two. 01:30 on the morning London repeats is 01:30 BST.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,10 +73,15 @@ impl Timezone {
 
     /// The instant this timezone's clocks show `local`.
     ///
-    /// A time the clocks skip answers with the first minute they do show,
-    /// which is the instant they change; a time they show twice answers with
-    /// the first of the two. `None` only when no shown minute follows within a
-    /// day and an hour, or none follows before the end of the calendar.
+    /// A time the clocks skip answers with the first whole minute they show
+    /// after the gap. That is the instant they change, except where an offset
+    /// carries seconds, as historical local mean time did, and there it is
+    /// under a minute later: Monrovia's clocks moved from 00:00 to 00:44:30 on
+    /// 7 January 1972, and 00:00 that day answers 00:45:00.
+    ///
+    /// A time they show twice answers with the first of the two. `None` only
+    /// when no shown minute follows within a day and an hour, or none follows
+    /// before the end of the calendar.
     pub fn instant(self, local: NaiveDateTime) -> Option<DateTime<Utc>> {
         let mut shown = local;
         while shown - local <= LONGEST_GAP {

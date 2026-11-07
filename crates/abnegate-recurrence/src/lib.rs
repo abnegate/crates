@@ -12,7 +12,8 @@
 //! clause on a [`Timezone`]'s wall clock so nine o'clock stays nine o'clock
 //! across a daylight-saving change:
 //!
-//! - A time the clocks skip fires at the instant they change.
+//! - A time the clocks skip fires at the first whole minute after the gap,
+//!   the instant the clocks change wherever both offsets are whole minutes.
 //! - A time the clocks show twice fires at the first of the two, once.
 //! - An hourly rule counts elapsed UTC hours, which no clock change moves.
 //! - `BYMONTHDAY=31` skips the months without a 31st, while a day inherited

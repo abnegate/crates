@@ -10,8 +10,9 @@ clock reading in, an instant out, with no store and no worker.
 
 `FREQ` (`HOURLY`, `DAILY`, `WEEKLY` or `MONTHLY`), `INTERVAL`, `BYDAY`,
 `BYHOUR`, `BYMINUTE`, `BYMONTHDAY`, `UNTIL` (as `20260914T090000Z`) and
-`COUNT`, with or without the `RRULE:` prefix. Names and values are read in any
-case.
+`COUNT`, with or without the `RRULE:` prefix. The prefix is matched in upper
+case as written; clause names and the `FREQ` and `BYDAY` values are read in any
+case, while `UNTIL` is read exactly as RFC 5545's UTC form.
 
 A clause outside the subset is refused, never ignored, and so is a clause the
 rule's frequency never reads: `BYDAY` needs `WEEKLY`, `BYMONTHDAY` needs
@@ -21,8 +22,9 @@ refusal is an `Error` whose text names the clause and what it wanted.
 
 ## The wall clock
 
-- A time the clocks skip fires at the instant they change: 01:30 on the morning
-  London springs forward fires at 02:00 BST.
+- A time the clocks skip fires at the first whole minute after the gap, which
+  is the instant the clocks change wherever both offsets are whole minutes:
+  01:30 on the morning London springs forward fires at 02:00 BST.
 - A time the clocks show twice fires at the first of the two, once: 01:30 on
   the morning London falls back fires at 01:30 BST and not an hour later.
 - An hourly rule counts elapsed UTC hours, which no clock change moves.
@@ -68,7 +70,11 @@ assert_eq!(rule.period(), TimeDelta::days(3));
 ```
 
 `anchor` is the first firing, and supplies whatever the rule does not state:
-`FREQ=WEEKLY` alone repeats on the anchor's weekday and time. `fired` is how
-many firings have already happened, which `COUNT` is measured against.
+`FREQ=WEEKLY` alone repeats on the anchor's weekday and time. Keep the same
+anchor for the rule's whole life and ask with `after` at or past it; moving it
+forward can lose a monthly rule's day of the month, since one moved to
+28 February fires on the 28th for ever after.
+`fired` is how many firings have already happened, which `COUNT` is measured
+against.
 `fires_at` says whether a rule anchored at an instant would fire there itself,
 which is how a host checks that a first firing and its repeats agree.

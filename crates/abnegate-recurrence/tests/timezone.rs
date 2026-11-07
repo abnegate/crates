@@ -61,3 +61,27 @@ fn a_skipped_time_with_no_minute_left_in_the_calendar_has_no_instant() {
     let new_york = Timezone::parse("America/New_York").unwrap();
     assert_eq!(new_york.instant(NaiveDateTime::MAX), None);
 }
+
+#[test]
+fn a_skipped_time_lands_on_the_first_whole_minute_after_the_gap() {
+    let monrovia = Timezone::parse("Africa/Monrovia").unwrap();
+    assert_eq!(
+        monrovia
+            .offset(utc("1972-01-07T00:44:29Z"))
+            .local_minus_utc(),
+        -(44 * 60 + 30),
+        "local mean time, with seconds in its offset"
+    );
+    assert_eq!(
+        monrovia
+            .offset(utc("1972-01-07T00:44:30Z"))
+            .local_minus_utc(),
+        0,
+        "the clocks change at 00:44:30"
+    );
+    assert_eq!(
+        monrovia.instant(local("1972-01-07 00:00")),
+        Some(utc("1972-01-07T00:45:00Z")),
+        "half a minute after the change, on the first whole minute"
+    );
+}

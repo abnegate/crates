@@ -15,5 +15,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `BYHOUR`, `BYMINUTE`, `BYMONTHDAY`, `UNTIL` and `COUNT`, reports its
   shortest gap between firings with `period`, and answers `fires_at` and
   `next_after` on a `Timezone`'s wall clock, where a time the clocks skip fires
-  at the instant they change and a time they repeat fires at the first of the
-  two.
+  at the first whole minute after the gap and a time they repeat fires at the
+  first of the two.

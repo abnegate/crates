@@ -5,6 +5,7 @@ use crate::day::Day;
 use crate::error::Error;
 use crate::error::Result;
 use crate::frequency::Frequency;
+use crate::frequency::SHORTEST_MONTH_DAYS;
 use crate::timezone::Timezone;
 use chrono::DateTime;
 use chrono::Datelike;
@@ -33,14 +34,11 @@ const PREFIX: &str = "RRULE:";
 const UNTIL_FORMAT: &str = "%Y%m%dT%H%M%SZ";
 
 const MINUTES_PER_HOUR: i64 = 60;
-const MONTHS_PER_YEAR: i32 = 12;
-const FIRST_MONTH: u32 = 1;
-const LAST_MONTH: u32 = 12;
+const MONTHS_PER_YEAR: i64 = 12;
 const LAST_HOUR: u32 = 23;
 const LAST_MINUTE: u32 = 59;
 const FIRST_MONTH_DAY: u32 = 1;
 const LAST_MONTH_DAY: u32 = 31;
-const LAST_DAY_OUTSIDE_THE_CALENDAR: u32 = 28;
 
 /// One accepted RFC 5545 `RRULE`.
 ///
@@ -64,12 +62,18 @@ pub struct Recurrence {
 impl Recurrence {
     /// Reads an `RRULE` line, with or without its `RRULE:` prefix.
     ///
-    /// Clause names and values are read in any case and around any
-    /// whitespace; blank parts and blank list items are skipped, list items
-    /// are sorted and deduplicated, and a clause given twice keeps its later
-    /// value. Faults within clauses are reported in rule order; a missing
-    /// `FREQ`, `UNTIL` given with `COUNT`, and clauses the frequency never
-    /// reads are checked after every clause has been read.
+    /// The `RRULE:` prefix is matched exactly as written, in upper case, so
+    /// `rrule:FREQ=DAILY` is refused as a clause named `RRULE:FREQ`. Clause
+    /// names, and the `FREQ` and `BYDAY` values, are read in any case;
+    /// `UNTIL` must be RFC 5545's UTC form exactly as written, such as
+    /// `20260914T090000Z`, with its `T` and `Z` in upper case. Names, values
+    /// and list items are read around any whitespace; blank parts and blank
+    /// list items are skipped, list items are sorted and deduplicated, and a
+    /// clause given twice keeps its later value.
+    ///
+    /// Faults within clauses are reported in rule order; a missing `FREQ`,
+    /// `UNTIL` given with `COUNT`, and clauses the frequency never reads are
+    /// checked after every clause has been read.
     ///
     /// # Errors
     ///
@@ -219,9 +223,24 @@ impl Recurrence {
     ///
     /// An hour, minute or date the rule leaves unstated is the anchor's, which
     /// is one value rather than none, and which value it is never matters
-    /// here, because every gap is a difference.
+    /// here, because every gap is a difference. A period longer than
+    /// [`TimeDelta`] can hold, which only a monthly `INTERVAL` in the billions
+    /// reaches, reads as [`TimeDelta::MAX`].
+    ///
+    /// The gap is measured on the wall clock. A daylight-saving change can
+    /// bring two firings closer in elapsed time by the size of that change:
+    /// `FREQ=DAILY;BYHOUR=0,2` fires at 00:00 and 02:00, two hours apart on
+    /// the clock, but on the morning London springs forward those are one
+    /// elapsed hour apart. A host that bounds elapsed time between firings
+    /// allows for the largest change its timezones make.
     pub fn period(&self) -> TimeDelta {
-        let whole = self.frequency.shortest() * i32::try_from(self.interval).unwrap_or(i32::MAX);
+        let whole = self
+            .frequency
+            .shortest()
+            .num_milliseconds()
+            .checked_mul(i64::from(self.interval))
+            .and_then(TimeDelta::try_milliseconds)
+            .unwrap_or(TimeDelta::MAX);
         if self.frequency == Frequency::Hourly {
             return whole;
         }
@@ -347,10 +366,24 @@ impl Recurrence {
     /// a second, dropping only its whole seconds, so an anchor at 09:17:42.5
     /// fires at 10:17:00.5; every other firing falls on a whole minute.
     ///
+    /// `anchor` is the same instant for the rule's whole life: the day a
+    /// monthly rule clamps from, the phase an `INTERVAL` counts from, and the
+    /// first of the firings `fired` counts. A rule anchored on 31 January
+    /// fires on 28 February and then 31 March, where one re-anchored on
+    /// 28 February would fire on the 28th for ever after.
+    ///
+    /// The anchor is itself the first firing, so a host takes it as such,
+    /// checking it with [`Recurrence::fires_at`], and asks for each later one
+    /// with `after` at or past the anchor. An `after` earlier than `anchor`
+    /// reads the periods before the anchor as well, in the anchor's phase, so
+    /// it can answer with a firing before the anchor: a daily rule anchored on
+    /// 14 September and asked after noon on 1 September answers 2 September.
+    /// [`Recurrence::fires_at`] relies on this, asking from the minute before
+    /// the anchor's own.
+    ///
     /// Finding the period `after` falls in takes one step per period between
     /// `anchor` and `after`, so the cost grows with that distance divided by
-    /// the period. Keep the anchor near the present: move it forward to the
-    /// latest firing rather than keeping the first one for ever.
+    /// the period.
     ///
     /// # Panics
     ///
@@ -429,12 +462,12 @@ impl Recurrence {
         self.step(from, -1)
     }
 
-    fn step(&self, from: NaiveDateTime, direction: i32) -> Option<NaiveDateTime> {
-        let interval = i32::try_from(self.interval).unwrap_or(i32::MAX) * direction;
+    fn step(&self, from: NaiveDateTime, direction: i64) -> Option<NaiveDateTime> {
+        let interval = i64::from(self.interval) * direction;
         match self.frequency {
-            Frequency::Hourly => from.checked_add_signed(TimeDelta::hours(i64::from(interval))),
-            Frequency::Daily => from.checked_add_signed(TimeDelta::days(i64::from(interval))),
-            Frequency::Weekly => from.checked_add_signed(TimeDelta::weeks(i64::from(interval))),
+            Frequency::Hourly => from.checked_add_signed(TimeDelta::try_hours(interval)?),
+            Frequency::Daily => from.checked_add_signed(TimeDelta::try_days(interval)?),
+            Frequency::Weekly => from.checked_add_signed(TimeDelta::try_weeks(interval)?),
             Frequency::Monthly => months(from, interval),
         }
     }
@@ -509,13 +542,9 @@ impl Recurrence {
 
 /// Adds whole months, clamping a day the target month does not have: 31
 /// January plus one month is the last day of February, never 3 March.
-fn months(from: NaiveDateTime, count: i32) -> Option<NaiveDateTime> {
-    let zero = from
-        .year()
-        .checked_mul(MONTHS_PER_YEAR)?
-        .checked_add(i32::try_from(from.month0()).ok()?)?
-        .checked_add(count)?;
-    let year = zero.div_euclid(MONTHS_PER_YEAR);
+fn months(from: NaiveDateTime, count: i64) -> Option<NaiveDateTime> {
+    let zero = i64::from(from.year()) * MONTHS_PER_YEAR + i64::from(from.month0()) + count;
+    let year = i32::try_from(zero.div_euclid(MONTHS_PER_YEAR)).ok()?;
     let month = u32::try_from(zero.rem_euclid(MONTHS_PER_YEAR) + 1).ok()?;
     let last = last_day(year, month);
     NaiveDate::from_ymd_opt(year, month, from.day().min(last))?.and_hms_opt(
@@ -526,14 +555,10 @@ fn months(from: NaiveDateTime, count: i32) -> Option<NaiveDateTime> {
 }
 
 fn last_day(year: i32, month: u32) -> u32 {
-    let (next_year, next_month) = if month == LAST_MONTH {
-        (year + 1, FIRST_MONTH)
-    } else {
-        (year, month + 1)
-    };
-    NaiveDate::from_ymd_opt(next_year, next_month, FIRST_MONTH_DAY)
-        .and_then(|first| first.pred_opt())
-        .map_or(LAST_DAY_OUTSIDE_THE_CALENDAR, |last| last.day())
+    (SHORTEST_MONTH_DAYS..=LAST_MONTH_DAY)
+        .rev()
+        .find(|day| NaiveDate::from_ymd_opt(year, month, *day).is_some())
+        .unwrap_or(SHORTEST_MONTH_DAYS)
 }
 
 fn list<T, F>(value: &str, read: F, clause: Clause) -> Result<Vec<T>>
