@@ -1,5 +1,6 @@
 use serde::Deserialize;
 
+use crate::parser::claude::background_task::BackgroundTask;
 use crate::parser::claude::task_patch::TaskPatch;
 use crate::parser::claude::task_usage::TaskUsage;
 use crate::parser::lenient;
@@ -21,6 +22,9 @@ pub(crate) struct Notice {
     pub(crate) session_id: Option<String>,
     #[serde(deserialize_with = "lenient")]
     pub(crate) task_id: Option<String>,
+    /// What runs in the background, on the notice that lists it.
+    #[serde(deserialize_with = "lenient")]
+    pub(crate) tasks: Option<Vec<BackgroundTask>>,
     /// The call that started the task.
     #[serde(deserialize_with = "lenient")]
     pub(crate) tool_use_id: Option<String>,

@@ -10,6 +10,7 @@ use tokio::process::ChildStdout;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 
+use crate::CUT_SHORT;
 use crate::activity::ELLIPSIS;
 use crate::drain::Drain;
 use crate::event::AgentEvent;
@@ -63,6 +64,15 @@ const BUFFER: usize = 8 * 1024;
 /// the first failure or usage limit the agent reports, which ends what is
 /// handed on and is never itself handed on: a stream reports it as its error.
 ///
+/// When [awaiting background work](Reader::awaiting_background), a finished
+/// turn settles nothing while the agent reports work running in the background,
+/// and the turn that work leads to is read like the first. A turn that begins
+/// after a finished one settled the run reopens it, so the run waits again.
+///
+/// A turn that begins after one finished, and is still unfinished when the
+/// output ends, ends the stream with a [`CUT_SHORT`] finish, keeping what the
+/// finished turns said.
+///
 /// Once the run starts to [`Drain`] it, the reader still takes everything the
 /// pipe holds, and stops when the drain ends.
 pub(crate) struct Reader {
@@ -77,9 +87,18 @@ pub(crate) struct Reader {
     journal: Journal,
     prose: Sink,
     scrubber: Scrubber,
-    verdicts: Option<mpsc::Sender<Verdict>>,
+    verdicts: Option<mpsc::UnboundedSender<Verdict>>,
     forward: Option<mpsc::UnboundedSender<AgentEvent>>,
     drain: Drain,
+    await_background: bool,
+    answered: watch::Sender<bool>,
+    /// Whether a verdict has settled the run.
+    settled: bool,
+    /// Whether the verdict that settled it was a finished turn a later one
+    /// may reopen.
+    reopenable: bool,
+    /// How many turns have finished.
+    finished: u64,
     count: u64,
     partials: u64,
     events: Vec<AgentEvent>,
@@ -94,7 +113,7 @@ impl Reader {
         journal: Journal,
         prose: Sink,
         scrubber: Scrubber,
-        verdicts: mpsc::Sender<Verdict>,
+        verdicts: mpsc::UnboundedSender<Verdict>,
         draining: watch::Receiver<bool>,
     ) -> Self {
         Self {
@@ -112,6 +131,11 @@ impl Reader {
             verdicts: Some(verdicts),
             forward: None,
             drain: Drain::new(draining),
+            await_background: false,
+            answered: watch::Sender::new(false),
+            settled: false,
+            reopenable: false,
+            finished: 0,
             count: 0,
             partials: 0,
             events: Vec::new(),
@@ -122,6 +146,19 @@ impl Reader {
     /// Hand each event on to `forward` as it is read, when given.
     pub(crate) fn forwarding(mut self, forward: Option<mpsc::UnboundedSender<AgentEvent>>) -> Self {
         self.forward = forward;
+        self
+    }
+
+    /// Let a finished turn settle the run only once nothing the agent sent to
+    /// the background is left to come, when `awaited`, and say on `answered`
+    /// that a turn finished while it waited.
+    pub(crate) fn awaiting_background(
+        mut self,
+        awaited: bool,
+        answered: watch::Sender<bool>,
+    ) -> Self {
+        self.await_background = awaited;
+        self.answered = answered;
         self
     }
 
@@ -145,6 +182,11 @@ impl Reader {
         stdout: Option<ChildStdout>,
     ) -> Result<StdoutParseResult, String> {
         let outcome = self.read(stdout).await;
+        if outcome.is_ok() && self.turn_open() && self.result.failure.is_none() {
+            let cut_short = AgentEvent::finished(Some(CUT_SHORT.to_string()));
+            self.hand_on(&cut_short);
+            self.result.record(cut_short);
+        }
         self.result.conclude();
         if let Err(reason) = &outcome {
             self.settle(Verdict::Failed(reason.clone()));
@@ -232,7 +274,11 @@ impl Reader {
                 .await;
         }
 
+        let begun = self.turn.turns_begun();
         self.turn.interpret(&line, &mut self.events);
+        if self.turn.turns_begun() > begun {
+            self.reopen();
+        }
         let events = std::mem::take(&mut self.events);
         for event in events {
             let event = match self.paragraphs.separated(event) {
@@ -272,7 +318,23 @@ impl Reader {
                     AgentEvent::Diagnostic(message)
                 }
                 AgentEvent::Finished { finish_reason } => {
-                    self.settle(Verdict::Finished);
+                    self.finished += 1;
+                    if self.agent == AgentKind::Claude && self.finished > self.turn.turns_begun() {
+                        tracing::debug!(
+                            agent = %self.agent,
+                            results = self.finished,
+                            begun = self.turn.turns_begun(),
+                            "more results than turns begun: claude wrote no init for one"
+                        );
+                    }
+                    if self.await_background {
+                        self.answered.send_replace(true);
+                    }
+                    if !(self.await_background
+                        && (self.turn.background_running() || self.turn_open()))
+                    {
+                        self.settle(Verdict::Finished);
+                    }
                     AgentEvent::finished(finish_reason)
                 }
                 AgentEvent::Credits(window) => {
@@ -313,8 +375,38 @@ impl Reader {
     }
 
     fn settle(&mut self, verdict: Verdict) {
-        if let Some(verdicts) = self.verdicts.take() {
-            let _ = verdicts.try_send(verdict);
+        if self.settled && !(self.reopenable && verdict != Verdict::Finished) {
+            return;
+        }
+        self.settled = true;
+        self.reopenable = self.await_background && verdict == Verdict::Finished;
+        let verdicts = if self.await_background {
+            self.verdicts.clone()
+        } else {
+            self.verdicts.take()
+        };
+        if let Some(verdicts) = verdicts {
+            let _ = verdicts.send(verdict);
+        }
+    }
+
+    /// Whether a turn began after one finished and has not finished itself.
+    /// Claude can begin a turn before writing the result of the one before,
+    /// so it is the count of turns begun and finished that says so.
+    fn turn_open(&self) -> bool {
+        self.finished > 0 && self.turn.turns_begun() > self.finished
+    }
+
+    /// Say the run must wait again, when a finished turn settled it and the
+    /// agent has begun another.
+    fn reopen(&mut self) {
+        if !self.reopenable {
+            return;
+        }
+        self.settled = false;
+        self.reopenable = false;
+        if let Some(verdicts) = &self.verdicts {
+            let _ = verdicts.send(Verdict::Reopened);
         }
     }
 }
@@ -433,7 +525,7 @@ mod tests {
             .expect("the agent");
         let stdout = agent.stdout.take();
         agent.wait().await.expect("the agent to exit");
-        let (verdicts, _settled) = mpsc::channel(2);
+        let (verdicts, _settled) = mpsc::unbounded_channel();
         let (draining, started) = watch::channel(false);
         draining.send_replace(true);
         let reader = Reader::new(

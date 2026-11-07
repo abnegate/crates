@@ -48,6 +48,23 @@ impl CliUsage {
         self
     }
 
+    /// These counts and `other`'s added together, a count neither reported
+    /// staying absent.
+    pub(crate) fn plus(self, other: Self) -> Self {
+        Self {
+            input_tokens: added(self.input_tokens, other.input_tokens),
+            output_tokens: added(self.output_tokens, other.output_tokens),
+            cache_read_input_tokens: added(
+                self.cache_read_input_tokens,
+                other.cache_read_input_tokens,
+            ),
+            cache_creation_input_tokens: added(
+                self.cache_creation_input_tokens,
+                other.cache_creation_input_tokens,
+            ),
+        }
+    }
+
     /// Every token the model read, fresh or from the cache.
     pub fn prompt_tokens(&self) -> u64 {
         [
@@ -67,6 +84,13 @@ impl From<&CliUsage> for Usage {
             narrow(counts.prompt_tokens()),
             narrow(counts.output_tokens.unwrap_or_default()),
         )
+    }
+}
+
+fn added(first: Option<u64>, second: Option<u64>) -> Option<u64> {
+    match (first, second) {
+        (Some(first), Some(second)) => Some(first.saturating_add(second)),
+        (first, second) => first.or(second),
     }
 }
 

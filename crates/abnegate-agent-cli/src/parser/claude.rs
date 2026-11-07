@@ -1,11 +1,13 @@
 //! Reading `claude --output-format stream-json`.
 
+mod background_task;
 mod cli_content_block;
 mod cli_message;
 mod cli_usage;
 mod credits_refusal;
 mod delegation;
 mod hand_back;
+mod lifecycle;
 mod model_usage;
 mod notice;
 mod rate_limit_report;

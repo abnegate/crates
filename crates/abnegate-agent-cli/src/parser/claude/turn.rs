@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 use abnegate_llm::Limit;
@@ -17,6 +18,7 @@ use crate::parser::claude::cli_content_block::CliContentBlock;
 use crate::parser::claude::cli_message::CliMessage;
 use crate::parser::claude::cli_usage::CliUsage;
 use crate::parser::claude::credits_refusal::CreditsRefusal;
+use crate::parser::claude::lifecycle::Lifecycle;
 use crate::parser::claude::model_usage::ModelUsage;
 use crate::parser::claude::notice::Notice;
 use crate::parser::claude::rate_limit_report::OVERAGE_INCLUDED_WINDOW;
@@ -50,6 +52,19 @@ const INIT_SUBTYPE: &str = "init";
 
 /// The kind of line that tells of the session or of a task claude runs.
 const SYSTEM: &str = "system";
+
+/// The `system` line that lists all that runs in the background.
+const BACKGROUND_TASKS_SUBTYPE: &str = "background_tasks_changed";
+
+/// The kind of line that reports a command claude runs on its own account.
+const COMMAND_LIFECYCLE: &str = "command_lifecycle";
+
+/// The tool that sets, or with [`WAKEUP_STOP`] cancels, the wakeup that starts
+/// a later turn.
+const SCHEDULE_WAKEUP: &str = "ScheduleWakeup";
+
+/// The [`SCHEDULE_WAKEUP`] argument that cancels the wakeup.
+const WAKEUP_STOP: &str = "stop";
 
 /// The kind of line that hands the model back what its tools printed.
 const USER: &str = "user";
@@ -123,9 +138,31 @@ pub struct Turn {
     /// The calls waiting on their results and the subagents the main agent
     /// started.
     roster: Roster,
+    /// The tasks the latest notice of what runs in the background listed.
+    running: Vec<Option<String>>,
+    /// Every task any such notice has listed and no notice has said ended.
+    listed: BTreeSet<String>,
+    /// The turns claude still owes: one for each listed task that ended and
+    /// each wakeup that fired, paid as each turn's `init` line begins it.
+    owed: usize,
+    /// The main agent's calls that set a wakeup still to fire.
+    wakeups: BTreeSet<String>,
+    /// How many turns an `init` line has begun.
+    begun: u64,
 }
 
 impl Turn {
+    /// How many turns an `init` line has begun.
+    pub(crate) fn turns_begun(&self) -> u64 {
+        self.begun
+    }
+
+    /// Whether work runs in the background, a wakeup has yet to fire, or a
+    /// turn either of them led to has yet to begin.
+    pub(crate) fn background_running(&self) -> bool {
+        !self.running.is_empty() || self.owed > 0 || !self.wakeups.is_empty()
+    }
+
     /// Translate one line of the stream, appending whatever it means beside
     /// the lines before it.
     pub fn interpret(&mut self, line: &str, events: &mut Vec<AgentEvent>) {
@@ -143,14 +180,16 @@ impl Turn {
                     if let Some(report) = reply.tool_use_result.as_mut() {
                         report.read_answer(line);
                     }
-                    self.roster.returned(
-                        results(reply.message),
-                        reply.tool_use_result.as_ref(),
-                        events,
-                    );
+                    self.returned(reply.message, reply.tool_use_result.as_ref(), events);
                 }
                 Err(_) => salvage(line, events),
             },
+            Some(COMMAND_LIFECYCLE) => {
+                if serde_json::from_str::<Lifecycle>(line).is_ok_and(|lifecycle| lifecycle.woke()) {
+                    self.wakeups.clear();
+                    self.owed += 1;
+                }
+            }
             _ => match serde_json::from_str::<StreamEvent>(line) {
                 Ok(event) => self.read(event, events),
                 Err(_) => salvage(line, events),
@@ -223,11 +262,26 @@ impl Turn {
                 tool_use_result,
             } => {
                 let report = tool_use_result.as_ref().and_then(Report::from_value);
-                self.roster
-                    .returned(results(message), report.as_ref(), events);
+                self.returned(message, report.as_ref(), events);
             }
             StreamEvent::Unknown => {}
         }
+    }
+
+    /// A `user` line's tool results, a wakeup that could not be set forgotten.
+    fn returned(
+        &mut self,
+        message: Option<CliMessage>,
+        report: Option<&Report>,
+        events: &mut Vec<AgentEvent>,
+    ) {
+        let results: Vec<(String, Value, bool)> = results(message).collect();
+        for (id, _, failed) in &results {
+            if *failed {
+                self.wakeups.remove(id);
+            }
+        }
+        self.roster.returned(results, report, events);
     }
 
     /// A `system` line: the session's opening notice, or news of a task.
@@ -236,12 +290,29 @@ impl Turn {
             return;
         };
         if subtype == INIT_SUBTYPE {
+            self.begun += 1;
+            self.owed = self.owed.saturating_sub(1);
             self.announce(Some(INIT_SUBTYPE), notice.session_id, events);
+            return;
+        }
+        if subtype == BACKGROUND_TASKS_SUBTYPE {
+            if let Some(tasks) = notice.tasks {
+                self.running = tasks.into_iter().map(|task| task.task_id).collect();
+                self.listed.extend(self.running.iter().flatten().cloned());
+            }
             return;
         }
         let Some(event) = TaskEvent::named(subtype) else {
             return;
         };
+        if event == TaskEvent::Notification
+            && notice
+                .task_id
+                .as_ref()
+                .is_some_and(|task| self.listed.remove(task))
+        {
+            self.owed += 1;
+        }
         events.extend(self.roster.noticed(event, notice).map(AgentEvent::Subagent));
     }
 
@@ -257,6 +328,21 @@ impl Turn {
         if let Some(session) = session.filter(|session| !session.is_empty()) {
             self.announced = true;
             events.push(AgentEvent::Session(session));
+        }
+    }
+
+    /// Note a wakeup the main agent set or cancelled in `message`.
+    fn schedule(&mut self, message: &CliMessage) {
+        for block in &message.content {
+            if let CliContentBlock::ToolUse { id, name, input } = block
+                && name == SCHEDULE_WAKEUP
+            {
+                if input.get(WAKEUP_STOP).and_then(Value::as_bool) == Some(true) {
+                    self.wakeups.clear();
+                } else {
+                    self.wakeups.insert(id.clone());
+                }
+            }
         }
     }
 
@@ -289,6 +375,7 @@ impl Turn {
         let Some(message) = message else {
             return;
         };
+        self.schedule(&message);
         if let Some(model) = message.model.filter(|model| !model.is_empty()) {
             if self.model.as_ref() != Some(&model) {
                 self.used = None;

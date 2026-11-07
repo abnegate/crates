@@ -320,6 +320,14 @@ pub const STDERR_HEADING: &str = "\n\nThe end of the agent's stderr:\n";
 /// before it names the limit.
 pub const PROSE_EXCEEDED: &str = "the agent's prose exceeded";
 
+/// The finish reason of a run stopped before Claude finished, on its
+/// [`Completion`](abnegate_llm::Completion) and on the
+/// [finished](AgentEvent::Finished) event that ends its stream. Its answer is
+/// what the turns that did finish gave: either a later turn was still being
+/// written when the agent exited or was stopped, or the run's timeout came
+/// while it [waited on background work](CliSettings::await_background).
+pub const CUT_SHORT: &str = "cut_short";
+
 #[cfg(doctest)]
 #[doc = include_str!("../README.md")]
 struct ReadmeDoctests;
