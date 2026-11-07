@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::time::Duration;
@@ -29,9 +30,6 @@ const AGENT_TASKS: &[&str] = &["local_agent", "remote_agent"];
 
 /// The status of a finished subagent's report.
 const COMPLETED: &str = "completed";
-
-/// How claude opens what it writes in place of a result too large to hold.
-const PERSISTED: &str = "<persisted-output>\nOutput too large";
 
 /// The statuses of a call that only launched its subagent, which then runs
 /// on in the background, remotely or as a teammate and reports through task
@@ -238,13 +236,9 @@ impl Roster {
         let background = *self.subagents.get(id)?;
         let empty = Report::default();
         let report = report.unwrap_or(&empty);
-        let whole = report
-            .content
-            .as_ref()
-            .filter(|_| text.starts_with(PERSISTED))
-            .map(printed)
-            .filter(|whole| !whole.is_empty());
-        let written = hand_back::report(whole.as_deref().unwrap_or(text));
+        let written = report
+            .replacing(text)
+            .map_or_else(|| hand_back::report(text), Cow::Borrowed);
         if let Some(task) = report.task.as_ref().filter(|task| !task.is_empty()) {
             self.tasks
                 .entry(task.clone())

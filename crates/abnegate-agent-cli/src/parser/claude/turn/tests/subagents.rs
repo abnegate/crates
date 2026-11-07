@@ -1250,7 +1250,11 @@ fn a_report_too_large_for_its_result_stands_when_the_account_lacks_it() {
         json!({"status": "completed"}),
         json!({"status": "completed", "content": []}),
         json!({"status": "completed", "content": [{"type": "text", "text": ""}]}),
+        json!({"status": "completed", "content": [{"type": "text", "text": "  \n "}]}),
         json!({"status": "completed", "content": 7}),
+        json!({"status": "completed", "agentId": "a1", "content": []}),
+        json!({"status": "completed", "agentId": "a1", "content": "Not in blocks."}),
+        json!({"status": "completed", "agentId": "a1", "content": [{"type": "text", "text": "[Harness note, not part of the agent's report: x]"}]}),
     ] {
         let events = interpret_all(&stream(&[
             delegated("sonnet").to_string(),
@@ -1266,6 +1270,170 @@ fn a_report_too_large_for_its_result_stands_when_the_account_lacks_it() {
 }
 
 #[test]
+fn notes_for_the_main_agent_never_reach_a_report_read_from_the_account() {
+    let events = interpret_all(&stream(&[
+        delegated("sonnet").to_string(),
+        returned_to(
+            AGENT_CALL,
+            PERSISTED,
+            false,
+            &json!({"status": "completed", "agentId": "a1", "content": [
+                {"type": "text", "text": "<tools-used-before-summary>WebFetch</tools-used-before-summary>\n\n[harness: a note]\n\n## The report\n\n[harness: its own words]"},
+                {"type": "text", "text": "[Harness note, not part of the agent's report: x]"},
+            ]}),
+        ),
+    ]));
+
+    assert_eq!(
+        last_update(&events, AGENT_CALL).and_then(|update| update.summary.as_deref()),
+        Some("## The report\n\n[harness: its own words]")
+    );
+}
+
+#[test]
+fn a_partial_notice_stays_with_a_report_read_from_the_account() {
+    let events = interpret_all(&stream(&[
+        delegated("sonnet").to_string(),
+        returned_to(
+            AGENT_CALL,
+            PERSISTED,
+            false,
+            &json!({"status": "completed", "agentId": "a1", "content": [{"type": "text", "text": format!("{CUT_OFF}\nHalf.")}]}),
+        ),
+    ]));
+
+    assert_eq!(
+        last_update(&events, AGENT_CALL).and_then(|update| update.summary.clone()),
+        Some(format!("{CUT_OFF}\nHalf."))
+    );
+}
+
+#[test]
+fn every_wrapper_claude_writes_is_replaced_by_the_accounts_content() {
+    for wrapper in [
+        "<persisted-output>\nOutput exceeded the 64MB persist limit; only the first 64MB were saved to: /w/x\n</persisted-output>",
+        "<truncated-output>\nOutput too large (9MB). It could not be saved.\n</truncated-output>",
+    ] {
+        let events = interpret_all(&stream(&[
+            delegated("sonnet").to_string(),
+            returned_to(
+                AGENT_CALL,
+                wrapper,
+                false,
+                &json!({"status": "completed", "agentId": "a1", "content": [{"type": "text", "text": "The whole report."}]}),
+            ),
+        ]));
+
+        assert_eq!(
+            last_update(&events, AGENT_CALL).and_then(|update| update.summary.as_deref()),
+            Some("The whole report."),
+            "{wrapper}"
+        );
+    }
+}
+
+#[test]
+fn another_tools_content_is_never_shown_as_a_subagents_report() {
+    let write = called("toolu_21Write", "Write", &json!({"file_path": "/w/a"}));
+    let line = json!({
+        "type": "user",
+        "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": AGENT_CALL, "content": PERSISTED},
+            {"type": "tool_result", "tool_use_id": "toolu_21Write", "content": "Created."},
+        ]},
+        "parent_tool_use_id": null,
+        "session_id": "6f1",
+        "tool_use_result": {"type": "create", "filePath": "/w/a", "content": "THE FILE WRITTEN"},
+    });
+    let events = interpret_all(&stream(&[
+        delegated("sonnet").to_string(),
+        write.to_string(),
+        line.to_string(),
+    ]));
+
+    assert_eq!(
+        last_update(&events, AGENT_CALL).and_then(|update| update.summary.as_deref()),
+        Some(PERSISTED)
+    );
+}
+
+#[test]
+fn a_tools_content_nested_past_any_limit_costs_nothing_on_its_line() {
+    let content = format!("{}{}", "[".repeat(300), "]".repeat(300));
+    let line = format!(
+        r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"toolu_22Read","content":"read"}}]}},"session_id":"6f1","tool_use_result":{{"content":{content}}}}}"#
+    );
+    let events = interpret_all(&stream(&[
+        called("toolu_22Read", "Read", &json!({"file_path": "/w/a"})).to_string(),
+        line,
+    ]));
+
+    assert_eq!(outputs(&events).len(), 1, "{events:?}");
+}
+
+#[test]
+fn a_user_event_read_as_a_stream_event_reads_its_report_from_the_account_too() {
+    let mut turn = Turn::default();
+    let mut events = Vec::new();
+    turn.interpret(&delegated("sonnet").to_string(), &mut events);
+    let line = returned_to(
+        AGENT_CALL,
+        PERSISTED,
+        false,
+        &json!({"status": "completed", "agentId": "a1", "content": [{"type": "text", "text": "The whole report."}]}),
+    );
+    let event: StreamEvent = serde_json::from_str(&line).expect("an event");
+    turn.read(event, &mut events);
+
+    assert_eq!(
+        last_update(&events, AGENT_CALL).and_then(|update| update.summary.as_deref()),
+        Some("The whole report.")
+    );
+}
+
+#[test]
+fn a_frame_the_accounts_content_quotes_stays_in_the_report() {
+    let whole = format!("{FRAME}\n  An example, as the subagent wrote it.\n{TRAILER}");
+    let events = interpret_all(&stream(&[
+        delegated("sonnet").to_string(),
+        returned_to(
+            AGENT_CALL,
+            PERSISTED,
+            false,
+            &json!({"status": "completed", "agentId": "a1", "content": [{"type": "text", "text": whole}]}),
+        ),
+    ]));
+
+    assert_eq!(
+        last_update(&events, AGENT_CALL).and_then(|update| update.summary.as_deref()),
+        Some(whole.as_str())
+    );
+}
+
+#[test]
+fn every_line_of_the_trailer_has_to_be_one_claude_writes() {
+    let report = "The report.";
+    let usage = "<usage>subagent_tokens: 700\ntool_uses: 0\nduration_ms: 300</usage>";
+
+    for unknown in [
+        format!("{FRAME}\n  {report}\nagentId: a1\nA paragraph at column zero.\n{usage}"),
+        format!("{FRAME}\n  {report}\nagentId: a1\nworktreePath: /w\nA paragraph.\n{usage}"),
+        format!("{FRAME}\n  {report}\nagentId: a1"),
+        format!("{FRAME}\n  {report}\nagentId: a1\n{usage}\nA paragraph at column zero."),
+    ] {
+        assert_eq!(summary_of(&unknown).as_deref(), Some(unknown.as_str()));
+    }
+
+    assert_eq!(
+        summary_of(&format!(
+            "{FRAME}\n  {report}\nagentId: a1\nworktreePath: /w\nworktreeBranch: b\n{usage}"
+        ))
+        .as_deref(),
+        Some(report)
+    );
+}
+
+#[test]
 fn the_accounts_content_never_replaces_a_result_that_is_no_wrapper() {
     for text in [
         "The report itself.".to_string(),
@@ -1277,7 +1445,7 @@ fn the_accounts_content_never_replaces_a_result_that_is_no_wrapper() {
                 AGENT_CALL,
                 &text,
                 false,
-                &json!({"status": "completed", "content": [{"type": "text", "text": "Something else."}]}),
+                &json!({"status": "completed", "agentId": "a1", "content": [{"type": "text", "text": "Something else."}]}),
             ),
         ]));
 
