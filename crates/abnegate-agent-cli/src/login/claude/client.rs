@@ -4,6 +4,7 @@ mod granted;
 mod reason;
 mod refresh;
 
+use std::fmt;
 use std::time::Duration;
 
 use abnegate_http::metadata::MetadataResolver;
@@ -11,10 +12,13 @@ use abnegate_http::read_capped;
 use abnegate_secret::REDACTED;
 use abnegate_secret::SecretValue;
 use abnegate_secret::redact;
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use chrono::Utc;
 use reqwest::Proxy;
 use reqwest::Url;
 use reqwest::header::ACCEPT;
+use reqwest::header::HeaderValue;
 use reqwest::redirect::Policy;
 use serde::Serialize;
 
@@ -39,6 +43,11 @@ const REFRESH_TOKEN: &str = "refresh_token";
 const UNREADABLE: &str = "Claude's token endpoint sent a grant that could not be read";
 const UNRENEWABLE: &str = "This Claude sign-in has no refresh token";
 const PROXY: &str = "proxy";
+const BASIC_SCHEME: &str = "Basic ";
+const BASIC_SEPARATOR: char = ':';
+const USERNAME_REFUSED: &str = "a proxy username cannot hold a colon";
+const CONTROL_REFUSED: &str = "a proxy username or password cannot hold a control character";
+const CREDENTIALS_REFUSED: &str = "the proxy's username and password cannot be sent";
 
 /// Exchanges a sign-in's code for [`Tokens`], and renews them, at the
 /// [`Endpoints::token`] endpoint.
@@ -48,15 +57,26 @@ const PROXY: &str = "proxy";
 /// name resolves to, gives up on a request after 30 seconds, reads at most
 /// 64 KiB of an answer, and names itself `abnegate-agent-cli/<version>`. It
 /// goes through no proxy, whatever this process's environment says, unless
-/// one is given with [`Client::with_proxy`].
+/// one is given with [`Client::with_proxy`] or
+/// [`Client::with_authenticated_proxy`].
 ///
 /// Building one starts a connection pool and loads the TLS roots, so build
 /// it once and clone it wherever it is needed: clones share the pool.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Client {
     http: reqwest::Client,
     endpoints: Endpoints,
     proxy: Option<Url>,
+}
+
+impl fmt::Debug for Client {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Client")
+            .field("endpoints", &self.endpoints)
+            .field("proxy", &self.proxy.as_ref().map(Url::as_str))
+            .finish_non_exhaustive()
+    }
 }
 
 impl Client {
@@ -76,7 +96,7 @@ impl Client {
 
     /// This client, sending every request through the HTTP proxy at
     /// `proxy`, such as `http://proxy.internal:3128`. The proxy is never read
-    /// from the environment: this is the only way to set one.
+    /// from the environment.
     ///
     /// The URL is checked as [`Endpoints`] checks theirs, so a loopback or
     /// LAN proxy is allowed, and a link-local or cloud metadata one, another
@@ -91,7 +111,67 @@ impl Client {
     pub fn with_proxy(self, proxy: &str) -> Result<Self, LoginError> {
         let proxy = checked(PROXY, proxy)?;
         Ok(Self {
-            http: http(Some(&proxy))?,
+            http: http(Some((&proxy, None)))?,
+            proxy: Some(proxy),
+            ..self
+        })
+    }
+
+    /// This client, sending every request through the HTTP proxy at `proxy`
+    /// and signing in to it as `username` with `password`.
+    ///
+    /// The URL is checked as [`Client::with_proxy`] checks it, so credentials
+    /// still may not be written in it: they are given here so they stay out of
+    /// [`Client::proxy`], `Debug` and every error. They are sent exactly as
+    /// given, a `%` included, and only to the proxy: on the request it
+    /// forwards for an `http` endpoint, and on the `CONNECT` that opens the
+    /// tunnel to an `https` one. An empty username and password are sent as
+    /// such.
+    ///
+    /// A proxy that refuses them answers a forwarded request with a 407, which
+    /// is a [`LoginError::Rejected`], and refuses a tunnel, which is a
+    /// [`LoginError::Transport`].
+    ///
+    /// # Errors
+    ///
+    /// [`LoginError::Endpoint`] naming the `proxy` when its URL is refused,
+    /// `username` holds a colon or either holds a control character, which
+    /// HTTP Basic cannot carry, or, defensively, when the header cannot be
+    /// built, which base64 never causes. [`LoginError::Transport`] when the
+    /// HTTP client cannot be built.
+    pub fn with_authenticated_proxy(
+        self,
+        proxy: &str,
+        username: &str,
+        password: impl Into<SecretValue>,
+    ) -> Result<Self, LoginError> {
+        let proxy = checked(PROXY, proxy)?;
+        let password = password.into();
+        let refused = |reason: &str| LoginError::Endpoint {
+            name: PROXY,
+            reason: reason.to_string(),
+        };
+        if username.contains(BASIC_SEPARATOR) {
+            return Err(refused(USERNAME_REFUSED));
+        }
+        if username
+            .chars()
+            .chain(password.expose().chars())
+            .any(char::is_control)
+        {
+            return Err(refused(CONTROL_REFUSED));
+        }
+        let credentials =
+            SecretValue::new(format!("{username}{BASIC_SEPARATOR}{}", password.expose()));
+        let encoded = SecretValue::new(format!(
+            "{BASIC_SCHEME}{}",
+            STANDARD.encode(credentials.expose())
+        ));
+        let mut authorization =
+            HeaderValue::from_str(encoded.expose()).map_err(|_| refused(CREDENTIALS_REFUSED))?;
+        authorization.set_sensitive(true);
+        Ok(Self {
+            http: http(Some((&proxy, Some(authorization))))?,
             proxy: Some(proxy),
             ..self
         })
@@ -221,7 +301,7 @@ impl Client {
     }
 }
 
-fn http(proxy: Option<&Url>) -> Result<reqwest::Client, LoginError> {
+fn http(proxy: Option<(&Url, Option<HeaderValue>)>) -> Result<reqwest::Client, LoginError> {
     let builder = reqwest::Client::builder()
         .timeout(TIMEOUT)
         .no_proxy()
@@ -229,8 +309,12 @@ fn http(proxy: Option<&Url>) -> Result<reqwest::Client, LoginError> {
         .dns_resolver(MetadataResolver::new())
         .user_agent(USER_AGENT);
     let builder = match proxy {
-        Some(proxy) => {
-            builder.proxy(Proxy::all(proxy.clone()).map_err(|error| transport(error, &[]))?)
+        Some((proxy, credentials)) => {
+            let proxy = Proxy::all(proxy.clone()).map_err(|error| transport(error, &[]))?;
+            builder.proxy(match credentials {
+                Some(authorization) => proxy.custom_http_auth(authorization),
+                None => proxy,
+            })
         }
         None => builder,
     };
