@@ -10,6 +10,7 @@ use crate::activity::subject;
 use crate::event::AgentEvent;
 use crate::output::Output;
 use crate::parser::claude::delegation::Delegation;
+use crate::parser::claude::hand_back;
 use crate::parser::claude::notice::Notice;
 use crate::parser::claude::report::Report;
 use crate::parser::claude::task_event::TaskEvent;
@@ -221,6 +222,8 @@ impl Roster {
     /// foreground subagent's result is its report; a launched one's says
     /// only that it runs on, and its report comes later as task news. Only a
     /// report that says something outranks a later task notice's summary.
+    /// The [`Output`] of the call keeps the frame claude wrote around the
+    /// report, as the main agent read it; only this news is without it.
     fn reported(
         &mut self,
         id: &str,
@@ -229,6 +232,7 @@ impl Roster {
         report: Option<&Report>,
     ) -> Option<Subagent> {
         let background = *self.subagents.get(id)?;
+        let written = hand_back::report(text);
         let empty = Report::default();
         let report = report.unwrap_or(&empty);
         if let Some(task) = report.task.as_ref().filter(|task| !task.is_empty()) {
@@ -242,7 +246,7 @@ impl Roster {
         };
         if failed {
             update.status = Some(SubagentStatus::Failed);
-            update.error = shown(Some(text));
+            update.error = shown(Some(&written));
             return Some(update);
         }
         match report.status.as_deref() {
@@ -255,11 +259,11 @@ impl Roster {
                 update.tool_uses = report.tool_uses;
                 update.duration = report.duration_ms.map(Duration::from_millis);
                 update.tokens = report.tokens;
-                update.summary = shown(Some(text));
+                update.summary = shown(Some(&written));
             }
             None if !background => {
                 update.status = Some(SubagentStatus::Completed);
-                update.summary = shown(Some(text));
+                update.summary = shown(Some(&written));
             }
             Some(_) | None => {}
         }
