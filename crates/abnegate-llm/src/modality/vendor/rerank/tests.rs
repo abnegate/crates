@@ -529,6 +529,33 @@ async fn a_key_echoed_in_a_refusal_is_redacted() {
 }
 
 #[tokio::test]
+async fn a_padded_key_echoed_without_its_padding_is_redacted() {
+    let server = MockServer::start().await;
+    serve(
+        &server,
+        ResponseTemplate::new(403)
+            .set_body_string(format!("caller {SHAPELESS_KEY} is not allowed")),
+    )
+    .await;
+
+    let error = provider(
+        HttpRerankConfig::new(url(&server), MODEL).with_api_key(format!("  {SHAPELESS_KEY}\n")),
+    )
+    .rerank(QUERY, &documents(&["first"]))
+    .await
+    .unwrap_err();
+    let rendered = error.to_string();
+
+    assert!(!rendered.contains(SHAPELESS_KEY), "{rendered}");
+    assert!(rendered.contains(REDACTED), "{rendered}");
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(
+        requests[0].headers.get("authorization").unwrap(),
+        format!("Bearer {SHAPELESS_KEY}").as_str()
+    );
+}
+
+#[tokio::test]
 async fn a_key_echoed_in_an_answer_that_does_not_decode_is_redacted() {
     let body = json!({ "results": format!("rejected caller {SHAPELESS_KEY}") });
 
