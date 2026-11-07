@@ -52,9 +52,9 @@ const OVERSIZED: &str = "GitLab's answer was larger than this crate reads";
 /// Reads a GitLab project's default branch, its tree and its blobs, on
 /// gitlab.com or a self-hosted instance.
 ///
-/// - Projects: `get_default_branch`.
-/// - Trees: `fetch_tree`, which walks every page of a project's tree.
-/// - Blobs: `fetch_blob`, which reads a blob's bytes up to a limit.
+/// - Projects: [`Self::get_default_branch`].
+/// - Trees: [`Self::fetch_tree`], which walks every page of a project's tree.
+/// - Blobs: [`Self::fetch_blob`], which reads a blob's bytes up to a limit.
 ///
 /// Every request carries the token it is given in GitLab's `PRIVATE-TOKEN`
 /// header, marked sensitive so that it never appears in a debug rendering. An

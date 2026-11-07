@@ -46,9 +46,10 @@
 //!   pull requests on GitHub or a GitHub Enterprise install, sets them to
 //!   merge once they are ready and moves them in and out of draft, reads back
 //!   how each one was received, lists a repository's branches, each named by
-//!   a [`RemoteBranchName`] as GitHub spells it, and creates
-//!   repositories there and registers their webhooks, over the REST and
-//!   GraphQL APIs; and
+//!   a [`RemoteBranchName`] as GitHub spells it, reads a repository's tree
+//!   at a branch, tag or commit with `fetch_tree_at` and a file there with
+//!   `fetch_contents`, and creates repositories there and registers their
+//!   webhooks, over the REST and GraphQL APIs; and
 //!   `pull_request::WebhookSignature`, which checks that a webhook delivery was
 //!   signed with the secret its webhook was registered with.
 //! - `github-app`: `github`, plus `pull_request::ApplicationClaims`, which

@@ -1,11 +1,12 @@
 //! Repository reads from GitLab, on gitlab.com or a self-hosted instance.
 //!
 //! Only the `gitlab` feature builds this module. [`GitLabService`] reads what
-//! indexing a project's files takes, and nothing else: `get_default_branch`
-//! reads the branch a project builds from, `fetch_tree` lists every entry of
-//! its tree at a branch, tag or commit, walking every page GitLab answers
-//! with, and `fetch_blob` reads one blob's bytes, as they are, up to the
-//! limit its caller passes.
+//! indexing a project's files takes, and nothing else:
+//! [`GitLabService::get_default_branch`] reads the branch a project builds
+//! from, [`GitLabService::fetch_tree`] lists every entry of its tree at a
+//! branch, tag or commit, walking every page GitLab answers with, and
+//! [`GitLabService::fetch_blob`] reads one blob's bytes, as they are, up to
+//! the limit its caller passes.
 //!
 //! A project is named by a [`Project`], its path or its numeric id, and
 //! travels as one percent-encoded path segment, so `group/sub` is sent as
