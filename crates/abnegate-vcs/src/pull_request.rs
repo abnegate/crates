@@ -26,12 +26,16 @@
 //! origin, as path segments or as a query value, and a segment that is
 //! empty, `.` or `..` is refused before anything is sent.
 //!
-//! Three values a caller passes as plain text are held to rules before they
+//! Five values a caller passes as plain text are held to rules before they
 //! travel:
 //!
 //! - the ref [`PullRequestService::resolve_commit`] resolves, held to a
 //!   [`crate::BranchName`]'s rules unless it is `HEAD`, travels as one path
 //!   segment, a `/` in it sent as `%2F`;
+//! - the ref [`PullRequestService::fetch_tree_at`] reads a tree at, held to
+//!   the same rules, travels as one path segment the same way;
+//! - the ref [`PullRequestService::fetch_contents`] reads a file at, held to
+//!   the same rules, travels as the `ref` query value;
 //! - the tag [`PullRequestService::fetch_release`] reads, held to the same
 //!   rules, travels as one path segment the same way;
 //! - the fork owner [`PullRequestService::find_pull_request`] and
@@ -58,6 +62,9 @@
 //! return an [`Excerpt`] that is never longer than that limit, never ends inside
 //! a character, and says in [`Excerpt::truncated`] whether the text went on;
 //! displayed, a cut excerpt ends with [`Excerpt::MARKER`].
+//! [`PullRequestService::fetch_contents`] reads a file through GitHub's
+//! contents API instead, no more of the answer than any JSON answer, and
+//! returns its bytes decoded from base64 in a [`Contents`].
 //!
 //! [`WebhookSignature`] checks that a webhook delivery was signed with the
 //! secret its webhook was registered with, before anything reads it.
@@ -82,6 +89,7 @@ mod checks_outcome;
 mod collected;
 mod comment_request;
 mod commit_status;
+mod contents;
 mod create_request;
 mod created;
 mod created_repository;
@@ -106,6 +114,7 @@ mod github_comment;
 mod github_commit;
 mod github_commit_status;
 mod github_commit_status_record;
+mod github_contents;
 mod github_created_repository;
 mod github_deployment;
 mod github_deployment_status;
@@ -238,6 +247,7 @@ pub use crate::pull_request::check_run::CheckRun;
 pub use crate::pull_request::checks_outcome::ChecksOutcome;
 pub use crate::pull_request::collected::Collected;
 pub use crate::pull_request::commit_status::CommitStatus;
+pub use crate::pull_request::contents::Contents;
 pub use crate::pull_request::created::CreatedPullRequest;
 pub use crate::pull_request::created_repository::CreatedRepository;
 pub use crate::pull_request::deployment::Deployment;

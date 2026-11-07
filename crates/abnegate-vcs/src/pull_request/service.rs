@@ -171,8 +171,8 @@ const GIT_SUFFIX: &str = ".git";
 ///   [`Self::pull_request_exists_for_branch`],
 ///   [`Self::create_pull_request`] and [`Self::create_pull_request_from`].
 /// - Reading: [`Self::fetch_pull`], [`Self::fetch_files`],
-///   [`Self::fetch_diff`], [`Self::fetch_file`], [`Self::fetch_mergeability`]
-///   and [`Self::fetch_reception`].
+///   [`Self::fetch_diff`], [`Self::fetch_file`], [`Self::fetch_contents`],
+///   [`Self::fetch_mergeability`] and [`Self::fetch_reception`].
 /// - Resolving a branch, tag or commit to the commit it names:
 ///   [`Self::resolve_commit`].
 /// - Checking: [`Self::fetch_checks`], [`Self::collect_check_runs`] and
@@ -199,7 +199,8 @@ const GIT_SUFFIX: &str = ".git";
 /// - Issues: [`Self::list_issues`], [`Self::fetch_issue`],
 ///   [`Self::list_comments`], [`Self::create_issue`], [`Self::update_issue`],
 ///   [`Self::close_issue`] and [`Self::post_comment`].
-/// - Trees and blobs: [`Self::fetch_tree`] and [`Self::fetch_blob`].
+/// - Trees and blobs: [`Self::fetch_tree`], [`Self::fetch_tree_at`] and
+///   [`Self::fetch_blob`].
 /// - Branches: [`Self::list_branches`].
 ///
 /// Review threads, resolving one, an administrator's merge, auto-merge,
