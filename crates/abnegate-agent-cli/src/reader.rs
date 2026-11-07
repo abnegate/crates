@@ -322,7 +322,9 @@ impl Reader {
                     if self.await_background {
                         self.answered.send_replace(true);
                     }
-                    if !(self.await_background && self.turn.background_running()) {
+                    if !(self.await_background
+                        && (self.turn.background_running() || self.turn_open()))
+                    {
                         self.settle(Verdict::Finished);
                     }
                     AgentEvent::finished(finish_reason)

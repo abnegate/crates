@@ -3525,6 +3525,65 @@ exit 0"#;
         }
     }
 
+    /// A trip in the grace still fails the run when a turn begins after it.
+    #[tokio::test]
+    async fn a_diagnostic_tripped_before_a_reopening_still_fails_the_run() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = r#"echo '{"type":"system","subtype":"init","session_id":"s"}'
+echo '{"type":"result","subtype":"success","is_error":false,"result":"One."}'
+sleep 1
+echo 'API Error: 429 Too Many Requests' >&2
+sleep 1
+echo '{"type":"system","subtype":"init","session_id":"s"}'
+echo '{"type":"result","subtype":"success","is_error":false,"result":"Two."}'
+sleep 1
+exit 0"#;
+        let provider = CliProvider::agent(
+            AgentKind::Claude,
+            settings(&directory, script)
+                .with_tripwire(|line| line.contains("429"))
+                .await_background(),
+        );
+
+        let execution = execute(&provider, &[Message::user("hi")]).await;
+
+        assert!(
+            execution
+                .failure
+                .as_deref()
+                .is_some_and(|failure| failure.contains("429")),
+            "{execution:?}"
+        );
+    }
+
+    /// A result claude writes after the next turn began settles nothing while
+    /// that turn is still being written.
+    #[tokio::test]
+    async fn a_result_written_after_the_next_turn_began_waits_for_that_turn() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = r#"echo '{"type":"system","subtype":"init","session_id":"s"}'
+echo '{"type":"system","subtype":"init","session_id":"s"}'
+echo '{"type":"result","subtype":"success","is_error":false,"result":"First."}'
+sleep 8
+echo '{"type":"result","subtype":"success","is_error":false,"result":"Second."}'"#;
+        let provider = CliProvider::agent(
+            AgentKind::Claude,
+            settings(&directory, script).await_background(),
+        );
+
+        let execution = execute(&provider, &[Message::user("hi")]).await;
+
+        assert_eq!(execution.stopped, None, "{execution:?}");
+        assert_eq!(
+            execution.stdout.answer.as_deref(),
+            Some("First.\n\nSecond.")
+        );
+        assert_ne!(
+            execution.stdout.finish_reason.as_deref(),
+            Some(crate::CUT_SHORT)
+        );
+    }
+
     /// A result, a turn and its result read in one go settle the run twice with
     /// a reopening between, none of which may be lost.
     #[tokio::test]

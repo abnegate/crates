@@ -512,11 +512,12 @@ pub struct CliSettings {
     ///
     /// Work that never ends, or an agent that keeps beginning turns, holds the
     /// run until its [timeout](CliSettings::timeout), and a run with none can
-    /// wait forever. A run that has answered by then keeps its answers, with
-    /// [`Execution::stopped`](crate::Execution::stopped) saying why it ended,
-    /// and its finish reason is [`CUT_SHORT`](crate::CUT_SHORT) unless every
-    /// turn it began had finished; one that has not answered fails with the
-    /// timeout.
+    /// wait forever. A run the timeout stops while it waits keeps the answers
+    /// it gave, with [`Execution::stopped`](crate::Execution::stopped) saying
+    /// why it ended and its finish reason [`CUT_SHORT`](crate::CUT_SHORT); one
+    /// that has not answered fails with the timeout. A timeout that falls in
+    /// the grace after a finished turn ends the run as an agent that would not
+    /// exit, with no mark, since every turn it began had finished.
     ///
     /// A reported failure or limit still settles the run at once. A task from
     /// `CronCreate` is not waited for: it lives only as long as the session,

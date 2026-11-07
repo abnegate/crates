@@ -146,6 +146,7 @@ impl Run {
             }
         };
         if stopped.as_deref() == Some(OUTLASTED)
+            && failure.is_none()
             && stdout.failure.is_none()
             && stdout.finish_reason.as_deref() != Some(CUT_SHORT)
         {
@@ -339,7 +340,9 @@ impl Run {
                     break exit.ok().and_then(Result::ok);
                 }
                 Some(later) = self.settled.recv() => match later {
-                    Verdict::Reopened if finished => return Ok(None),
+                    Verdict::Reopened if finished && failure.is_none() && !tripped => {
+                        return Ok(None);
+                    }
                     Verdict::Reopened | Verdict::Finished => {}
                     Verdict::Failed(_) | Verdict::Tripped(_) => {
                         tripped |= matches!(later, Verdict::Tripped(_));
