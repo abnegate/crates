@@ -22,10 +22,12 @@ impl Response {
         let mut scores = vec![UNSCORED; documents];
         let mut scored = false;
         for hit in hits {
-            if let Some(slot) = hit.index.and_then(|index| scores.get_mut(index)) {
-                let score = hit.score();
-                scored |= score.is_some();
-                *slot = score.unwrap_or(UNSCORED);
+            if let (Some(slot), Some(score)) = (
+                hit.index.and_then(|index| scores.get_mut(index)),
+                hit.score(),
+            ) {
+                *slot = score;
+                scored = true;
             }
         }
         if scored {

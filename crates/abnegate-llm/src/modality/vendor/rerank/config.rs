@@ -15,7 +15,7 @@ const UNPARSABLE_URL: &str = "<unparsable>";
 /// `url` is the whole endpoint, such as `http://localhost:8080/v1/rerank`;
 /// nothing is appended to it. Trailing slashes on its path and any fragment are
 /// dropped, and a query string is kept. Printing a config never shows its key,
-/// nor the URL's user, password, query or fragment.
+/// and shows only the URL's scheme, host and port.
 #[derive(Clone)]
 #[non_exhaustive]
 pub struct HttpRerankConfig {
@@ -53,15 +53,16 @@ impl fmt::Debug for HttpRerankConfig {
 }
 
 fn printable_url(url: &str) -> String {
-    let Ok(mut parsed) = Url::parse(url) else {
+    let Ok(parsed) = Url::parse(url) else {
         return UNPARSABLE_URL.to_string();
     };
-    if parsed.set_username("").is_err() || parsed.set_password(None).is_err() {
+    let Some(host) = parsed.host_str() else {
         return UNPARSABLE_URL.to_string();
+    };
+    match parsed.port() {
+        Some(port) => format!("{}://{host}:{port}", parsed.scheme()),
+        None => format!("{}://{host}", parsed.scheme()),
     }
-    parsed.set_query(None);
-    parsed.set_fragment(None);
-    parsed.to_string()
 }
 
 impl HttpRerankConfig {

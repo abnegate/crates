@@ -302,6 +302,18 @@ async fn a_later_hit_for_the_same_document_wins() {
 }
 
 #[tokio::test]
+async fn a_later_hit_without_a_score_keeps_the_score_already_read() {
+    let scores = scores_for(
+        answer(json!([hit(0, 0.9), { "index": 0 }])),
+        &["first", "second"],
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(scores, vec![0.9, 0.0]);
+}
+
+#[tokio::test]
 async fn empty_or_missing_results_are_a_parse_error() {
     for body in [
         json!({ "results": [] }),
@@ -631,19 +643,39 @@ fn a_config_never_prints_its_key() {
 }
 
 #[test]
-fn neither_print_shows_a_credential_in_the_url() {
-    let config = HttpRerankConfig::new(
-        "http://user:plain-password@localhost:8080/v1/rerank?api_key=plain-query-value#token",
-        MODEL,
-    );
-    let provider = HttpRerankProvider::new(config.clone()).unwrap();
+fn neither_print_shows_more_of_the_url_than_its_scheme_host_and_port() {
+    for url in [
+        "http://plain-user:plain-secret@localhost:8080/v1/rerank?api_key=plain-secret#plain-secret",
+        "http://plain-user@localhost:8080/v1/rerank",
+        "http://localhost:8080/bot:plain-secret@host/v1/rerank",
+        "http://localhost:8080/key/plain-secret/rerank",
+        "http://localhost:8080/v1/rerank;token=plain-secret",
+    ] {
+        let config = HttpRerankConfig::new(url, MODEL);
+        let provider = HttpRerankProvider::new(config.clone()).unwrap();
 
-    for printed in [format!("{config:?}"), format!("{provider:?}")] {
-        assert!(!printed.contains("plain-password"), "{printed}");
-        assert!(!printed.contains("plain-query-value"), "{printed}");
-        assert!(!printed.contains("user:"), "{printed}");
-        assert!(printed.contains("localhost:8080/v1/rerank"), "{printed}");
-        assert!(printed.contains(MODEL), "{printed}");
+        for printed in [format!("{config:?}"), format!("{provider:?}")] {
+            assert!(!printed.contains("plain-secret"), "{printed}");
+            assert!(!printed.contains("plain-user"), "{printed}");
+            assert!(printed.contains("http://localhost:8080"), "{printed}");
+            assert!(printed.contains(MODEL), "{printed}");
+        }
+    }
+}
+
+#[test]
+fn a_refused_url_is_not_repeated_in_the_error() {
+    for url in [
+        "not a url plain-secret",
+        "ftp://plain-secret/rerank",
+        "ftp://host/plain-secret",
+        "ftp://plain-secret@host/rerank",
+    ] {
+        let error = HttpRerankProvider::new(HttpRerankConfig::new(url, MODEL)).unwrap_err();
+        let rendered = error.to_string();
+
+        assert!(matches!(error, ProviderError::Config { .. }), "{error:?}");
+        assert!(!rendered.contains("plain-secret"), "{rendered}");
     }
 }
 
@@ -658,7 +690,7 @@ fn a_config_whose_url_does_not_parse_does_not_print_it() {
 }
 
 #[tokio::test]
-async fn a_refusal_whose_body_stalls_past_the_deadline_is_a_network_error() {
+async fn a_refusal_whose_body_stalls_past_the_deadline_keeps_its_status() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
@@ -682,7 +714,11 @@ async fn a_refusal_whose_body_stalls_past_the_deadline_is_a_network_error() {
     .unwrap_err();
     server.abort();
 
-    assert!(matches!(error, ProviderError::Network { .. }), "{error:?}");
+    assert!(
+        matches!(&error, ProviderError::Api { status: 401, message } if message.contains("300ms")),
+        "{error:?}"
+    );
+    assert!(!error.transient(), "{error:?}");
 }
 
 #[test]

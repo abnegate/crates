@@ -50,7 +50,8 @@ impl Transport {
     }
 
     /// Send `request` and read a JSON body, reporting a refusal with its
-    /// status and redacted body.
+    /// status and redacted body. A refusal whose body does not arrive keeps its
+    /// status, which alone decides whether retrying can help.
     pub(crate) async fn send(
         &self,
         request: RequestBuilder,
@@ -61,7 +62,13 @@ impl Transport {
             let status = response.status().as_u16();
             return match response.text().await {
                 Ok(message) => Err(ProviderError::api(status, message)),
-                Err(error) if error.is_timeout() => Err(self.failure(error)),
+                Err(error) if error.is_timeout() => Err(ProviderError::api(
+                    status,
+                    format!(
+                        "the refusal's body did not arrive within {:?}",
+                        self.timeout
+                    ),
+                )),
                 Err(_) => Err(ProviderError::api(status, UNREADABLE_REFUSAL)),
             };
         }
