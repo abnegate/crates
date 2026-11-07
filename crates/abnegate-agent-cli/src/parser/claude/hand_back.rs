@@ -16,10 +16,17 @@ const TRAILER_FIELDS: &[&str] = &["agentId: ", "worktreePath: ", "worktreeBranch
 const USAGE_START: &str = "<usage>";
 const USAGE_END: &str = "</usage>";
 
-/// How the notes above a frame that are only for the main agent begin. Any
+/// How each line claude writes only for the main agent opens and closes. Any
 /// other note is kept, since it may say something the report leaves out: that
 /// the subagent was cut off, say, which claude still reports as completed.
-const INTERNAL_NOTES: &[&str] = &["<tools-used-before-summary>", "[harness: ", "[Harness note"];
+const INTERNAL_NOTES: &[(&str, &str)] = &[
+    (
+        "<tools-used-before-summary>",
+        "</tools-used-before-summary>",
+    ),
+    ("[harness: subagent output matched ", "]"),
+    ("[Harness note, not part of the agent's report: ", "]"),
+];
 
 /// What claude writes in place of a report with nothing in it.
 const PLACEHOLDERS: &[&str] = &[
@@ -95,17 +102,23 @@ fn said(paragraph: &[&str]) -> Option<String> {
     (!kept.is_empty()).then(|| kept.join("\n"))
 }
 
-/// A block of a subagent's answer without the paragraphs for the main agent
-/// that claude opens it with. Claude writes no frame around these blocks, so
-/// the rest of the block is the subagent's own, whatever it says.
+/// A block of a subagent's answer without the lines for the main agent that
+/// claude opens it with, each with the blank line after it. Claude writes no
+/// frame around these blocks, so the rest of the block is the subagent's own,
+/// whatever it says.
 pub(crate) fn without_notes(block: &str) -> &str {
     let mut rest = block;
-    while internal(rest) {
-        rest = rest.split_once("\n\n").map_or("", |(_, after)| after);
+    loop {
+        let (line, after) = rest.split_once('\n').unwrap_or((rest, ""));
+        if !internal(line) {
+            return rest;
+        }
+        rest = after.strip_prefix('\n').unwrap_or(after);
     }
-    rest
 }
 
-fn internal(text: &str) -> bool {
-    INTERNAL_NOTES.iter().any(|start| text.starts_with(start))
+fn internal(line: &str) -> bool {
+    INTERNAL_NOTES
+        .iter()
+        .any(|(open, close)| line.starts_with(open) && line.ends_with(close))
 }

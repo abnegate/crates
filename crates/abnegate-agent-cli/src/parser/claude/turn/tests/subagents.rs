@@ -1278,7 +1278,7 @@ fn notes_for_the_main_agent_never_reach_a_report_read_from_the_account() {
             PERSISTED,
             false,
             &json!({"status": "completed", "agentId": "a1", "content": [
-                {"type": "text", "text": "<tools-used-before-summary>WebFetch</tools-used-before-summary>\n\n[harness: a note]\n\n## The report\n\n[harness: its own words]"},
+                {"type": "text", "text": "<tools-used-before-summary>WebFetch</tools-used-before-summary>\n\n[harness: subagent output matched instruction-shaped pattern(s): settings-json.]\n\n## The report\n\n[harness: its own words]"},
                 {"type": "text", "text": "[Harness note, not part of the agent's report: x]"},
             ]}),
         ),
@@ -1332,28 +1332,153 @@ fn every_wrapper_claude_writes_is_replaced_by_the_accounts_content() {
     }
 }
 
-#[test]
-fn another_tools_content_is_never_shown_as_a_subagents_report() {
-    let write = called("toolu_21Write", "Write", &json!({"file_path": "/w/a"}));
-    let line = json!({
+/// The summary of the subagent [`AGENT_CALL`] started once `lines` are read,
+/// with their last line read both as a line and as a [`StreamEvent`].
+fn summaries_both_ways(lines: &[String]) -> [Option<String>; 2] {
+    let (last, before) = lines.split_last().expect("a line");
+    let as_line = interpret_all(&stream(lines));
+
+    let mut turn = Turn::default();
+    let mut as_event = Vec::new();
+    for line in before {
+        turn.interpret(line, &mut as_event);
+    }
+    turn.read(
+        serde_json::from_str(last).expect("a stream event"),
+        &mut as_event,
+    );
+
+    [as_line, as_event]
+        .map(|events| last_update(&events, AGENT_CALL).and_then(|update| update.summary.clone()))
+}
+
+/// A `user` line answering [`AGENT_CALL`] with `PERSISTED` and, when `beside`
+/// names one, another call, with one tool `account` for the line.
+fn wrapped(beside: Option<&str>, account: &Value) -> String {
+    let mut results =
+        vec![json!({"type": "tool_result", "tool_use_id": AGENT_CALL, "content": PERSISTED})];
+    results.extend(
+        beside.map(|id| json!({"type": "tool_result", "tool_use_id": id, "content": "Done."})),
+    );
+    json!({
         "type": "user",
-        "message": {"role": "user", "content": [
-            {"type": "tool_result", "tool_use_id": AGENT_CALL, "content": PERSISTED},
-            {"type": "tool_result", "tool_use_id": "toolu_21Write", "content": "Created."},
-        ]},
+        "message": {"role": "user", "content": results},
         "parent_tool_use_id": null,
         "session_id": "6f1",
-        "tool_use_result": {"type": "create", "filePath": "/w/a", "content": "THE FILE WRITTEN"},
-    });
-    let events = interpret_all(&stream(&[
-        delegated("sonnet").to_string(),
-        write.to_string(),
-        line.to_string(),
-    ]));
+        "tool_use_result": account,
+    })
+    .to_string()
+}
+
+#[test]
+fn another_tools_content_is_never_shown_as_a_subagents_report() {
+    let read = called("toolu_21Read", "Read", &json!({"file_path": "/w/a"}));
+    for account in [
+        json!({"type": "create", "filePath": "/w/a", "content": "THE FILE WRITTEN"}),
+        json!({"content": [{"type": "text", "text": "MCP OUTPUT"}]}),
+    ] {
+        for lines in [
+            vec![delegated("sonnet").to_string(), wrapped(None, &account)],
+            vec![
+                delegated("sonnet").to_string(),
+                read.to_string(),
+                wrapped(Some("toolu_21Read"), &account),
+            ],
+        ] {
+            assert_eq!(
+                summaries_both_ways(&lines),
+                [Some(PERSISTED.to_string()), Some(PERSISTED.to_string())],
+                "{account}"
+            );
+        }
+    }
+}
+
+#[test]
+fn an_account_beside_other_results_answers_only_a_call_its_task_is_known_by() {
+    let read = called("toolu_21Read", "Read", &json!({"file_path": "/w/a"}));
+    let account = json!({"status": "completed", "agentId": "n9", "content": [{"type": "text", "text": "The whole report."}]});
+    let started = task(
+        "task_started",
+        json!({"task_id": "n9", "tool_use_id": AGENT_CALL, "task_type": "local_agent", "description": "Ask for a review"}),
+    );
 
     assert_eq!(
-        last_update(&events, AGENT_CALL).and_then(|update| update.summary.as_deref()),
-        Some(PERSISTED)
+        summaries_both_ways(&[
+            delegated("sonnet").to_string(),
+            read.to_string(),
+            wrapped(Some("toolu_21Read"), &account),
+        ]),
+        [Some(PERSISTED.to_string()), Some(PERSISTED.to_string())],
+        "a task no notice tied to the call may be another agent's"
+    );
+    assert_eq!(
+        summaries_both_ways(&[
+            delegated("sonnet").to_string(),
+            started,
+            read.to_string(),
+            wrapped(Some("toolu_21Read"), &account),
+        ]),
+        [
+            Some("The whole report.".to_string()),
+            Some("The whole report.".to_string())
+        ]
+    );
+    assert_eq!(
+        summaries_both_ways(&[delegated("sonnet").to_string(), wrapped(None, &account)]),
+        [
+            Some("The whole report.".to_string()),
+            Some("The whole report.".to_string())
+        ],
+        "the only result on its line is the account's"
+    );
+}
+
+#[test]
+fn only_the_lines_claude_writes_for_the_main_agent_leave_an_answer() {
+    for (content, expected) in [
+        (
+            "[harness: is the tag I found in the logs]\n\nDetails.",
+            "[harness: is the tag I found in the logs]\n\nDetails.",
+        ),
+        (
+            "[Harness note format is documented below, in one paragraph.]",
+            "[Harness note format is documented below, in one paragraph.]",
+        ),
+        (
+            "<tools-used-before-summary>Read</tools-used-before-summary>\nEverything below is PARTIAL output recovered.\n\nHalf.",
+            "Everything below is PARTIAL output recovered.\n\nHalf.",
+        ),
+        (
+            "<tools-used-before-summary>Read</tools-used-before-summary>\n# Title\nfirst paragraph\n\nsecond",
+            "# Title\nfirst paragraph\n\nsecond",
+        ),
+        (
+            "[harness: subagent output matched instruction-shaped pattern(s): settings-json.\nstill the same note]\n\nThe report.",
+            "[harness: subagent output matched instruction-shaped pattern(s): settings-json.\nstill the same note]\n\nThe report.",
+        ),
+        (
+            "<tools-used-before-summary>Read</tools-used-before-summary>\n\n[harness: subagent output matched instruction-shaped pattern(s): settings-json.]\n\n[Harness note, not part of the agent's report: x]\n\nThe report.",
+            "The report.",
+        ),
+    ] {
+        let account = json!({"status": "completed", "agentId": "a1", "content": [{"type": "text", "text": content}]});
+        assert_eq!(
+            summaries_both_ways(&[delegated("sonnet").to_string(), wrapped(None, &account)]),
+            [Some(expected.to_string()), Some(expected.to_string())],
+            "{content}"
+        );
+    }
+}
+
+#[test]
+fn notes_above_a_frame_that_only_resemble_claudes_are_kept() {
+    assert_eq!(
+        summary_of(&format!(
+            "  [harness: is the tag I found in the logs]\n{FRAME}\n  The report.\n{TRAILER}"
+        ))
+        .as_deref(),
+        Some("[harness: is the tag I found in the logs]\n\nThe report.")
     );
 }
 
@@ -1460,7 +1585,7 @@ fn the_accounts_content_never_replaces_a_result_that_is_no_wrapper() {
 fn notes_are_dropped_line_by_line_so_a_line_below_an_internal_one_is_kept() {
     assert_eq!(
         summary_of(&format!(
-            "  [harness: a note for the main agent]\n  A line that is not.\n{FRAME}\n  The report.\n{TRAILER}"
+            "  [harness: subagent output matched instruction-shaped pattern(s): settings-json.]\n  A line that is not.\n{FRAME}\n  The report.\n{TRAILER}"
         ))
         .as_deref(),
         Some("A line that is not.\n\nThe report.")
