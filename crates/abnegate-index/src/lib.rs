@@ -31,6 +31,8 @@
 
 mod cancel;
 mod chunk;
+#[cfg(feature = "code-chunking")]
+mod code;
 mod embedder;
 mod error;
 mod generated;
@@ -45,6 +47,8 @@ mod relative;
 mod similarity;
 mod stats;
 mod store;
+mod text_chunk;
+mod tokens;
 mod walk;
 
 #[cfg(any(test, feature = "testing"))]
@@ -75,12 +79,51 @@ pub use crate::similarity::SIMILARITY_FLOOR;
 pub use crate::similarity::cosine_similarity;
 pub use crate::stats::Stats;
 pub use crate::store::Store;
+pub use crate::text_chunk::TextChunk;
+pub use crate::tokens::chunk_text;
+pub use crate::tokens::estimate_tokens;
 pub use crate::walk::EXTENSIONS;
 pub use crate::walk::LARGEST_FILE;
 pub use crate::walk::SKIP_DIRECTORIES;
 pub use crate::walk::Walk;
 pub use crate::walk::walk_source;
 
+#[cfg(feature = "code-chunking")]
+#[cfg_attr(docsrs, doc(cfg(feature = "code-chunking")))]
+pub use crate::code::ChunkConfig;
+#[cfg(feature = "code-chunking")]
+#[cfg_attr(docsrs, doc(cfg(feature = "code-chunking")))]
+pub use crate::code::ChunkMetadata;
+#[cfg(feature = "code-chunking")]
+#[cfg_attr(docsrs, doc(cfg(feature = "code-chunking")))]
+pub use crate::code::CodeChunk;
+#[cfg(feature = "code-chunking")]
+#[cfg_attr(docsrs, doc(cfg(feature = "code-chunking")))]
+pub use crate::code::CodeChunkType;
+#[cfg(feature = "code-chunking")]
+#[cfg_attr(docsrs, doc(cfg(feature = "code-chunking")))]
+pub use crate::code::CodeLanguage;
+#[cfg(feature = "code-chunking")]
+#[cfg_attr(docsrs, doc(cfg(feature = "code-chunking")))]
+pub use crate::code::IdentifierBag;
+#[cfg(feature = "code-chunking")]
+#[cfg_attr(docsrs, doc(cfg(feature = "code-chunking")))]
+pub use crate::code::SymbolKind;
+#[cfg(feature = "code-chunking")]
+#[cfg_attr(docsrs, doc(cfg(feature = "code-chunking")))]
+pub use crate::code::Visibility;
+#[cfg(feature = "code-chunking")]
+#[cfg_attr(docsrs, doc(cfg(feature = "code-chunking")))]
+pub use crate::code::chunk_code;
+#[cfg(feature = "code-chunking")]
+#[cfg_attr(docsrs, doc(cfg(feature = "code-chunking")))]
+pub use crate::code::chunk_code_with_config;
+#[cfg(feature = "code-chunking")]
+#[cfg_attr(docsrs, doc(cfg(feature = "code-chunking")))]
+pub use crate::code::code_chunk_to_text_chunk;
+#[cfg(feature = "code-chunking")]
+#[cfg_attr(docsrs, doc(cfg(feature = "code-chunking")))]
+pub use crate::code::smart_chunk;
 #[cfg(feature = "testing")]
 #[cfg_attr(docsrs, doc(cfg(feature = "testing")))]
 pub use crate::scripted::Scripted;
