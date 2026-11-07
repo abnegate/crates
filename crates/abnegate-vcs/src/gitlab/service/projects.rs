@@ -1,5 +1,5 @@
 use super::*;
-use crate::gitlab::gitlab_project::GitLabProject;
+use crate::gitlab::project_detail::ProjectDetail;
 use crate::remote_branch_name::RemoteBranchName;
 
 impl GitLabService {
@@ -29,7 +29,7 @@ impl GitLabService {
         project: &Project,
         token: &SecretValue,
     ) -> GitLabResult<Option<RemoteBranchName>> {
-        let answer: GitLabProject = self.get(self.project_endpoint(project, &[]), token).await?;
+        let answer: ProjectDetail = self.get(self.project_endpoint(project, &[]), token).await?;
         Ok(answer
             .default_branch
             .as_deref()

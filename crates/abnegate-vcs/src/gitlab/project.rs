@@ -1,6 +1,9 @@
 use crate::parse_error::ParseError;
 use std::fmt;
 
+/// What separates one segment of a project's path from the next.
+const SEPARATOR: char = '/';
+
 /// The segments a URL's path reads as itself or its parent rather than as a
 /// name.
 const DOT_SEGMENTS: &[&str] = &[".", ".."];
@@ -15,11 +18,13 @@ pub struct Project(String);
 
 impl Project {
     /// Accept `value` as it is, untrimmed, or fail with
-    /// [`ParseError::Project`] when it is empty, `.` or `..`, or holds an
+    /// [`ParseError::Project`] when it is empty, when any of its
+    /// `/`-separated segments is empty, `.` or `..`, or when it holds an
     /// ASCII control character.
     pub fn parse(value: &str) -> Result<Self, ParseError> {
-        let refused = value.is_empty()
-            || DOT_SEGMENTS.contains(&value)
+        let refused = value
+            .split(SEPARATOR)
+            .any(|segment| segment.is_empty() || DOT_SEGMENTS.contains(&segment))
             || value.chars().any(|character| character.is_ascii_control());
         match refused {
             true => Err(ParseError::Project(value.to_string())),
@@ -54,8 +59,23 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_or_dot_name_or_one_with_a_control_character_is_no_project() {
-        for name in ["", "project\n", "project\0", "project\r", ".", ".."] {
+    fn an_empty_or_dot_segment_or_a_control_character_is_no_project() {
+        for name in [
+            "",
+            "project\n",
+            "project\0",
+            "project\r",
+            ".",
+            "..",
+            "group/../other",
+            "group/./project",
+            "group/..",
+            "./project",
+            "a//b",
+            "group/",
+            "/group",
+            "/",
+        ] {
             assert_eq!(
                 Project::parse(name),
                 Err(ParseError::Project(name.to_string())),

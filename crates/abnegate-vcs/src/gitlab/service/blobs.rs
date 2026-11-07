@@ -34,9 +34,7 @@ mod tests {
     use crate::gitlab::service::fixtures::project;
     use crate::gitlab::service::fixtures::served;
     use crate::gitlab::service::fixtures::token;
-    use tokio::io::AsyncReadExt;
-    use tokio::io::AsyncWriteExt;
-    use tokio::net::TcpListener;
+    use crate::test_support::hanging_up;
     use wiremock::Mock;
     use wiremock::MockServer;
     use wiremock::ResponseTemplate;
@@ -46,8 +44,8 @@ mod tests {
 
     /// An answer that declares eleven bytes and then hangs up before sending
     /// any of them.
-    const DECLARED_ELEVEN: &[u8] =
-        b"HTTP/1.1 200 OK\r\ncontent-length: 11\r\nconnection: close\r\n\r\n";
+    const DECLARED_ELEVEN: &str =
+        "HTTP/1.1 200 OK\r\ncontent-length: 11\r\nconnection: close\r\n\r\n";
 
     fn route() -> String {
         format!(
@@ -74,30 +72,11 @@ mod tests {
             .await
     }
 
-    /// A server on a loopback port that answers every request with
-    /// `answer`, whatever it asks, and then hangs up.
-    async fn hanging_up(answer: &'static [u8]) -> GitLabService {
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("a loopback port to listen on");
-        let address = listener
-            .local_addr()
-            .expect("the address the listener is bound to");
-        tokio::spawn(async move {
-            while let Ok((mut stream, _)) = listener.accept().await {
-                let mut request = Vec::new();
-                let mut buffer = [0; 1024];
-                while !request.windows(4).any(|end| end == b"\r\n\r\n") {
-                    let read = stream.read(&mut buffer).await.unwrap_or_default();
-                    if read == 0 {
-                        break;
-                    }
-                    request.extend_from_slice(&buffer[..read]);
-                }
-                let _ = stream.write_all(answer).await;
-            }
-        });
-        GitLabService::configured_allowing_http(&format!("http://{address}")).unwrap()
+    /// A GitLab on a loopback port that answers every request by
+    /// declaring eleven bytes and hanging up before sending any of them.
+    async fn declaring_eleven() -> GitLabService {
+        let address = hanging_up(|_| DECLARED_ELEVEN).await;
+        GitLabService::configured_allowing_http(&address).unwrap()
     }
 
     #[tokio::test]
@@ -143,7 +122,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_blob_declared_past_the_limit_is_too_large_before_it_is_read() {
-        let service = hanging_up(DECLARED_ELEVEN).await;
+        let service = declaring_eleven().await;
 
         let failure = service
             .fetch_blob(&project(), &token(), &object('f'), 10)
@@ -155,7 +134,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_blob_cut_short_is_an_http_error() {
-        let service = hanging_up(DECLARED_ELEVEN).await;
+        let service = declaring_eleven().await;
 
         let failure = service
             .fetch_blob(&project(), &token(), &object('f'), 11)

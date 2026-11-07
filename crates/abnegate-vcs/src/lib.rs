@@ -60,7 +60,9 @@
 //!   `pull_request::ApplicationService`, which registers an App from its
 //!   manifest and lists its installations and their repositories.
 //! - `gitlab`: `gitlab::GitLabService`, which reads a GitLab project's
-//!   default branch, its tree at a branch, tag or commit, and its blobs, from
+//!   default branch, its tree at a branch, tag or commit with
+//!   `fetch_tree_at`, beneath a [`RepositoryPath`] when one is given, and
+//!   its blobs, from
 //!   gitlab.com or a self-hosted instance, anonymously or with a token, and
 //!   never from a link-local or cloud metadata address.
 //! - `testing`: `RepositoryUrl::local`,
@@ -88,10 +90,13 @@ pub mod pull_request;
 #[cfg(any(feature = "github", feature = "gitlab"))]
 mod redirect;
 mod remote_branch_name;
+mod repository_path;
 mod repository_url;
 pub mod resolution;
 pub mod subject;
 mod tag_name;
+#[cfg(all(test, any(feature = "github", feature = "gitlab")))]
+mod test_support;
 mod tree_entry;
 mod tree_entry_kind;
 mod truncation;
@@ -297,9 +302,6 @@ pub use crate::pull_request::Release;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::Repository;
-#[cfg(feature = "github")]
-#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
-pub use crate::pull_request::RepositoryPath;
 #[cfg(feature = "github-app")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]
 pub use crate::pull_request::RepositorySelection;
@@ -361,6 +363,7 @@ pub use crate::pull_request::minutes_between;
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::tally;
 pub use crate::remote_branch_name::RemoteBranchName;
+pub use crate::repository_path::RepositoryPath;
 pub use crate::repository_url::RepositoryUrl;
 pub use crate::resolution::ConflictSide;
 pub use crate::resolution::ResolutionVerdict;

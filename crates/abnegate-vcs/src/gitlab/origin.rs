@@ -54,14 +54,6 @@ impl Origin {
         self.url.scheme() == HTTP
     }
 
-    /// Whether `url` is on this origin: the same scheme, host and port, the
-    /// port a scheme implies counted as named.
-    pub(super) fn holds(&self, url: &Url) -> bool {
-        url.scheme() == self.url.scheme()
-            && url.host_str() == self.url.host_str()
-            && url.port_or_known_default() == self.url.port_or_known_default()
-    }
-
     /// The API base with `segments` appended, each one percent-encoded as a
     /// single path segment.
     pub(super) fn endpoint(&self, segments: &[&str]) -> Url {
@@ -174,28 +166,6 @@ mod tests {
                     "{refused:?} with plain HTTP permitted {permit_http}"
                 );
             }
-        }
-    }
-
-    #[test]
-    fn an_origin_holds_only_its_own_scheme_host_and_port() {
-        let origin = Origin::configured("https://gitlab.example.com", false).unwrap();
-        for held in [
-            "https://gitlab.example.com/api/v4/projects/1/repository/tree?page=2",
-            "https://GitLab.Example.com:443/elsewhere",
-        ] {
-            assert!(origin.holds(&Url::parse(held).unwrap()), "{held}");
-        }
-        for elsewhere in [
-            "http://gitlab.example.com/api/v4",
-            "https://gitlab.example.com:8443/api/v4",
-            "https://api.gitlab.example.com/api/v4",
-            "https://example.com/api/v4",
-        ] {
-            assert!(
-                !origin.holds(&Url::parse(elsewhere).unwrap()),
-                "{elsewhere}"
-            );
         }
     }
 }

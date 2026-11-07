@@ -16,8 +16,8 @@ pub enum ParseError {
     #[error("Invalid object name: {0:?}")]
     ObjectId(String),
 
-    /// Not a GitLab project: empty, `.` or `..`, or with an ASCII control
-    /// character.
+    /// Not a GitLab project: empty, with an empty, `.` or `..` segment, or
+    /// with an ASCII control character.
     #[error("Invalid GitLab project: {0:?}")]
     Project(String),
 

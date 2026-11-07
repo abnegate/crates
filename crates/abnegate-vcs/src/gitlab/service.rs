@@ -3,15 +3,19 @@ use crate::gitlab::GitLabResult;
 use crate::gitlab::Project;
 use crate::gitlab::origin::Origin;
 use crate::redirect::within_origin;
+use abnegate_http::RetryAfter;
 use abnegate_http::metadata::MetadataResolver;
 use abnegate_secret::SecretValue;
 use reqwest::Client;
 use reqwest::RequestBuilder;
 use reqwest::Response;
 use reqwest::StatusCode;
+use reqwest::header::HeaderMap;
 use reqwest::header::HeaderValue;
+use reqwest::header::RETRY_AFTER;
 use serde::de::DeserializeOwned;
 use std::time::Duration;
+use std::time::SystemTime;
 use url::Url;
 
 mod blobs;
@@ -50,7 +54,8 @@ const OVERSIZED: &str = "GitLab's answer was larger than this crate reads";
 /// gitlab.com or a self-hosted instance.
 ///
 /// - Projects: [`Self::get_default_branch`].
-/// - Trees: [`Self::fetch_tree`], which walks every page of a project's tree.
+/// - Trees: [`Self::fetch_tree_at`], which walks every page of a project's
+///   tree at a branch, tag or commit.
 /// - Blobs: [`Self::fetch_blob`], which reads a blob's bytes up to a limit.
 ///
 /// Every request carries the token it is given in GitLab's `PRIVATE-TOKEN`
@@ -63,7 +68,8 @@ const OVERSIZED: &str = "GitLab's answer was larger than this crate reads";
 ///
 /// A status that says what it means on its own is reported as that: 401 as
 /// [`GitLabError::AuthenticationFailed`], 403 as [`GitLabError::Forbidden`],
-/// 404 as [`GitLabError::NotFound`] and 429 as [`GitLabError::RateLimited`].
+/// 404 as [`GitLabError::NotFound`] and 429 as [`GitLabError::RateLimited`],
+/// with the wait its `Retry-After` asks for, in seconds or as an HTTP-date.
 /// Any other status that is not a success, a redirect that was not followed
 /// among them, is [`GitLabError::Refused`] with that status. No request is
 /// sent again after a rate limit; retrying is the caller's to decide.
@@ -114,6 +120,9 @@ impl GitLabService {
         Self::addressing(Origin::configured(url, true)?)
     }
 
+    /// A service that reaches `origin` through a client built for it: one
+    /// that refuses plain HTTP unless `origin` is the plain HTTP an operator
+    /// opted in to.
     fn addressing(origin: Origin) -> GitLabResult<Self> {
         Ok(Self {
             client: client(!origin.plain())?,
@@ -149,11 +158,6 @@ impl GitLabService {
         self.origin.endpoint(&segments)
     }
 
-    /// Whether `url` is on the origin this service addresses.
-    fn holds(&self, url: &Url) -> bool {
-        self.origin.holds(url)
-    }
-
     /// A GET of `url` that carries `token` unless it is empty; or, for a
     /// token that may not go, why it cannot be sent.
     fn request(&self, url: Url, token: &SecretValue) -> GitLabResult<RequestBuilder> {
@@ -185,10 +189,9 @@ impl GitLabService {
     /// The successful answer to `request`, or the refusal its status is.
     async fn answered(&self, request: RequestBuilder) -> GitLabResult<Response> {
         let response = request.send().await?;
-        let status = response.status();
-        match status.is_success() {
+        match response.status().is_success() {
             true => Ok(response),
-            false => Err(refusal(status)),
+            false => Err(refusal(response.status(), response.headers())),
         }
     }
 
@@ -216,15 +219,23 @@ fn client(https_only: bool) -> GitLabResult<Client> {
         .build()?)
 }
 
-/// What a status that is not a success means.
-fn refusal(status: StatusCode) -> GitLabError {
+/// What a status that is not a success means, given the `headers` it came
+/// with.
+fn refusal(status: StatusCode, headers: &HeaderMap) -> GitLabError {
     match status {
         StatusCode::UNAUTHORIZED => GitLabError::AuthenticationFailed,
         StatusCode::FORBIDDEN => GitLabError::Forbidden,
         StatusCode::NOT_FOUND => GitLabError::NotFound,
-        StatusCode::TOO_MANY_REQUESTS => GitLabError::RateLimited,
+        StatusCode::TOO_MANY_REQUESTS => GitLabError::rate_limited(retry_after(headers)),
         _ => GitLabError::refused(status.as_u16()),
     }
+}
+
+/// The wait the `Retry-After` header among `headers` asks for, in seconds or
+/// as an HTTP-date, or `None` when there is none this crate can read.
+fn retry_after(headers: &HeaderMap) -> Option<Duration> {
+    let value = headers.get(RETRY_AFTER)?.to_str().ok()?;
+    RetryAfter::from_header(value, SystemTime::now())
 }
 
 /// A successful answer read as `T`, from no more than
@@ -260,8 +271,10 @@ mod tests {
     use super::*;
     use crate::gitlab::service::fixtures::API;
     use crate::gitlab::service::fixtures::empty;
+    use crate::gitlab::service::fixtures::project;
     use crate::gitlab::service::fixtures::served;
     use crate::gitlab::service::fixtures::token;
+    use crate::redirect::MAXIMUM_REDIRECTS;
     use serde_json::Value;
     use serde_json::json;
     use wiremock::Mock;
@@ -395,7 +408,9 @@ mod tests {
             ),
             (403, |failure| matches!(failure, GitLabError::Forbidden)),
             (404, |failure| matches!(failure, GitLabError::NotFound)),
-            (429, |failure| matches!(failure, GitLabError::RateLimited)),
+            (429, |failure| {
+                matches!(failure, GitLabError::RateLimited { retry_after: None })
+            }),
             (500, |failure| {
                 matches!(failure, GitLabError::Refused { status: 500 })
             }),
@@ -568,5 +583,93 @@ mod tests {
         let answer = asked(&server, &token()).await.unwrap();
 
         assert_eq!(answer, json!(0));
+    }
+
+    #[tokio::test]
+    async fn a_rate_limit_carries_the_wait_its_retry_after_asks_for() {
+        for (retry_after, expected) in [
+            (Some("30"), Some(Duration::from_secs(30))),
+            (Some("0"), Some(Duration::ZERO)),
+            (Some("Thu, 01 Jan 1970 00:00:00 GMT"), Some(Duration::ZERO)),
+            (Some("soon"), None),
+            (None, None),
+        ] {
+            let answer = match retry_after {
+                Some(value) => ResponseTemplate::new(429).insert_header("retry-after", value),
+                None => ResponseTemplate::new(429),
+            };
+            let server = answering(answer).await;
+
+            let failure = asked(&server, &token()).await.unwrap_err();
+
+            assert!(
+                matches!(failure, GitLabError::RateLimited { retry_after } if retry_after == expected),
+                "{retry_after:?}: {failure:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_loopback_instance_named_by_its_host_name_is_reached() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!("{API}/projects/acme%2Fproject")))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({ "default_branch": "main" })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let named = server.uri().replace("127.0.0.1", "localhost");
+        assert!(named.contains("localhost"), "{named}");
+        let service = GitLabService::configured_allowing_http(&named).unwrap();
+
+        let branch = service
+            .get_default_branch(&project(), &token())
+            .await
+            .unwrap();
+
+        assert_eq!(branch.unwrap().as_str(), "main");
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_https_service_never_sends_a_request_over_plain_http() {
+        let server = answering(ResponseTemplate::new(200).set_body_json(json!({}))).await;
+        let secure = server.uri().replacen("http://", "https://", 1);
+        let service = GitLabService::configured(&secure).unwrap();
+
+        let failure = service
+            .get::<Value>(address(&server, ROUTE), &token())
+            .await
+            .unwrap_err();
+
+        assert!(matches!(failure, GitLabError::Http(_)), "{failure:?}");
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_redirect_loop_within_the_origin_stops_after_ten_hops() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(ROUTE))
+            .respond_with(
+                ResponseTemplate::new(301)
+                    .insert_header("location", format!("{}{ROUTE}", server.uri())),
+            )
+            .mount(&server)
+            .await;
+
+        let failure = asked(&server, &token()).await.unwrap_err();
+
+        assert!(
+            matches!(failure, GitLabError::Refused { status: 301 }),
+            "the last unfollowed redirect is the answer: {failure:?}"
+        );
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            MAXIMUM_REDIRECTS + 1,
+            "the first request and ten redirects, and no more"
+        );
     }
 }

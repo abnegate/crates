@@ -1,4 +1,5 @@
 use crate::parse_error::ParseError;
+use std::time::Duration;
 use thiserror::Error;
 
 /// What went wrong reading a project, its tree or a blob from GitLab.
@@ -7,9 +8,9 @@ use thiserror::Error;
 pub enum GitLabError {
     /// GitLab answered in a way no other variant names, for the fixed reason
     /// given: an answer this crate cannot read, a JSON answer too long to
-    /// read, or a link to a tree's next page that leaves the configured
-    /// origin or repeats one already followed. The answer itself is never
-    /// quoted.
+    /// read, a link to a tree's next page that repeats one already followed,
+    /// or a page of a tree with no entries that still links to a next one.
+    /// The answer itself is never quoted.
     #[error("GitLab API error: {0}")]
     GitLabApi(String),
 
@@ -38,9 +39,16 @@ pub enum GitLabError {
     #[error("Not found, or not visible to this token")]
     NotFound,
 
-    /// GitLab's rate limit was reached; the request can be retried later.
+    /// GitLab's rate limit was reached, with a 429; the request can be
+    /// retried later.
     #[error("GitLab's rate limit was reached")]
-    RateLimited,
+    #[non_exhaustive]
+    RateLimited {
+        /// How long GitLab asked to be left alone before the request is sent
+        /// again, read from its `Retry-After` header, or `None` when it named
+        /// no wait this crate can read.
+        retry_after: Option<Duration>,
+    },
 
     /// The blob is larger than the limit the caller set, so it was not
     /// returned.
@@ -70,6 +78,12 @@ impl GitLabError {
     pub fn refused(status: u16) -> Self {
         Self::Refused { status }
     }
+
+    /// GitLab's rate limit was reached, and it asked for a wait of
+    /// `retry_after` before the request is sent again, if it named one.
+    pub fn rate_limited(retry_after: Option<Duration>) -> Self {
+        Self::RateLimited { retry_after }
+    }
 }
 
 /// A GitLab read, or what went wrong with it.
@@ -88,5 +102,19 @@ mod tests {
             "{refused:?}"
         );
         assert_eq!(refused.to_string(), "GitLab answered with status 503");
+    }
+
+    #[test]
+    fn a_rate_limit_names_the_wait_gitlab_asked_for() {
+        let limited = GitLabError::rate_limited(Some(Duration::from_secs(30)));
+
+        assert!(
+            matches!(
+                limited,
+                GitLabError::RateLimited { retry_after: Some(wait) } if wait == Duration::from_secs(30)
+            ),
+            "{limited:?}"
+        );
+        assert_eq!(limited.to_string(), "GitLab's rate limit was reached");
     }
 }

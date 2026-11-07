@@ -1,7 +1,8 @@
 use super::*;
-use crate::gitlab::gitlab_tree_entry::GitLabTreeEntry;
+use crate::gitlab::listed_entry::ListedEntry;
 use crate::object_id::ObjectId;
 use crate::parse_error::ParseError;
+use crate::repository_path::RepositoryPath;
 use crate::tag_name::TagName;
 use crate::tree_entry::TreeEntry;
 use reqwest::header::LINK;
@@ -26,36 +27,55 @@ const NEXT: &str = "next";
 /// The link parameter that names a link's relations.
 const RELATION: &str = "rel";
 
-/// What a link to a tree's next page off the configured origin is reported
-/// as; it is never followed, so the token never travels there.
-const OFF_ORIGIN: &str = "GitLab linked a tree's next page off the configured origin";
+/// What opens a link's target in a `Link` header.
+const TARGET_OPEN: char = '<';
+
+/// What closes a link's target in a `Link` header.
+const TARGET_CLOSE: char = '>';
+
+/// What separates one link of a `Link` header from the next.
+const LINK_SEPARATOR: char = ',';
+
+/// What separates one parameter of a link from the next.
+const PARAMETER_SEPARATOR: char = ';';
+
+/// What quotes a parameter's value, inside which no separator separates.
+const QUOTE: char = '"';
 
 /// What a link to a tree's next page already followed is reported as, rather
 /// than walked again forever.
 const REPEATED: &str = "GitLab linked a tree's next page to one already read";
 
+/// What a page of a tree with no entries that still links to a next page is
+/// reported as, rather than walked on through pages that add nothing.
+const EMPTY_PAGE: &str = "GitLab linked an empty page of a tree to a next one";
+
 impl GitLabService {
     /// Every entry of the project's tree at `reference`, a branch, tag or
-    /// commit, read recursively, beneath `path` when one is given and not
-    /// empty.
+    /// commit, read recursively, beneath `path` when one is given.
     ///
     /// GitLab answers a hundred entries a page, and every page its `Link`
-    /// header names as the next is read in turn, with no cap on how many. A
-    /// next link that leaves the configured origin, or names a page already
-    /// read, is [`GitLabError::GitLabApi`], and is never followed. GitLab
-    /// reports no size for an entry, so each has none.
+    /// header names as the next is read in turn, with no cap on how many.
+    /// Only the query of a next link is taken: the page is always asked for
+    /// at the configured origin and path, where the page before it was, so
+    /// an instance whose own idea of its URL differs from the one configured,
+    /// behind a proxy or on a LAN address, still pages, and the token never
+    /// travels anywhere else. A next link that names a page already read, has
+    /// no query, or comes with a page of no entries is
+    /// [`GitLabError::GitLabApi`], and is never followed. GitLab reports no
+    /// size for an entry, so each has none.
     ///
     /// `reference` is held to the rules git holds a ref's name to, `HEAD`
     /// aside, and `@` is refused: one that breaks them is
     /// [`GitLabError::Parse`], and nothing is sent. An entry whose object
     /// name is not a full one is [`GitLabError::Parse`] too, and no part of
     /// the tree is returned.
-    pub async fn fetch_tree(
+    pub async fn fetch_tree_at(
         &self,
         project: &Project,
         token: &SecretValue,
         reference: &str,
-        path: Option<&str>,
+        path: Option<&RepositoryPath>,
     ) -> GitLabResult<Vec<TreeEntry>> {
         if !TagName::accepts_reference(reference) {
             return Err(ParseError::BranchName(reference.to_string()).into());
@@ -69,25 +89,27 @@ impl GitLabService {
                 .append_pair(REFERENCE, reference)
                 .append_pair(recursive, all)
                 .append_pair(page_size, most);
-            if let Some(path) = path.filter(|path| !path.is_empty()) {
-                query.append_pair(PATH, path);
+            if let Some(path) = path {
+                query.append_pair(PATH, path.as_str());
             }
         }
 
         let mut entries = Vec::new();
         let mut visited = HashSet::from([url.clone()]);
         let mut page = Some(url);
-        while let Some(url) = page.take() {
-            let response = self.answered(self.request(url, token)?).await?;
-            let next = next_page(&response)?;
-            let listed: Vec<GitLabTreeEntry> = decode(response).await?;
+        while let Some(requested) = page.take() {
+            let response = self
+                .answered(self.request(requested.clone(), token)?)
+                .await?;
+            let next = next_page(&response, &requested)?;
+            let listed: Vec<ListedEntry> = decode(response).await?;
+            if listed.is_empty() && next.is_some() {
+                return Err(GitLabError::GitLabApi(EMPTY_PAGE.to_string()));
+            }
             for listed in listed {
                 entries.push(entry(listed)?);
             }
             page = match next {
-                Some(next) if !self.holds(&next) => {
-                    return Err(GitLabError::GitLabApi(OFF_ORIGIN.to_string()));
-                }
                 Some(next) if !visited.insert(next.clone()) => {
                     return Err(GitLabError::GitLabApi(REPEATED.to_string()));
                 }
@@ -98,31 +120,75 @@ impl GitLabService {
     }
 }
 
-/// The page `response`'s `Link` header names as the next, resolved against
-/// where it came from, or `None` on the last page. A header or link this
-/// crate cannot read is [`GitLabError::GitLabApi`].
-fn next_page(response: &Response) -> GitLabResult<Option<Url>> {
-    let unreadable = || GitLabError::GitLabApi(UNREADABLE.to_string());
+/// The page `response`'s `Link` header names as the next, or `None` on the
+/// last page: `requested`, the URL just asked for, with the query of the
+/// link in place of its own. The link's scheme, host and path are never
+/// used. A header or link this crate cannot read, or a next link with no
+/// query, is [`GitLabError::GitLabApi`].
+fn next_page(response: &Response, requested: &Url) -> GitLabResult<Option<Url>> {
     for value in response.headers().get_all(LINK) {
         let value = value.to_str().map_err(|_| unreadable())?;
-        for link in value.split(',') {
-            let mut parts = link.split(';');
-            let target = parts.next().unwrap_or_default().trim();
-            if !parts.any(names_next) {
-                continue;
-            }
-            let target = target
-                .strip_prefix('<')
-                .and_then(|target| target.strip_suffix('>'))
-                .ok_or_else(unreadable)?;
-            return response
-                .url()
-                .join(target)
-                .map(Some)
-                .map_err(|_| unreadable());
-        }
+        let Some(target) = next_target(value)? else {
+            continue;
+        };
+        let link = requested.join(target).map_err(|_| unreadable())?;
+        let query = link.query().ok_or_else(unreadable)?;
+        let mut next = requested.clone();
+        next.set_query(Some(query));
+        return Ok(Some(next));
     }
     Ok(None)
+}
+
+/// The target of the link a `Link` header's `value` names the next page, or
+/// `None` when it names none. A value this crate cannot read is
+/// [`GitLabError::GitLabApi`].
+///
+/// Each link's `<...>` target is isolated before anything else, so a comma
+/// or semicolon inside it separates nothing, and its parameters run from the
+/// closing `>` to the next comma outside a quoted value.
+fn next_target(value: &str) -> GitLabResult<Option<&str>> {
+    let mut rest = value;
+    loop {
+        rest = rest.trim_start_matches(|character: char| {
+            character == LINK_SEPARATOR || character.is_ascii_whitespace()
+        });
+        if rest.is_empty() {
+            return Ok(None);
+        }
+        let (target, after) = rest
+            .strip_prefix(TARGET_OPEN)
+            .and_then(|opened| opened.split_once(TARGET_CLOSE))
+            .ok_or_else(unreadable)?;
+        let end = unquoted(after, LINK_SEPARATOR).unwrap_or(after.len());
+        let mut parameters = &after[..end];
+        rest = &after[end..];
+        while !parameters.is_empty() {
+            let end = unquoted(parameters, PARAMETER_SEPARATOR).unwrap_or(parameters.len());
+            if names_next(&parameters[..end]) {
+                return Ok(Some(target));
+            }
+            parameters = parameters[end..]
+                .strip_prefix(PARAMETER_SEPARATOR)
+                .unwrap_or_default();
+        }
+    }
+}
+
+/// What an answer this crate cannot read is reported as.
+fn unreadable() -> GitLabError {
+    GitLabError::GitLabApi(UNREADABLE.to_string())
+}
+
+/// Where the first `delimiter` in `text` outside a quoted value is.
+fn unquoted(text: &str, delimiter: char) -> Option<usize> {
+    let mut quoted = false;
+    text.char_indices().find_map(|(index, character)| {
+        if character == QUOTE {
+            quoted = !quoted;
+        }
+        (!quoted && character == delimiter).then_some(index)
+    })
 }
 
 /// Whether a link's `parameter` names it the next page.
@@ -131,14 +197,14 @@ fn names_next(parameter: &str) -> bool {
         name.trim().eq_ignore_ascii_case(RELATION)
             && value
                 .trim()
-                .trim_matches('"')
+                .trim_matches(QUOTE)
                 .split_ascii_whitespace()
                 .any(|relation| relation.eq_ignore_ascii_case(NEXT))
     })
 }
 
 /// A tree entry GitLab listed, its object name parsed.
-fn entry(listed: GitLabTreeEntry) -> GitLabResult<TreeEntry> {
+fn entry(listed: ListedEntry) -> GitLabResult<TreeEntry> {
     Ok(TreeEntry::new(
         listed.path,
         listed.mode,
@@ -205,11 +271,18 @@ mod tests {
     async fn tree_at(
         server: &MockServer,
         reference: &str,
-        path: Option<&str>,
+        path: Option<&RepositoryPath>,
     ) -> GitLabResult<Vec<TreeEntry>> {
         served(server)
-            .fetch_tree(&project(), &token(), reference, path)
+            .fetch_tree_at(&project(), &token(), reference, path)
             .await
+    }
+
+    /// A page of `body` whose `Link` header is `link`.
+    fn linking(link: &str, body: Value) -> ResponseTemplate {
+        ResponseTemplate::new(200)
+            .insert_header("link", link)
+            .set_body_json(body)
     }
 
     async fn queries(server: &MockServer) -> Vec<Vec<(String, String)>> {
@@ -303,12 +376,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_path_is_sent_only_when_one_is_given_and_not_empty() {
-        for (given, expected) in [
-            (Some("src/lib"), Some("src/lib")),
-            (Some(""), None),
-            (None, None),
-        ] {
+    async fn a_path_is_sent_only_when_one_is_given() {
+        let directory = RepositoryPath::parse("src/lib").unwrap();
+        for (given, expected) in [(Some(&directory), Some("src/lib")), (None, None)] {
             let server = serving(json!([])).await;
 
             tree_at(&server, "main", given).await.unwrap();
@@ -320,6 +390,20 @@ mod tests {
                 .map(|(_, value)| value.as_str());
             assert_eq!(path, expected, "{given:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn a_path_travels_whole_as_one_query_value() {
+        let server = serving(json!([])).await;
+        let directory = RepositoryPath::parse("/src/lib/").unwrap();
+
+        tree_at(&server, "main", Some(&directory)).await.unwrap();
+
+        let received = server.received_requests().await.unwrap();
+        assert_eq!(
+            received[0].url.query(),
+            Some("ref=main&recursive=true&per_page=100&path=src%2Flib")
+        );
     }
 
     #[tokio::test]
@@ -406,7 +490,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_next_page_off_the_origin_is_refused_and_never_reached() {
+    async fn a_next_page_linked_on_another_origin_is_read_from_the_configured_one() {
         let elsewhere = MockServer::start().await;
         Mock::given(any())
             .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
@@ -416,21 +500,156 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path(route()))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("link", format!("<{}>; rel=\"next\"", page_two(&elsewhere)))
-                    .set_body_json(listing()),
-            )
+            .and(query_param_is_missing("page"))
+            .respond_with(linking(
+                &format!("<{}>; rel=\"next\"", page_two(&elsewhere)),
+                json!([listed("README.md", "blob", "100644", 'a')]),
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(route()))
+            .and(query_param("page", "2"))
+            .and(header("private-token", "token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([listed(
+                "src/lib.rs",
+                "blob",
+                "100644",
+                'b'
+            )])))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let entries = tree_at(&server, "main", None).await.unwrap();
+
+        let paths: Vec<&str> = entries.iter().map(|entry| entry.path.as_str()).collect();
+        assert_eq!(paths, ["README.md", "src/lib.rs"]);
+        let received = server.received_requests().await.unwrap();
+        assert_eq!(
+            received[1].url.query(),
+            Some("ref=main&recursive=true&per_page=100&page=2")
+        );
+        assert!(elsewhere.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_relative_next_link_is_read_from_the_configured_origin() {
+        for link in [
+            "<?ref=main&recursive=true&per_page=100&page=2>; rel=\"next\"".to_string(),
+            format!(
+                "<{}?ref=main&recursive=true&per_page=100&page=2>; rel=\"next\"",
+                route()
+            ),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path(route()))
+                .and(query_param_is_missing("page"))
+                .respond_with(linking(
+                    &link,
+                    json!([listed("README.md", "blob", "100644", 'a')]),
+                ))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path(route()))
+                .and(query_param("page", "2"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!([listed(
+                    "src/lib.rs",
+                    "blob",
+                    "100644",
+                    'b'
+                )])))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let entries = tree_at(&server, "main", None).await.unwrap();
+
+            assert_eq!(entries.len(), 2, "{link}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_next_link_with_a_comma_or_semicolon_in_its_target_is_read_whole() {
+        let server = MockServer::start().await;
+        let next = format!(
+            "{}{}?ref=main&recursive=true&per_page=100&cursor=a,b;c&page=2",
+            server.uri(),
+            route()
+        );
+        Mock::given(method("GET"))
+            .and(path(route()))
+            .and(query_param_is_missing("page"))
+            .respond_with(linking(
+                &format!("<{next}>; rel=\"next\", <{next}>; rel=\"last\""),
+                json!([listed("README.md", "blob", "100644", 'a')]),
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(route()))
+            .and(query_param("page", "2"))
+            .and(query_param("cursor", "a,b;c"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([listed(
+                "src/lib.rs",
+                "blob",
+                "100644",
+                'b'
+            )])))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let entries = tree_at(&server, "main", None).await.unwrap();
+
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn an_empty_page_that_links_to_a_next_one_is_refused() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(route()))
+            .respond_with(linking(
+                &format!("<{}>; rel=\"next\"", page_two(&server)),
+                json!([]),
+            ))
+            .expect(1)
             .mount(&server)
             .await;
 
         let failure = tree_at(&server, "main", None).await.unwrap_err();
 
         assert!(
-            matches!(&failure, GitLabError::GitLabApi(reason) if reason == OFF_ORIGIN),
+            matches!(&failure, GitLabError::GitLabApi(reason) if reason == EMPTY_PAGE),
             "{failure:?}"
         );
-        assert!(elsewhere.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_next_link_with_no_query_is_unreadable() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(route()))
+            .respond_with(linking(
+                &format!("<{}{}>; rel=\"next\"", server.uri(), route()),
+                listing(),
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let failure = tree_at(&server, "main", None).await.unwrap_err();
+
+        assert!(
+            matches!(&failure, GitLabError::GitLabApi(reason) if reason == UNREADABLE),
+            "{failure:?}"
+        );
     }
 
     #[tokio::test]
@@ -567,7 +786,7 @@ mod tests {
 
         served(&server)
             .with_anonymous_reads()
-            .fetch_tree(&project(), &empty(), "main", None)
+            .fetch_tree_at(&project(), &empty(), "main", None)
             .await
             .unwrap();
 
@@ -588,6 +807,32 @@ mod tests {
             ("next", false),
         ] {
             assert_eq!(names_next(parameter), next, "{parameter}");
+        }
+    }
+
+    #[test]
+    fn a_link_target_is_isolated_before_its_parameters_are_read() {
+        for (value, target) in [
+            ("<a?x=1>; rel=\"next\"", Some("a?x=1")),
+            ("<a?x=1,2;3>; rel=\"next\"", Some("a?x=1,2;3")),
+            (
+                "<first>; rel=\"first\", <b?page=2>; rel=\"next\"",
+                Some("b?page=2"),
+            ),
+            (
+                "<p>; title=\"x, rel=next; y\"; rel=\"prev\", <n>; rel=next",
+                Some("n"),
+            ),
+            ("<only>; rel=\"last\"", None),
+            ("", None),
+        ] {
+            assert_eq!(next_target(value).unwrap(), target, "{value}");
+        }
+        for value in ["page-two; rel=\"next\"", "<unclosed; rel=\"next\""] {
+            assert!(
+                matches!(next_target(value), Err(GitLabError::GitLabApi(reason)) if reason == UNREADABLE),
+                "{value}"
+            );
         }
     }
 }
