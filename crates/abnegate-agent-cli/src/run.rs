@@ -64,7 +64,8 @@ pub(crate) struct Run {
     pub(crate) diagnostics: JoinHandle<String>,
     pub(crate) settled: mpsc::UnboundedReceiver<Verdict>,
     /// Whether the run waits on the agent's background work, so a timeout keeps
-    /// what the agent answered before it.
+    /// what the agent answered before it, and a failure or trip while it waits
+    /// fails the run though a turn had finished.
     pub(crate) await_background: bool,
     /// Turned true once the run stops waiting for the agent's output to
     /// close, which starts its readers' drain.
@@ -164,13 +165,19 @@ impl Run {
             }
         }
         let outlasted = stopped.as_deref() == Some(OUTLASTED);
-        if outlasted && !stdout.answered() {
+        if outlasted && !stdout.answered() && failure.is_none() && stdout.failure.is_none() {
             self.reaper.clean().await;
             let _ = self.reap().await;
             return Err(ExecutionError::new(
                 ProviderError::timeout(&self.name, self.timeout),
                 self.files.take(),
             ));
+        }
+        if self.await_background
+            && stdout.failure.is_none()
+            && let Some(reason) = &failure
+        {
+            stdout.record(AgentEvent::Failed(reason.clone()));
         }
         if failure.is_none()
             && (outlasted || stdout.ended_mid_turn())

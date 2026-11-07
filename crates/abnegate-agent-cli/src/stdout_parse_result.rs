@@ -183,9 +183,10 @@ impl StdoutParseResult {
         self.ended_mid_turn
     }
 
-    /// Whether a finished turn said anything: an answer, or prose.
+    /// Whether a finished turn said anything: an answer, prose, or a
+    /// schema-shaped answer.
     pub(crate) fn answered(&self) -> bool {
-        self.finished && !self.reply().trim().is_empty()
+        self.finished && (self.structured.is_some() || !self.reply().trim().is_empty())
     }
 
     /// What the agent answered: its final [answer](StdoutParseResult::answer)

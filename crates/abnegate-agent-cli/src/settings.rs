@@ -519,7 +519,11 @@ pub struct CliSettings {
     /// the grace after a finished turn ends the run as an agent that would not
     /// exit, with no mark, since every turn it began had finished.
     ///
-    /// A reported failure or limit still settles the run at once. A task from
+    /// A reported failure or limit still settles the run at once, and a
+    /// failure or [tripwire](CliSettings::tripwire) while the run waits fails
+    /// it even after a turn finished, since later work went wrong; without
+    /// this setting a trip after a finished turn leaves its answer standing,
+    /// as it always has. A task from
     /// `CronCreate` is not waited for: it lives only as long as the session,
     /// and Claude exits without it. Codex reports no background work, so a
     /// Codex run ignores this.

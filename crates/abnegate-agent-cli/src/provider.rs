@@ -114,6 +114,12 @@ impl CliProvider {
         &self.settings
     }
 
+    /// Whether this provider's runs wait on the agent's background work: only
+    /// Claude reports any.
+    pub(crate) fn awaits_background(&self) -> bool {
+        self.settings.await_background && self.agent == AgentKind::Claude
+    }
+
     /// Run the agent once and report everything it did, with `label` naming
     /// the run in its execution logs.
     ///
@@ -438,7 +444,7 @@ impl CliProvider {
                 started.clone(),
             )
             .forwarding(events)
-            .awaiting_background(self.settings.await_background)
+            .awaiting_background(self.awaits_background())
             .printing(self.settings.tool_output_limit)
             .in_directory(self.settings.working_directory.clone())
             .run(spawned.child.stdout.take()),
@@ -472,7 +478,7 @@ impl CliProvider {
             reader,
             diagnostics,
             settled,
-            await_background: self.settings.await_background,
+            await_background: self.awaits_background(),
             draining,
             rollout,
             forward,
@@ -3715,6 +3721,9 @@ sleep 60"#,
         );
     }
 
+    /// Far more than the answers an agent can write before the timeout.
+    const OUTPUT_LIMIT_PAST_THE_TIMEOUT: usize = 512 * 1024 * 1024;
+
     /// Turns begun as fast as an agent can write them still end at the timeout.
     #[tokio::test]
     async fn turns_begun_faster_than_they_are_read_still_end_at_the_timeout() {
@@ -3733,6 +3742,7 @@ done"#,
             AgentKind::Claude,
             settings(&directory, &script)
                 .await_background()
+                .with_output_limit(OUTPUT_LIMIT_PAST_THE_TIMEOUT)
                 .with_timeout(timeout),
         );
 
@@ -3742,11 +3752,23 @@ done"#,
         )
         .await;
 
+        let execution = outcome.expect("the answers it gave, not the answer limit");
         assert!(
             waited < timeout + Duration::from_secs(6),
             "waited {waited:?}"
         );
-        drop(outcome);
+        assert!(
+            execution
+                .stopped
+                .as_deref()
+                .is_some_and(|reason| reason.contains("timeout")),
+            "stopped by the deadline: {:?}",
+            execution.stopped
+        );
+        assert_eq!(
+            execution.stdout.finish_reason.as_deref(),
+            Some(crate::CUT_SHORT)
+        );
     }
 
     /// Answers joined across turns are held to the output limit, as prose is.
@@ -3885,6 +3907,129 @@ echo '{"type":"result","subtype":"error_during_execution","is_error":true,"resul
             Some(crate::CUT_SHORT),
             "{execution:?}"
         );
+    }
+
+    /// A failure the agent reports as the timeout stops it is the run's
+    /// failure, not a bare timeout.
+    #[tokio::test]
+    async fn a_failure_reported_as_the_timeout_stops_an_unanswered_run_is_kept() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = r#"trap 'echo "{\"type\":\"result\",\"subtype\":\"error_during_execution\",\"is_error\":true,\"result\":\"Stopped.\"}"; exit 0' TERM
+echo '{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"b1"}]}'
+sleep 120 &
+wait"#;
+        let provider = CliProvider::agent(
+            AgentKind::Claude,
+            settings(&directory, script)
+                .await_background()
+                .with_timeout(Duration::from_secs(6)),
+        );
+
+        let error = run(&provider, &[Message::user("hi")])
+            .await
+            .expect_err("the failure it reported");
+
+        assert!(
+            matches!(&error, ProviderError::Agent { message, .. } if message.contains("Stopped.")),
+            "{error:?}"
+        );
+    }
+
+    /// A schema-shaped answer is an answer, so the timeout keeps it.
+    #[tokio::test]
+    async fn a_structured_answer_outliving_the_timeout_is_kept() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = r#"echo '{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"b1"}]}'
+echo '{"type":"result","subtype":"success","is_error":false,"result":"","structured_output":{"verdict":"sound"}}'
+sleep 120"#;
+        let provider = CliProvider::agent(
+            AgentKind::Claude,
+            settings(&directory, script)
+                .await_background()
+                .with_timeout(Duration::from_secs(6)),
+        );
+
+        let execution = provider
+            .execute(request(&[Message::user("hi")]), "test-run")
+            .await
+            .expect("the structured answer it gave");
+
+        assert_eq!(
+            execution.stdout.structured,
+            Some(serde_json::json!({"verdict": "sound"}))
+        );
+        assert_eq!(
+            execution.stdout.finish_reason.as_deref(),
+            Some(crate::CUT_SHORT)
+        );
+    }
+
+    #[test]
+    fn only_claude_waits_on_background_work() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let awaiting = |agent| {
+            CliProvider::agent(agent, settings(&directory, "exit 0").await_background())
+                .awaits_background()
+        };
+
+        assert!(awaiting(AgentKind::Claude));
+        assert!(
+            !awaiting(AgentKind::Codex),
+            "codex reports no background work"
+        );
+    }
+
+    /// A run that waits on background work and is tripped while it waits has
+    /// failed, though a turn finished before: later work went wrong.
+    #[tokio::test]
+    async fn a_trip_while_waiting_on_background_work_fails_the_run() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = r#"echo '{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"b1"}]}'
+echo '{"type":"result","subtype":"success","is_error":false,"result":"Done."}'
+sleep 1
+echo 'API Error: 429 Too Many Requests' >&2
+sleep 2
+exit 0"#;
+        let provider = CliProvider::agent(
+            AgentKind::Claude,
+            settings(&directory, script)
+                .with_tripwire(|line| line.contains("429"))
+                .await_background(),
+        );
+
+        let error = run(&provider, &[Message::user("hi")])
+            .await
+            .expect_err("the trip fails the run");
+        let (_, streamed_failure, _) =
+            collected(streamed(&provider, &[Message::user("hi")]).await).await;
+
+        assert!(error.to_string().contains("429"), "{error:?}");
+        assert!(
+            streamed_failure.is_some_and(|failure| failure.to_string().contains("429")),
+            "the stream ends in the same failure"
+        );
+    }
+
+    /// Without the setting, a trip after a finished turn leaves its answer
+    /// standing, as it always has for every caller.
+    #[tokio::test]
+    async fn a_trip_after_a_finished_turn_leaves_the_answer_without_the_setting() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = r#"echo '{"type":"result","subtype":"success","is_error":false,"result":"Done."}'
+sleep 1
+echo 'API Error: 429 Too Many Requests' >&2
+sleep 1
+exit 0"#;
+        let provider = CliProvider::agent(
+            AgentKind::Claude,
+            settings(&directory, script).with_tripwire(|line| line.contains("429")),
+        );
+
+        let completion = run(&provider, &[Message::user("hi")])
+            .await
+            .expect("the answer stands");
+
+        assert_eq!(completion.message.content.as_deref(), Some("Done."));
     }
 
     /// A result, a turn and its result read in one go settle the run twice with
