@@ -6,6 +6,11 @@ use chrono::NaiveDate;
 use chrono::TimeDelta;
 use chrono::Utc;
 use chrono::Weekday;
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
+
+const LONGER_THAN_ANY_JUMP: Duration = Duration::from_secs(10);
 
 fn at_utc(text: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(text)
@@ -564,12 +569,17 @@ fn a_monthly_rule_keeps_the_31st_of_the_calendars_last_december() {
 
 fn london_firing(rule: &str, anchor: &str, after: &str) -> Option<DateTime<Utc>> {
     let london = Timezone::parse("Europe/London").expect("a timezone");
-    let rule = Recurrence::parse(rule).expect("accepted");
+    let counted = Recurrence::parse(&format!("{rule};COUNT=2")).expect("accepted");
     assert!(
-        rule.fires_at(at_utc(anchor), london),
+        counted.fires_at(at_utc(anchor), london),
         "{anchor} is a firing"
     );
-    rule.next_after(at_utc(anchor), at_utc(after), 1, london)
+    assert_eq!(
+        counted.next_after(at_utc(anchor), at_utc(after), 2, london),
+        None,
+        "{rule} has spent COUNT=2, however many periods lie between {anchor} and {after}"
+    );
+    counted.next_after(at_utc(anchor), at_utc(after), 1, london)
 }
 
 #[test]
@@ -668,6 +678,156 @@ fn an_anchor_two_years_ahead_counts_its_phase_back_across_daylight_saving() {
     ] {
         assert_eq!(
             london_firing(rule, anchor, after),
+            Some(at_utc(next)),
+            "{rule} anchored at {anchor}, asked after {after}"
+        );
+    }
+}
+
+#[test]
+fn a_leap_second_anchor_answers_as_a_walk_from_it_does() {
+    for (rule, anchor, after, next) in [
+        (
+            "FREQ=HOURLY",
+            "2016-12-31T23:59:60.5Z",
+            "2017-01-01T00:00:00.2Z",
+            "2017-01-01T00:59:00.5Z",
+        ),
+        (
+            "FREQ=DAILY;INTERVAL=3",
+            "2016-12-31T23:59:60.5Z",
+            "2017-01-01T00:00:00.2Z",
+            "2017-01-03T23:59:00Z",
+        ),
+        (
+            "FREQ=WEEKLY;INTERVAL=2",
+            "1995-12-31T23:59:60.5Z",
+            "1996-01-01T00:00:00.2Z",
+            "1996-01-14T23:59:00Z",
+        ),
+    ] {
+        let parsed = Recurrence::parse(rule).expect("accepted");
+        assert_eq!(
+            parsed.next_after(at_utc(anchor), at_utc(after), 0, Timezone::UTC),
+            Some(at_utc(next)),
+            "{rule} anchored at {anchor}, asked after {after}"
+        );
+    }
+}
+
+fn calendar_minute(year: i32, month: u32, day: u32, hour: u32, minute: u32) -> DateTime<Utc> {
+    NaiveDate::from_ymd_opt(year, month, day)
+        .and_then(|date| date.and_hms_opt(hour, minute, 0))
+        .expect("a minute the calendar holds")
+        .and_utc()
+}
+
+fn answered_without_walking(
+    rule: &str,
+    anchor: DateTime<Utc>,
+    after: DateTime<Utc>,
+) -> Option<DateTime<Utc>> {
+    let recurrence = Recurrence::parse(rule).expect("accepted");
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || sender.send(recurrence.next_after(anchor, after, 0, Timezone::UTC)));
+    receiver
+        .recv_timeout(LONGER_THAN_ANY_JUMP)
+        .unwrap_or_else(|error| panic!("{rule} from {anchor} after {after} walked: {error}"))
+}
+
+#[test]
+fn the_whole_calendar_between_anchor_and_after_is_jumped_rather_than_walked() {
+    let first = NaiveDate::MIN.year();
+    let last = NaiveDate::MAX.year();
+    let anchor = calendar_minute(first, 1, 1, 1, 17);
+    let june = calendar_minute(last, 6, 15, 12, 30);
+    for (rule, after, next) in [
+        (
+            "FREQ=HOURLY",
+            june,
+            Some(calendar_minute(last, 6, 15, 13, 17)),
+        ),
+        (
+            "FREQ=HOURLY;INTERVAL=7",
+            june,
+            Some(calendar_minute(last, 6, 15, 19, 17)),
+        ),
+        (
+            "FREQ=DAILY;INTERVAL=3",
+            june,
+            Some(calendar_minute(last, 6, 18, 1, 17)),
+        ),
+        (
+            "FREQ=WEEKLY;INTERVAL=2",
+            june,
+            Some(calendar_minute(last, 6, 28, 1, 17)),
+        ),
+        ("FREQ=HOURLY", DateTime::<Utc>::MAX_UTC, None),
+    ] {
+        assert_eq!(
+            answered_without_walking(rule, anchor, after),
+            next,
+            "{rule} after {after}"
+        );
+    }
+}
+
+#[test]
+fn a_landing_before_the_calendar_starts_rises_to_the_lowest_period_it_can_hold() {
+    let first = NaiveDate::MIN.year();
+    let anchor = at_utc("2027-01-15T09:17:00Z");
+    let earliest = DateTime::<Utc>::MIN_UTC;
+    let two_hours_in = earliest + TimeDelta::hours(2);
+    for (rule, after, next) in [
+        ("FREQ=HOURLY", earliest, calendar_minute(first, 1, 1, 0, 17)),
+        (
+            "FREQ=HOURLY;INTERVAL=7",
+            earliest,
+            calendar_minute(first, 1, 1, 5, 17),
+        ),
+        (
+            "FREQ=HOURLY;INTERVAL=7",
+            two_hours_in,
+            calendar_minute(first, 1, 1, 5, 17),
+        ),
+        (
+            "FREQ=DAILY;INTERVAL=3",
+            earliest,
+            calendar_minute(first, 1, 3, 9, 17),
+        ),
+        (
+            "FREQ=WEEKLY;INTERVAL=2",
+            earliest,
+            calendar_minute(first, 1, 2, 9, 17),
+        ),
+    ] {
+        assert_eq!(
+            answered_without_walking(rule, anchor, after),
+            Some(next),
+            "{rule} after {after}"
+        );
+    }
+}
+
+#[test]
+fn a_rule_that_walks_reaches_a_period_further_off_than_a_search_looks() {
+    for (rule, anchor, after, next) in [
+        (
+            "FREQ=MONTHLY",
+            "1800-01-31T09:00:00Z",
+            "2027-02-15T00:00:00Z",
+            "2027-02-28T09:00:00Z",
+        ),
+        (
+            "FREQ=DAILY",
+            "1900-06-30T23:59:60.5Z",
+            "2027-01-01T12:00:00Z",
+            "2027-01-01T23:59:00Z",
+        ),
+    ] {
+        let parsed = Recurrence::parse(rule).expect("accepted");
+        assert_eq!(
+            parsed.next_after(at_utc(anchor), at_utc(after), 0, Timezone::UTC),
             Some(at_utc(next)),
             "{rule} anchored at {anchor}, asked after {after}"
         );

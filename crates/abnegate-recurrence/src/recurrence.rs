@@ -40,6 +40,9 @@ const LAST_MINUTE: u32 = 59;
 const FIRST_MONTH_DAY: u32 = 1;
 const LAST_MONTH_DAY: u32 = 31;
 
+/// Where a [`Timelike::nanosecond`] reading passes into a leap second.
+const LEAP_SECOND_NANOSECOND: u32 = 1_000_000_000;
+
 /// One accepted RFC 5545 `RRULE`.
 ///
 /// The subset is deliberate rather than partial: `FREQ` (hourly, daily,
@@ -383,8 +386,10 @@ impl Recurrence {
     ///
     /// Finding the period `after` falls in takes constant time for an hourly,
     /// daily or weekly rule, whose periods are all one length. A monthly rule
-    /// takes one step per month between `anchor` and `after`, because its
-    /// months differ in length.
+    /// takes one step per period between `anchor` and `after`, because its
+    /// months differ in length, and so does a rule anchored inside a leap
+    /// second, because a step forward out of one and a step back land out of
+    /// phase with each other.
     ///
     /// # Panics
     ///
@@ -452,27 +457,24 @@ impl Recurrence {
         period
     }
 
-    /// The last period at or before `after`, reached in one jump when every
-    /// period is the same length on the wall clock. A month is not, and a
-    /// period the calendar cannot hold is not reached, so both answer the
-    /// anchor and leave [`Recurrence::period_start`] to walk from there.
+    /// The last period at or before `after`, reached in one jump, or the one
+    /// above it when the calendar starts too late to hold it, which is then
+    /// the lowest period the calendar can hold.
+    ///
+    /// A jump needs every period to be one length. A month is not, and neither
+    /// is the step out of a leap second, so both answer the anchor and leave
+    /// [`Recurrence::period_start`] to walk from there.
     fn nearest_period(&self, anchor: NaiveDateTime, after: NaiveDateTime) -> NaiveDateTime {
-        if self.frequency == Frequency::Monthly {
+        if self.frequency == Frequency::Monthly || anchor.nanosecond() >= LEAP_SECOND_NANOSECOND {
             return anchor;
         }
         let distance = after.signed_duration_since(anchor);
         let whole_seconds = distance.num_seconds() - i64::from(distance.subsec_nanos() < 0);
-        self.frequency
-            .shortest()
-            .num_seconds()
-            .checked_mul(i64::from(self.interval))
-            .and_then(|length| {
-                whole_seconds
-                    .checked_div_euclid(length)?
-                    .checked_mul(length)
-            })
-            .and_then(TimeDelta::try_seconds)
-            .and_then(|offset| anchor.checked_add_signed(offset))
+        let length = self.frequency.shortest().num_seconds() * i64::from(self.interval);
+        let periods = whole_seconds.div_euclid(length);
+        [periods, periods + 1]
+            .into_iter()
+            .find_map(|count| anchor.checked_add_signed(TimeDelta::try_seconds(count * length)?))
             .unwrap_or(anchor)
     }
 
