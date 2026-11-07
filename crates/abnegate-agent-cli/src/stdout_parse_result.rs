@@ -10,6 +10,7 @@ use serde::de::DeserializeOwned;
 
 use crate::event::AgentEvent;
 use crate::occupancy::Occupancy;
+use crate::paragraphs::PARAGRAPH_BREAK;
 use crate::parser::claude::CliUsage;
 
 /// The events of one run, folded into what they add up to.
@@ -20,15 +21,17 @@ pub struct StdoutParseResult {
     /// its answer alike.
     pub text: String,
     /// The agent's final answer, apart from the narration in
-    /// [`text`](StdoutParseResult::text), when it reported one.
+    /// [`text`](StdoutParseResult::text), when it reported one, or each of its
+    /// turns' answers as paragraphs when it ran more than one.
     pub answer: Option<String>,
     /// Tools the main agent ran for itself. Reported, never replayed. A
     /// subagent's calls are not among them.
     pub tools: Vec<ToolCall>,
-    /// The last token counts reported, cache reads and writes counted as
-    /// prompt.
+    /// The token counts reported, added up over the run's results, cache
+    /// reads and writes counted as prompt.
     pub usage: Option<Usage>,
-    /// The last raw token counts reported, with the cache kept apart.
+    /// The raw token counts reported, added up over the run's results, with
+    /// the cache kept apart.
     pub tokens: Option<CliUsage>,
     /// The first failure the agent reported, in its own words, or the last
     /// [diagnostic](StdoutParseResult::diagnostic) of a stream that ended
@@ -46,7 +49,7 @@ pub struct StdoutParseResult {
     pub structured: Option<serde_json::Value>,
     /// In US dollars.
     pub cost: Option<f64>,
-    /// How many turns the agent took.
+    /// How many turns the agent took, added up over the run's results.
     pub turns: Option<u32>,
     /// How long the agent spent waiting on its model's API.
     pub latency: Option<Duration>,
@@ -66,6 +69,17 @@ pub struct StdoutParseResult {
     /// The context window of the model the turn ran on, and how much of it
     /// the turn filled, the last time the agent reported them.
     pub occupancy: Option<Occupancy>,
+    /// [`usage`](StdoutParseResult::usage) as of the last finished turn.
+    earlier_usage: Option<Usage>,
+    /// [`tokens`](StdoutParseResult::tokens) as of the last finished turn.
+    earlier_tokens: Option<CliUsage>,
+    /// [`answer`](StdoutParseResult::answer) as of the last finished turn.
+    earlier_answer: Option<String>,
+    /// Whether the output ended with a turn begun after one finished and not
+    /// finished itself.
+    ended_mid_turn: bool,
+    /// Whether a turn had said anything by the time it finished.
+    answered: bool,
 }
 
 impl StdoutParseResult {
@@ -75,12 +89,28 @@ impl StdoutParseResult {
     /// [output](AgentEvent::Output) and news of a
     /// [subagent](AgentEvent::Subagent) are left to the stream, and every
     /// other field takes the latest value reported.
+    ///
+    /// Within a turn that goes for usage, tokens and the answer too, since a
+    /// result restates what the turn's progress reported. A run's further
+    /// turns report only themselves, so across a
+    /// [finished](AgentEvent::Finished) turn usage, tokens and the turn count
+    /// add up, and answers join as paragraphs.
     pub fn record(&mut self, event: AgentEvent) {
         match event {
             AgentEvent::Text(chunk) => self.text.push_str(&chunk),
             AgentEvent::Tool(call) => self.tools.push(call),
-            AgentEvent::Usage(usage) => self.usage = Some(usage),
-            AgentEvent::Tokens(tokens) => self.tokens = Some(tokens),
+            AgentEvent::Usage(usage) => {
+                self.usage = Some(match self.earlier_usage {
+                    Some(spent) => spent.plus(usage),
+                    None => usage,
+                });
+            }
+            AgentEvent::Tokens(tokens) => {
+                self.tokens = Some(match self.earlier_tokens.clone() {
+                    Some(spent) => spent.plus(tokens),
+                    None => tokens,
+                });
+            }
             AgentEvent::Failed(message) => {
                 self.finished = true;
                 self.failure.get_or_insert(message);
@@ -105,12 +135,23 @@ impl StdoutParseResult {
             AgentEvent::Finished { finish_reason } => {
                 self.finished = true;
                 self.finish_reason = finish_reason;
+                self.answered |= self.structured.is_some() || !self.reply().trim().is_empty();
+                self.earlier_usage = self.usage;
+                self.earlier_tokens.clone_from(&self.tokens);
+                self.earlier_answer.clone_from(&self.answer);
             }
             AgentEvent::Session(session) => self.session = Some(session),
             AgentEvent::Structured(output) => self.structured = Some(output),
-            AgentEvent::Answer(answer) => self.answer = Some(answer),
+            AgentEvent::Answer(answer) => {
+                self.answer = Some(match &self.earlier_answer {
+                    Some(earlier) => format!("{earlier}{PARAGRAPH_BREAK}{answer}"),
+                    None => answer,
+                });
+            }
             AgentEvent::Cost(cost) => self.cost = Some(cost),
-            AgentEvent::Turns(turns) => self.turns = Some(turns),
+            AgentEvent::Turns(turns) => {
+                self.turns = Some(self.turns.unwrap_or_default().saturating_add(turns));
+            }
             AgentEvent::Latency(latency) => self.latency = Some(latency),
             AgentEvent::Diagnostic(message) => self.diagnostic = Some(message),
             AgentEvent::Credits(window) => {
@@ -128,6 +169,28 @@ impl StdoutParseResult {
         if !self.finished && self.failure.is_none() {
             self.failure.clone_from(&self.diagnostic);
         }
+    }
+
+    /// How long the answers of the finished turns are, when any gave one.
+    pub(crate) fn earlier_answer_len(&self) -> Option<usize> {
+        self.earlier_answer.as_ref().map(String::len)
+    }
+
+    /// Note that the output ended with a later turn still being written.
+    pub(crate) fn end_mid_turn(&mut self) {
+        self.ended_mid_turn = true;
+    }
+
+    /// Whether the output ended with a later turn still being written.
+    pub(crate) fn ended_mid_turn(&self) -> bool {
+        self.ended_mid_turn
+    }
+
+    /// Whether a turn had said anything by the time it finished: an answer,
+    /// prose, or a schema-shaped answer. Prose from a turn still unfinished
+    /// does not count.
+    pub(crate) fn answered(&self) -> bool {
+        self.answered
     }
 
     /// What the agent answered: its final [answer](StdoutParseResult::answer)
@@ -304,6 +367,71 @@ mod tests {
         assert!(!result.finished);
         assert!(result.failure.is_none());
         assert_eq!(result.answer.as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn each_finished_turn_adds_its_own_usage_turns_and_answer() {
+        let result: StdoutParseResult = [
+            AgentEvent::Usage(Usage::new(5, 1)),
+            AgentEvent::Usage(Usage::new(20, 10)),
+            AgentEvent::Turns(2),
+            AgentEvent::Answer("First.".to_string()),
+            AgentEvent::finished(Some("success".to_string())),
+            AgentEvent::Usage(Usage::new(4, 1)),
+            AgentEvent::Usage(Usage::new(10, 5)),
+            AgentEvent::Turns(1),
+            AgentEvent::Answer("Second.".to_string()),
+            AgentEvent::finished(Some("success".to_string())),
+        ]
+        .into_iter()
+        .collect();
+
+        let usage = result.usage.expect("the run's usage");
+        assert_eq!((usage.prompt_tokens, usage.completion_tokens), (30, 15));
+        assert_eq!(result.turns, Some(3));
+        assert_eq!(result.answer.as_deref(), Some("First.\n\nSecond."));
+    }
+
+    #[test]
+    fn cache_tokens_add_up_across_finished_turns() {
+        let result: StdoutParseResult = [
+            AgentEvent::Tokens(
+                CliUsage::new(10, 4)
+                    .with_cache_read_input_tokens(100)
+                    .with_cache_creation_input_tokens(20),
+            ),
+            AgentEvent::finished(Some("success".to_string())),
+            AgentEvent::Tokens(
+                CliUsage::new(5, 2)
+                    .with_cache_read_input_tokens(50)
+                    .with_cache_creation_input_tokens(7),
+            ),
+            AgentEvent::finished(Some("success".to_string())),
+        ]
+        .into_iter()
+        .collect();
+
+        let tokens = result.tokens.expect("the run's tokens");
+        assert_eq!(tokens.input_tokens, Some(15));
+        assert_eq!(tokens.output_tokens, Some(6));
+        assert_eq!(tokens.cache_read_input_tokens, Some(150));
+        assert_eq!(tokens.cache_creation_input_tokens, Some(27));
+        assert_eq!(tokens.prompt_tokens(), 15 + 150 + 27);
+    }
+
+    #[test]
+    fn a_turn_still_open_counts_its_latest_progress_over_the_finished_ones() {
+        let result: StdoutParseResult = [
+            AgentEvent::Usage(Usage::new(20, 10)),
+            AgentEvent::finished(Some("success".to_string())),
+            AgentEvent::Usage(Usage::new(3, 1)),
+            AgentEvent::Usage(Usage::new(6, 2)),
+        ]
+        .into_iter()
+        .collect();
+
+        let usage = result.usage.expect("the run's usage");
+        assert_eq!((usage.prompt_tokens, usage.completion_tokens), (26, 12));
     }
 
     #[test]

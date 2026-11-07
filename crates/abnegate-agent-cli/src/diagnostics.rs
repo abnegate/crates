@@ -41,7 +41,7 @@ pub(crate) struct Diagnostics {
     raw: Sink,
     scrubber: Scrubber,
     tripwire: Option<Tripwire>,
-    verdicts: Option<mpsc::Sender<Verdict>>,
+    verdicts: Option<mpsc::UnboundedSender<Verdict>>,
     drain: Drain,
     count: u64,
     collected: Vec<u8>,
@@ -55,7 +55,7 @@ impl Diagnostics {
         raw: Sink,
         scrubber: Scrubber,
         tripwire: Option<Tripwire>,
-        verdicts: mpsc::Sender<Verdict>,
+        verdicts: mpsc::UnboundedSender<Verdict>,
         draining: watch::Receiver<bool>,
     ) -> Self {
         Self {
@@ -137,7 +137,7 @@ impl Diagnostics {
             .is_some_and(|tripwire| tripwire.trips(&line))
             && let Some(verdicts) = self.verdicts.take()
         {
-            let _ = verdicts.try_send(Verdict::Tripped(scrubbed.clone()));
+            let _ = verdicts.send(Verdict::Tripped(scrubbed.clone()));
         }
 
         tracing::debug!(line = %scrubbed, "agent stderr");
@@ -258,7 +258,7 @@ mod tests {
             .expect("the agent");
         let stderr = agent.stderr.take();
         agent.wait().await.expect("the agent to exit");
-        let (verdicts, _settled) = mpsc::channel(2);
+        let (verdicts, _settled) = mpsc::unbounded_channel();
         let (draining, started) = watch::channel(false);
         draining.send_replace(true);
         let diagnostics = Diagnostics::new(

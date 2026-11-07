@@ -173,6 +173,26 @@ otherwise. An isolated read-only run loads no settings at all, where it would
 load the user's, and keeps every flag that confines it. Codex ignores it, so a
 host can set it on every run.
 
+A Claude turn can end with a result while a background command or monitor runs
+on, and Claude writes a further turn once it ends. A run settles on its first
+result and stops an agent still running moments later, unless
+`CliSettings::await_background` is set: a result then settles the run only once
+Claude has no listed task running, no wakeup from `ScheduleWakeup` left to fire
+and no turn it owes for either, and a turn that begins while it waits to exit
+reopens the wait. A run that outlasts its timeout that way keeps any answer it
+gave, and fails only if it gave none. A failure or usage limit still settles it
+at once. A `CronCreate` task dies with the session, so it holds nothing. Codex
+ignores it.
+
+A run stopped before Claude finished, by that timeout or with a later turn
+still being written when the agent exits or is stopped, keeps the answers of
+the turns that finished, and its finish reason is `CUT_SHORT`, on the
+completion and on the last event of a stream.
+
+A run's usage, tokens and turn count add up over its results, and its answers
+join as paragraphs, since each result reports only its own turn. Joined answers
+are held to the output limit, as prose is.
+
 An `McpServer` also takes options Claude's own MCP entry has no key for, which
 never reach Claude's file or a log: `with_tool_timeout` (Codex's
 `tool_timeout_sec`, and for Claude the longest of the run's servers as

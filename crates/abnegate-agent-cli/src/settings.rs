@@ -497,6 +497,37 @@ pub struct CliSettings {
     /// settings, so a Codex run ignores it, and a host can set it on every
     /// run whichever agent runs it.
     pub isolated: bool,
+    /// Keep reading while work the agent sent to the background still runs,
+    /// rather than stopping the agent shortly after its first result.
+    ///
+    /// Claude ends a turn with a result while a background command or monitor
+    /// runs on, or before a wakeup it set with `ScheduleWakeup` fires, then
+    /// writes a further turn once it ends or fires. A monitor's line can start
+    /// a turn of its own. Without this, the run settles on that first result
+    /// and an agent still running moments later is stopped, the work and the
+    /// turn it would have led to with it. With it, a result settles the run
+    /// only once Claude has no listed task running, no wakeup to fire and no
+    /// turn it owes for either, and a turn that begins while a settled run
+    /// waits for the agent to exit reopens the wait.
+    ///
+    /// Work that never ends, or an agent that keeps beginning turns, holds the
+    /// run until its [timeout](CliSettings::timeout), and a run with none can
+    /// wait forever. A run the timeout stops while it waits keeps the answers
+    /// it gave, with [`Execution::stopped`](crate::Execution::stopped) saying
+    /// why it ended and its finish reason [`CUT_SHORT`](crate::CUT_SHORT); one
+    /// that has not answered fails with the timeout. A timeout that falls in
+    /// the grace after a finished turn ends the run as an agent that would not
+    /// exit, with no mark, since every turn it began had finished.
+    ///
+    /// A reported failure or limit still settles the run at once, and a
+    /// failure or [tripwire](CliSettings::tripwire) while the run waits fails
+    /// it even after a turn finished, since later work went wrong; without
+    /// this setting a trip after a finished turn leaves its answer standing,
+    /// as it always has. A task from
+    /// `CronCreate` is not waited for: it lives only as long as the session,
+    /// and Claude exits without it. Codex reports no background work, so a
+    /// Codex run ignores this.
+    pub await_background: bool,
     /// Confine the run to an allowlist, so it cannot change the workspace or
     /// read outside it however it is asked to. Claude only.
     ///
@@ -605,6 +636,7 @@ impl Default for CliSettings {
             withhold_tools: false,
             permission_prompt: None,
             isolated: false,
+            await_background: false,
             read_only: false,
             web: false,
             mcp: McpConfig::default(),
@@ -817,6 +849,12 @@ impl CliSettings {
     /// Opt in to [`CliSettings::isolated`].
     pub fn isolate(mut self) -> Self {
         self.isolated = true;
+        self
+    }
+
+    /// Opt in to [`CliSettings::await_background`].
+    pub fn await_background(mut self) -> Self {
+        self.await_background = true;
         self
     }
 

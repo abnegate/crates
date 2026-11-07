@@ -1,11 +1,13 @@
 //! Reading `claude --output-format stream-json`.
 
+mod background_task;
 mod cli_content_block;
 mod cli_message;
 mod cli_usage;
 mod credits_refusal;
 mod delegation;
 mod hand_back;
+mod lifecycle;
 mod model_usage;
 mod notice;
 mod rate_limit_report;
@@ -39,6 +41,9 @@ const ASSISTANT: &str = "assistant";
 const TEXT: &str = "text";
 const PARTIAL: &str = "stream_event";
 const PARENT: &str = "parent_tool_use_id";
+const SYSTEM_KIND: &str = "system";
+const SUBTYPE: &str = "subtype";
+const INIT_KIND: &str = "init";
 
 /// Begins the failure of a turn on a model the signed-in account cannot
 /// spend usage credits on, before claude's own words, which say why and what
@@ -68,6 +73,12 @@ pub fn interpret(line: &str, events: &mut Vec<AgentEvent>) {
 /// adds: a piece of an event the stream repeats whole once it is complete.
 pub fn partial(line: &str) -> bool {
     parser::kind(line) == Some(PARTIAL)
+}
+
+/// Whether the start of a line, all that was read of one too long to read
+/// whole, is the `init` notice that begins a turn.
+pub(crate) fn begins_turn(prefix: &str) -> bool {
+    parser::kind(prefix) == Some(SYSTEM_KIND) && parser::field(prefix, SUBTYPE) == Some(INIT_KIND)
 }
 
 /// Whether an event too long to read, of which only `prefix` is known, is
