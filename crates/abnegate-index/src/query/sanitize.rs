@@ -5,7 +5,7 @@ const MAXIMUM_QUERY_LENGTH: usize = 500;
 /// The characters of `query` that PostgreSQL `websearch_to_tsquery` can
 /// usefully see for code.
 ///
-/// The query is cut to its first 500 bytes on a character boundary, then
+/// The query is cut at the first character boundary at or after byte 500, then
 /// everything but letters, digits, whitespace and `- " _ . / :` is dropped.
 pub fn sanitize_search_query(query: &str) -> String {
     let truncated = if query.len() > MAXIMUM_QUERY_LENGTH {

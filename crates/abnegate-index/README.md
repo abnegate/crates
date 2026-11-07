@@ -21,7 +21,9 @@ linear ranker whose weights the host supplies.
 - `code-chunking`: tree-sitter code chunking through `chunk_code`,
   `chunk_code_with_config` and `smart_chunk`, for Rust, Python, JavaScript,
   TypeScript, Go, Java, C, C++, Kotlin, Swift, SQL, JSON, YAML, Ruby and PHP.
-  It adds one grammar crate per language.
+  It adds one grammar crate per language, and `tree-sitter-sequel` requires
+  `cc ~1.2`, which any crate in the same build that needs a later `cc` will
+  conflict with.
 - `testing`: `Scripted`, an [`Embedder`] that returns inserted vectors so a
   caller can rank without loading a model.
 
@@ -70,8 +72,9 @@ assert_eq!(chunks.len(), 1);
 assert_eq!(chunks[0].text, text);
 ```
 
-With `code-chunking`, `chunk_code` splits source on symbol boundaries, never at
-a fixed length. Each symbol gets a body chunk and a skeleton of its signature;
+With `code-chunking`, `chunk_code` splits source on symbol boundaries. Only
+content too large for its budget, too large to parse, or generated is cut into
+text windows. Each symbol gets a body chunk and a skeleton of its signature;
 the file gets a header chunk with its imports and an API surface chunk with its
 public signatures. Every `CodeChunk` carries the identifiers it defines and
 references, so keyword and vector search see the same names. `smart_chunk` uses

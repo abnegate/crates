@@ -18,7 +18,8 @@ pub fn estimate_tokens(text: &str) -> usize {
 /// boundary when one falls near the end of a window.
 ///
 /// When `maximum_tokens` is 0 or `overlap_tokens` is not smaller than it, the
-/// whole text is one chunk. Empty text yields no chunks.
+/// whole text is one chunk, even when it is empty. Otherwise empty text yields
+/// no chunks.
 pub fn chunk_text(text: &str, maximum_tokens: usize, overlap_tokens: usize) -> Vec<TextChunk> {
     if maximum_tokens == 0 || overlap_tokens >= maximum_tokens {
         return vec![TextChunk {

@@ -23,9 +23,12 @@ pub struct ChunkMetadata {
     pub is_test: bool,
     /// Whether the source looked generated or minified.
     pub is_generated: bool,
-    /// Start byte in the source.
+    /// About where the chunk starts in the source, in bytes. A split chunk can
+    /// report an offset past the end of the source or past `end_byte`, so this
+    /// locates a chunk but must not slice the source.
     pub start_byte: usize,
-    /// End byte in the source.
+    /// About where the chunk ends in the source, in bytes, with the same caveat
+    /// as `start_byte`.
     pub end_byte: usize,
     /// The first 8 bytes of the SHA-256 of the chunk text, as 16 lowercase
     /// hexadecimal characters.

@@ -38,7 +38,8 @@
 //! window.
 //!
 //! With the `code-chunking` feature, [`chunk_code`] parses source with
-//! tree-sitter and splits it on symbol boundaries, never at a fixed length.
+//! tree-sitter and splits it on symbol boundaries. Only content too large for
+//! its budget, too large to parse, or generated is cut into text windows.
 //! Each symbol gets a body chunk and a skeleton of its signature; the file
 //! gets a header chunk with its imports and an API surface chunk with its
 //! public signatures. Every [`CodeChunk`] carries the identifiers it defines
@@ -124,7 +125,9 @@
 //! - `code-chunking`: tree-sitter code chunking through [`chunk_code`],
 //!   [`chunk_code_with_config`] and [`smart_chunk`], for Rust, Python,
 //!   JavaScript, TypeScript, Go, Java, C, C++, Kotlin, Swift, SQL, JSON, YAML,
-//!   Ruby and PHP. It adds one grammar crate per language.
+//!   Ruby and PHP. It adds one grammar crate per language, and
+//!   `tree-sitter-sequel` requires `cc ~1.2`, which any crate in the same build
+//!   that needs a later `cc` will conflict with.
 //! - `testing`: [`Scripted`], an [`Embedder`] that returns inserted vectors so
 //!   a caller can rank without loading a model.
 //!

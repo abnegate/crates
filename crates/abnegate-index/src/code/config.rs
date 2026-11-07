@@ -14,7 +14,8 @@ const MAXIMUM_IMPORT_TOKENS: usize = 100;
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ChunkConfig {
-    /// Most tokens a chunk may hold before it is split.
+    /// The tokens a chunk aims to stay within before it is split. A chunk's
+    /// header is never cut, so a small budget can be exceeded.
     pub maximum_tokens: usize,
     /// Symbols under this many tokens are merged with their siblings.
     pub minimum_tokens: usize,

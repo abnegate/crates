@@ -16,8 +16,12 @@ const MINIMUM_SEMANTIC_SCORE: f32 = 0.35;
 /// weighed in reciprocal rank fusion.
 ///
 /// The default weighs the semantic leg 0.7, uses the fusion constant 60 from
-/// the literature, keeps every keyword hit, and drops semantic hits under a
-/// cosine similarity of 0.35.
+/// the literature, sets no floor on keyword hits, and sets a floor of 0.35 on
+/// the cosine similarity of semantic hits.
+///
+/// [`reciprocal_rank_fusion`](crate::reciprocal_rank_fusion) reads only the
+/// weight and the constant. The two floors are for the host's own leg queries,
+/// which filter before fusion.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct HybridSearchConfig {
@@ -26,9 +30,11 @@ pub struct HybridSearchConfig {
     pub semantic_weight: f32,
     /// The constant `k` in each leg's `1 / (k + rank)` contribution.
     pub fusion_constant: f32,
-    /// Keyword hits scoring under this are dropped.
+    /// The keyword score a host's keyword leg should require. Nothing in this
+    /// crate filters on it.
     pub minimum_keyword_score: f32,
-    /// Semantic hits less similar than this are dropped.
+    /// The similarity a host's semantic leg should require. Nothing in this
+    /// crate filters on it.
     pub minimum_semantic_score: f32,
 }
 
