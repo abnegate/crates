@@ -237,6 +237,11 @@ impl Recurrence {
     /// the clock, but on the morning London springs forward those are one
     /// elapsed hour apart. A host that bounds elapsed time between firings
     /// allows for the largest change its timezones make.
+    ///
+    /// The gap out of an anchor that carries whole seconds can run up to a
+    /// minute shorter than this, at any frequency, because later firings drop
+    /// them: an hourly rule anchored at 09:17:42.5 next fires at 10:17:00.5,
+    /// 59 minutes and 18 seconds on.
     pub fn period(&self) -> TimeDelta {
         let whole = self
             .frequency
