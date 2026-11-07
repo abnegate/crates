@@ -10,6 +10,11 @@ const FORBIDDEN_CHARACTERS: &[char] = &['~', '^', ':', '?', '*', '[', '\\', ' ']
 /// The suffix git reserves for its own lock files, refused on any component.
 const LOCK_SUFFIX: &str = ".lock";
 
+/// Git's shorthand for `HEAD`, a revision expression rather than a name,
+/// though git accepts it under `refs/`.
+#[cfg(any(feature = "github", feature = "gitlab"))]
+pub(crate) const CURRENT: &str = "@";
+
 /// A branch name as a host such as GitHub reports it: any name
 /// `git check-ref-format` accepts under `refs/heads/`.
 ///
@@ -47,6 +52,14 @@ impl RemoteBranchName {
             || value
                 .split('/')
                 .any(|component| component.starts_with('.') || component.ends_with(LOCK_SUFFIX))
+    }
+
+    /// Whether `value` is refused as a ref a host is asked to read at, which
+    /// travels percent-encoded and never reaches a command line: a name
+    /// [`Self::refuses`] refuses, or `@`, git's shorthand for `HEAD`.
+    #[cfg(any(feature = "github", feature = "gitlab"))]
+    pub(crate) fn refuses_reference(value: &str) -> bool {
+        value == CURRENT || Self::refuses(value)
     }
 
     /// The name as the host spells it.
@@ -140,6 +153,28 @@ mod tests {
             assert!(
                 RemoteBranchName::parse(name).is_err(),
                 "{name:?} must not be accepted as a remote branch"
+            );
+        }
+    }
+
+    #[cfg(any(feature = "github", feature = "gitlab"))]
+    #[test]
+    fn a_reference_is_any_remote_branch_name_other_than_git_s_shorthand() {
+        for (value, refused) in [
+            ("HEAD", false),
+            ("main", false),
+            ("feature/x", false),
+            ("-dash", false),
+            ("--upload-pack=evil", false),
+            ("+release", false),
+            ("@", true),
+            ("a..b", true),
+            ("", true),
+        ] {
+            assert_eq!(
+                RemoteBranchName::refuses_reference(value),
+                refused,
+                "{value:?} refused as a reference"
             );
         }
     }
