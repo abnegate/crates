@@ -10,6 +10,7 @@ use serde::de::DeserializeOwned;
 
 use crate::event::AgentEvent;
 use crate::occupancy::Occupancy;
+use crate::paragraphs::PARAGRAPH_BREAK;
 use crate::parser::claude::CliUsage;
 
 /// The events of one run, folded into what they add up to.
@@ -20,15 +21,17 @@ pub struct StdoutParseResult {
     /// its answer alike.
     pub text: String,
     /// The agent's final answer, apart from the narration in
-    /// [`text`](StdoutParseResult::text), when it reported one.
+    /// [`text`](StdoutParseResult::text), when it reported one, or each of its
+    /// turns' answers as paragraphs when it ran more than one.
     pub answer: Option<String>,
     /// Tools the main agent ran for itself. Reported, never replayed. A
     /// subagent's calls are not among them.
     pub tools: Vec<ToolCall>,
-    /// The last token counts reported, cache reads and writes counted as
-    /// prompt.
+    /// The token counts reported, added up over the run's results, cache
+    /// reads and writes counted as prompt.
     pub usage: Option<Usage>,
-    /// The last raw token counts reported, with the cache kept apart.
+    /// The raw token counts reported, added up over the run's results, with
+    /// the cache kept apart.
     pub tokens: Option<CliUsage>,
     /// The first failure the agent reported, in its own words, or the last
     /// [diagnostic](StdoutParseResult::diagnostic) of a stream that ended
@@ -46,7 +49,7 @@ pub struct StdoutParseResult {
     pub structured: Option<serde_json::Value>,
     /// In US dollars.
     pub cost: Option<f64>,
-    /// How many turns the agent took.
+    /// How many turns the agent took, added up over the run's results.
     pub turns: Option<u32>,
     /// How long the agent spent waiting on its model's API.
     pub latency: Option<Duration>,
@@ -66,6 +69,12 @@ pub struct StdoutParseResult {
     /// The context window of the model the turn ran on, and how much of it
     /// the turn filled, the last time the agent reported them.
     pub occupancy: Option<Occupancy>,
+    /// [`usage`](StdoutParseResult::usage) as of the last finished turn.
+    earlier_usage: Option<Usage>,
+    /// [`tokens`](StdoutParseResult::tokens) as of the last finished turn.
+    earlier_tokens: Option<CliUsage>,
+    /// [`answer`](StdoutParseResult::answer) as of the last finished turn.
+    earlier_answer: Option<String>,
 }
 
 impl StdoutParseResult {
@@ -75,12 +84,28 @@ impl StdoutParseResult {
     /// [output](AgentEvent::Output) and news of a
     /// [subagent](AgentEvent::Subagent) are left to the stream, and every
     /// other field takes the latest value reported.
+    ///
+    /// Within a turn that goes for usage, tokens and the answer too, since a
+    /// result restates what the turn's progress reported. A run's further
+    /// turns report only themselves, so across a
+    /// [finished](AgentEvent::Finished) turn usage, tokens and the turn count
+    /// add up, and answers join as paragraphs.
     pub fn record(&mut self, event: AgentEvent) {
         match event {
             AgentEvent::Text(chunk) => self.text.push_str(&chunk),
             AgentEvent::Tool(call) => self.tools.push(call),
-            AgentEvent::Usage(usage) => self.usage = Some(usage),
-            AgentEvent::Tokens(tokens) => self.tokens = Some(tokens),
+            AgentEvent::Usage(usage) => {
+                self.usage = Some(match self.earlier_usage {
+                    Some(spent) => spent.plus(usage),
+                    None => usage,
+                });
+            }
+            AgentEvent::Tokens(tokens) => {
+                self.tokens = Some(match self.earlier_tokens.clone() {
+                    Some(spent) => spent.plus(tokens),
+                    None => tokens,
+                });
+            }
             AgentEvent::Failed(message) => {
                 self.finished = true;
                 self.failure.get_or_insert(message);
@@ -105,12 +130,22 @@ impl StdoutParseResult {
             AgentEvent::Finished { finish_reason } => {
                 self.finished = true;
                 self.finish_reason = finish_reason;
+                self.earlier_usage = self.usage;
+                self.earlier_tokens.clone_from(&self.tokens);
+                self.earlier_answer.clone_from(&self.answer);
             }
             AgentEvent::Session(session) => self.session = Some(session),
             AgentEvent::Structured(output) => self.structured = Some(output),
-            AgentEvent::Answer(answer) => self.answer = Some(answer),
+            AgentEvent::Answer(answer) => {
+                self.answer = Some(match &self.earlier_answer {
+                    Some(earlier) => format!("{earlier}{PARAGRAPH_BREAK}{answer}"),
+                    None => answer,
+                });
+            }
             AgentEvent::Cost(cost) => self.cost = Some(cost),
-            AgentEvent::Turns(turns) => self.turns = Some(turns),
+            AgentEvent::Turns(turns) => {
+                self.turns = Some(self.turns.unwrap_or_default().saturating_add(turns));
+            }
             AgentEvent::Latency(latency) => self.latency = Some(latency),
             AgentEvent::Diagnostic(message) => self.diagnostic = Some(message),
             AgentEvent::Credits(window) => {

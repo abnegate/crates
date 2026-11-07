@@ -85,6 +85,7 @@ pub(crate) struct Reader {
     forward: Option<mpsc::UnboundedSender<AgentEvent>>,
     drain: Drain,
     await_background: bool,
+    answered: watch::Sender<bool>,
     count: u64,
     partials: u64,
     events: Vec<AgentEvent>,
@@ -118,6 +119,7 @@ impl Reader {
             forward: None,
             drain: Drain::new(draining),
             await_background: false,
+            answered: watch::Sender::new(false),
             count: 0,
             partials: 0,
             events: Vec::new(),
@@ -132,9 +134,15 @@ impl Reader {
     }
 
     /// Let a finished turn settle the run only once nothing the agent sent to
-    /// the background is running, when `awaited`.
-    pub(crate) fn awaiting_background(mut self, awaited: bool) -> Self {
+    /// the background is left to come, when `awaited`, and say on `answered`
+    /// that a turn finished while it waited.
+    pub(crate) fn awaiting_background(
+        mut self,
+        awaited: bool,
+        answered: watch::Sender<bool>,
+    ) -> Self {
         self.await_background = awaited;
+        self.answered = answered;
         self
     }
 
@@ -285,7 +293,9 @@ impl Reader {
                     AgentEvent::Diagnostic(message)
                 }
                 AgentEvent::Finished { finish_reason } => {
-                    if !(self.await_background && self.turn.background_running()) {
+                    if self.await_background && self.turn.background_running() {
+                        self.answered.send_replace(true);
+                    } else {
                         self.settle(Verdict::Finished);
                     }
                     AgentEvent::finished(finish_reason)

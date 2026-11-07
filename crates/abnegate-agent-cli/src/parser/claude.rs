@@ -1,5 +1,6 @@
 //! Reading `claude --output-format stream-json`.
 
+mod background_task;
 mod cli_content_block;
 mod cli_message;
 mod cli_usage;

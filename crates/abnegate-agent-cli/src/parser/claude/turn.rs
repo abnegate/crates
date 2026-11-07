@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 use abnegate_llm::Limit;
@@ -137,16 +138,20 @@ pub struct Turn {
     /// The calls waiting on their results and the subagents the main agent
     /// started.
     roster: Roster,
-    /// Whether the latest notice of what runs in the background listed any.
-    background: bool,
-    /// The main agent's call that set the wakeup still to fire.
-    wakeup: Option<String>,
+    /// The tasks the latest notice of what runs in the background listed.
+    running: Vec<Option<String>>,
+    /// The turns claude still owes: one for each listed task that ended and
+    /// each wakeup that fired, paid as each turn's `init` line begins it.
+    owed: usize,
+    /// The main agent's calls that set a wakeup still to fire.
+    wakeups: BTreeSet<String>,
 }
 
 impl Turn {
-    /// Whether work runs in the background or a wakeup has yet to fire.
+    /// Whether work runs in the background, a wakeup has yet to fire, or a
+    /// turn either of them led to has yet to begin.
     pub(crate) fn background_running(&self) -> bool {
-        self.background || self.wakeup.is_some()
+        !self.running.is_empty() || self.owed > 0 || !self.wakeups.is_empty()
     }
 
     /// Translate one line of the stream, appending whatever it means beside
@@ -169,7 +174,8 @@ impl Turn {
             },
             Some(COMMAND_LIFECYCLE) => {
                 if serde_json::from_str::<Lifecycle>(line).is_ok_and(|lifecycle| lifecycle.woke()) {
-                    self.wakeup = None;
+                    self.wakeups.clear();
+                    self.owed += 1;
                 }
             }
             _ => match serde_json::from_str::<StreamEvent>(line) {
@@ -258,11 +264,10 @@ impl Turn {
         events: &mut Vec<AgentEvent>,
     ) {
         let results: Vec<(String, Value, bool)> = results(message).collect();
-        if results
-            .iter()
-            .any(|(id, _, failed)| *failed && self.wakeup.as_ref() == Some(id))
-        {
-            self.wakeup = None;
+        for (id, _, failed) in &results {
+            if *failed {
+                self.wakeups.remove(id);
+            }
         }
         self.roster.returned(results, report, events);
     }
@@ -273,18 +278,25 @@ impl Turn {
             return;
         };
         if subtype == INIT_SUBTYPE {
+            self.owed = self.owed.saturating_sub(1);
             self.announce(Some(INIT_SUBTYPE), notice.session_id, events);
             return;
         }
         if subtype == BACKGROUND_TASKS_SUBTYPE {
-            if let Some(tasks) = &notice.tasks {
-                self.background = !tasks.is_empty();
+            if let Some(tasks) = notice.tasks {
+                self.running = tasks.into_iter().map(|task| task.task_id).collect();
             }
             return;
         }
         let Some(event) = TaskEvent::named(subtype) else {
             return;
         };
+        if event == TaskEvent::Notification
+            && notice.task_id.is_some()
+            && self.running.contains(&notice.task_id)
+        {
+            self.owed += 1;
+        }
         events.extend(self.roster.noticed(event, notice).map(AgentEvent::Subagent));
     }
 
@@ -309,8 +321,11 @@ impl Turn {
             if let CliContentBlock::ToolUse { id, name, input } = block
                 && name == SCHEDULE_WAKEUP
             {
-                let cancelled = input.get(WAKEUP_STOP).and_then(Value::as_bool) == Some(true);
-                self.wakeup = (!cancelled).then(|| id.clone());
+                if input.get(WAKEUP_STOP).and_then(Value::as_bool) == Some(true) {
+                    self.wakeups.clear();
+                } else {
+                    self.wakeups.insert(id.clone());
+                }
             }
         }
     }

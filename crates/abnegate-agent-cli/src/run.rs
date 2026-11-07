@@ -36,6 +36,7 @@ use crate::verdict::Verdict;
 
 const UNSTOPPABLE: &str = "the agent could not be stopped";
 const LINGERED: &str = "the agent finished its turn but did not exit";
+const OUTLASTED: &str = "the agent's background work outlasted the run's timeout";
 
 /// A spawned agent, with the tasks reading its output and everything that
 /// has to outlive it, until [`Run::finish`] collects what it did.
@@ -61,6 +62,9 @@ pub(crate) struct Run {
     pub(crate) reader: JoinHandle<Result<StdoutParseResult, String>>,
     pub(crate) diagnostics: JoinHandle<String>,
     pub(crate) settled: mpsc::Receiver<Verdict>,
+    /// Turned true when a turn finished while the run waited on background
+    /// work, so the agent has answered even if it never settles.
+    pub(crate) answered: watch::Receiver<bool>,
     /// Turned true once the run stops waiting for the agent's output to
     /// close, which starts its readers' drain.
     pub(crate) draining: watch::Sender<bool>,
@@ -276,6 +280,14 @@ impl Run {
                     .await;
                 tracing::warn!(provider = %self.name, label = %self.label, "agent timed out; stopping its process group");
                 stop_agent(&mut self.child, self.reaper.group()).await;
+                if *self.answered.borrow() {
+                    return Ok(Settlement {
+                        stopped: Some(OUTLASTED.to_string()),
+                        failure: None,
+                        tripped: false,
+                        exit: None,
+                    });
+                }
                 return Err(ProviderError::timeout(&self.name, self.timeout));
             }
             Outcome::Settled(verdict) => verdict,

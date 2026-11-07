@@ -33,8 +33,9 @@ impl Turn {
         }
     }
 
-    /// Whether work the agent sent to the background is running, or a wakeup
-    /// it set has yet to fire, as of the last line that said so.
+    /// Whether work the agent sent to the background is running, a wakeup it
+    /// set has yet to fire, or a turn either led to has yet to begin, as of
+    /// the last line that said so.
     pub fn background_running(&self) -> bool {
         match self.agent {
             AgentKind::Claude => self.claude.background_running(),
@@ -107,11 +108,77 @@ mod tests {
     const WAKE: &str = r#"{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"tool_use","id":"toolu_wake","name":"ScheduleWakeup","input":{"delaySeconds":60,"reason":"wait"}}]}}"#;
 
     #[test]
+    fn a_claude_turn_is_owed_a_turn_for_each_listed_task_that_ends() {
+        const LISTED: &str = r#"{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"b1"},{"task_id":"b2"}]}"#;
+        const NOTHING: &str =
+            r#"{"type":"system","subtype":"background_tasks_changed","tasks":[]}"#;
+        const FIRST_ENDED: &str = r#"{"type":"system","subtype":"task_notification","task_id":"b1","status":"completed"}"#;
+        const SECOND_ENDED: &str = r#"{"type":"system","subtype":"task_notification","task_id":"b2","status":"completed"}"#;
+        const TURN: &str = r#"{"type":"system","subtype":"init","session_id":"s"}"#;
+        let mut turn = AgentKind::Claude.turn();
+        let mut events = Vec::new();
+
+        for line in [TURN, LISTED, FIRST_ENDED, SECOND_ENDED, NOTHING] {
+            turn.interpret(line, &mut events);
+        }
+        assert!(turn.background_running(), "two turns are owed");
+        turn.interpret(TURN, &mut events);
+        assert!(turn.background_running(), "one turn is still owed");
+        turn.interpret(TURN, &mut events);
+        assert!(!turn.background_running(), "every turn owed has begun");
+    }
+
+    #[test]
+    fn a_claude_turn_owes_nothing_for_a_task_it_never_listed() {
+        const SUBAGENTS: &str = r#"{"type":"system","subtype":"task_notification","task_id":"sub1","status":"completed"}"#;
+        let mut turn = AgentKind::Claude.turn();
+        let mut events = Vec::new();
+
+        turn.interpret(SUBAGENTS, &mut events);
+
+        assert!(!turn.background_running());
+    }
+
+    #[test]
+    fn a_wakeup_that_fires_owes_the_turn_it_starts() {
+        const FIRED: &str =
+            r#"{"type":"command_lifecycle","state":"started","wakeup_source":"loop_wakeup"}"#;
+        const TURN: &str = r#"{"type":"system","subtype":"init","session_id":"s"}"#;
+        let mut turn = AgentKind::Claude.turn();
+        let mut events = Vec::new();
+
+        for line in [TURN, WAKE, FIRED] {
+            turn.interpret(line, &mut events);
+        }
+        assert!(
+            turn.background_running(),
+            "the turn it starts has yet to begin"
+        );
+        turn.interpret(TURN, &mut events);
+        assert!(!turn.background_running());
+    }
+
+    #[test]
+    fn an_accepted_wakeup_outlives_a_later_one_refused() {
+        const LATER: &str = r#"{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"tool_use","id":"toolu_later","name":"ScheduleWakeup","input":{"delaySeconds":60}}]}}"#;
+        const REFUSED: &str = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_later","content":"no","is_error":true}]}}"#;
+        let mut turn = AgentKind::Claude.turn();
+        let mut events = Vec::new();
+
+        for line in [WAKE, LATER, REFUSED] {
+            turn.interpret(line, &mut events);
+        }
+
+        assert!(turn.background_running());
+    }
+
+    #[test]
     fn a_claude_turn_waits_for_a_wakeup_it_set_until_it_fires() {
         const FIRED: &str =
             r#"{"type":"command_lifecycle","state":"started","wakeup_source":"loop_wakeup"}"#;
         const OTHER_COMMAND: &str = r#"{"type":"command_lifecycle","state":"started"}"#;
         const COMPLETED: &str = r#"{"type":"command_lifecycle","state":"completed"}"#;
+        const TURN: &str = r#"{"type":"system","subtype":"init","session_id":"s"}"#;
         let mut turn = AgentKind::Claude.turn();
         let mut events = Vec::new();
 
@@ -122,6 +189,7 @@ mod tests {
             assert!(turn.background_running(), "{line}");
         }
         turn.interpret(FIRED, &mut events);
+        turn.interpret(TURN, &mut events);
         assert!(!turn.background_running());
     }
 
@@ -143,6 +211,53 @@ mod tests {
             }
             assert!(!turn.background_running(), "{undone}");
         }
+    }
+
+    /// Whether each result in claude 2.1.318's own lines leaves more to come.
+    fn held_at_each_result(fixture: &str) -> Vec<bool> {
+        let mut turn = AgentKind::Claude.turn();
+        let mut held = Vec::new();
+        for line in fixture.lines() {
+            let mut events = Vec::new();
+            turn.interpret(line, &mut events);
+            if events
+                .iter()
+                .any(|event| matches!(event, AgentEvent::Finished { .. }))
+            {
+                held.push(turn.background_running());
+            }
+        }
+        held
+    }
+
+    #[test]
+    fn claude_s_own_lines_settle_on_the_last_result_only() {
+        const COMMAND: &str = include_str!("../../tests/fixtures/claude/background-command.jsonl");
+        const MONITOR: &str = include_str!("../../tests/fixtures/claude/monitor.jsonl");
+        const WAKEUP: &str = include_str!("../../tests/fixtures/claude/scheduled-wakeup.jsonl");
+        const ENDED_FIRST: &str =
+            include_str!("../../tests/fixtures/claude/background-ended-first.jsonl");
+        const TWO_ENDED_FIRST: &str =
+            include_str!("../../tests/fixtures/claude/two-background-ended-first.jsonl");
+
+        for (fixture, expected) in [
+            (COMMAND, vec![true, false]),
+            (MONITOR, vec![true, false]),
+            (WAKEUP, vec![true, false]),
+            (ENDED_FIRST, vec![true, false]),
+            (TWO_ENDED_FIRST, vec![true, true, false]),
+        ] {
+            assert_eq!(held_at_each_result(fixture), expected, "{fixture}");
+        }
+    }
+
+    /// The agent's work ends before either result, and claude holds both until
+    /// the later turn has written, so neither has more to come.
+    #[test]
+    fn a_background_agent_claude_answered_for_leaves_nothing_to_come() {
+        const AGENT: &str = include_str!("../../tests/fixtures/claude/background-agent.jsonl");
+
+        assert_eq!(held_at_each_result(AGENT), [false, false]);
     }
 
     #[test]

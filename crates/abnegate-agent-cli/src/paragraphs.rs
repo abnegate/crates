@@ -2,7 +2,7 @@
 
 use crate::event::AgentEvent;
 
-const PARAGRAPH_BREAK: &str = "\n\n";
+pub(crate) const PARAGRAPH_BREAK: &str = "\n\n";
 
 /// Starts every block of an agent's prose after the first with a paragraph
 /// break.
