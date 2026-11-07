@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::time::Duration;
@@ -10,6 +11,7 @@ use crate::activity::subject;
 use crate::event::AgentEvent;
 use crate::output::Output;
 use crate::parser::claude::delegation::Delegation;
+use crate::parser::claude::hand_back;
 use crate::parser::claude::notice::Notice;
 use crate::parser::claude::report::Report;
 use crate::parser::claude::task_event::TaskEvent;
@@ -118,7 +120,9 @@ impl Roster {
     /// account of the only result, or, among several, of the one call the
     /// report's task is known to have been started by, or else of the only
     /// one that started a subagent, and of none when that is not known
-    /// either. A result no call is known for is ignored.
+    /// either. A result no call is known for is ignored. Only an account
+    /// whose call is known, and not just the only one it could be, stands in
+    /// for the subagent's answer in place of a wrapper around it.
     pub(crate) fn returned(
         &mut self,
         results: impl IntoIterator<Item = (String, Value, bool)>,
@@ -126,6 +130,10 @@ impl Roster {
         events: &mut Vec<AgentEvent>,
     ) {
         let results: Vec<(String, Value, bool)> = results.into_iter().collect();
+        let known = results.len() == 1
+            || report
+                .and_then(|report| report.task.as_ref())
+                .is_some_and(|task| self.tasks.contains_key(task));
         let owner = match results.as_slice() {
             [(id, _, _)] => Some(id.clone()),
             _ => report
@@ -148,8 +156,11 @@ impl Roster {
                 };
                 events.push(AgentEvent::Subagent(stepped(&parent, &call, status)));
             }
+            let whole = report
+                .filter(|_| known)
+                .and_then(|report| report.replacing(&text));
             events.extend(
-                self.reported(&id, &text, failed, report)
+                self.reported(&id, &text, whole, failed, report)
                     .filter(|update| !update.empty())
                     .map(AgentEvent::Subagent),
             );
@@ -221,16 +232,22 @@ impl Roster {
     /// foreground subagent's result is its report; a launched one's says
     /// only that it runs on, and its report comes later as task news. Only a
     /// report that says something outranks a later task notice's summary.
+    /// The [`Output`] of the call keeps the frame claude wrote around the
+    /// report, or the wrapper it wrote in place of one too large to hold, as
+    /// the main agent read it; only this news is without them, and has the
+    /// `whole` answer the wrapper stood in place of, when that is known.
     fn reported(
         &mut self,
         id: &str,
         text: &str,
+        whole: Option<&str>,
         failed: bool,
         report: Option<&Report>,
     ) -> Option<Subagent> {
         let background = *self.subagents.get(id)?;
         let empty = Report::default();
         let report = report.unwrap_or(&empty);
+        let written = whole.map_or_else(|| hand_back::report(text), Cow::Borrowed);
         if let Some(task) = report.task.as_ref().filter(|task| !task.is_empty()) {
             self.tasks
                 .entry(task.clone())
@@ -242,7 +259,7 @@ impl Roster {
         };
         if failed {
             update.status = Some(SubagentStatus::Failed);
-            update.error = shown(Some(text));
+            update.error = shown(Some(&written));
             return Some(update);
         }
         match report.status.as_deref() {
@@ -255,11 +272,11 @@ impl Roster {
                 update.tool_uses = report.tool_uses;
                 update.duration = report.duration_ms.map(Duration::from_millis);
                 update.tokens = report.tokens;
-                update.summary = shown(Some(text));
+                update.summary = shown(Some(&written));
             }
             None if !background => {
                 update.status = Some(SubagentStatus::Completed);
-                update.summary = shown(Some(text));
+                update.summary = shown(Some(&written));
             }
             Some(_) | None => {}
         }
