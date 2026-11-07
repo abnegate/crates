@@ -1,0 +1,171 @@
+[
+  {
+    "chunk_type": "Body",
+    "end_offset": 111,
+    "identifiers": {
+      "defined_symbol": "normalise",
+      "key_strings": [
+        ").replace("
+      ],
+      "parameters": [
+        "value"
+      ],
+      "referenced_functions": [
+        "normalise",
+        "str",
+        "strip",
+        "lower",
+        "replace"
+      ],
+      "referenced_types": []
+    },
+    "index": 0,
+    "metadata": {
+      "content_hash": "0d7c1c7cbe910bd4",
+      "end_byte": 111,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/normalise.py@main",
+      "start_byte": 0,
+      "symbol": "normalise",
+      "visibility": "Private"
+    },
+    "start_offset": 0,
+    "text": "File: github://acme/widgets/src/normalise.py@main\npath: github://acme/widgets/src/normalise.py@main\nLanguage: python\nsymbol: normalise\nSymbol: normalise\nkind: Function\nSignature: def normalise(value):\n\ndef normalise(value):\n    text = str(value).strip().lower()\n    return text.replace(\"-\", \"_\").replace(\" \", \"_\")\n\n// Identifiers:\n// symbol: normalise\n// params: value\n// calls: normalise, str, strip, lower, replace\n// keys: ).replace(\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 111,
+    "identifiers": {
+      "defined_symbol": "normalise",
+      "key_strings": [
+        ").replace("
+      ],
+      "parameters": [
+        "value"
+      ],
+      "referenced_functions": [
+        "normalise",
+        "str",
+        "strip",
+        "lower",
+        "replace"
+      ],
+      "referenced_types": []
+    },
+    "index": 1,
+    "metadata": {
+      "content_hash": "73e717303139f7c8",
+      "end_byte": 111,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/normalise.py@main",
+      "start_byte": 0,
+      "symbol": "normalise",
+      "visibility": "Private"
+    },
+    "start_offset": 0,
+    "text": "File: github://acme/widgets/src/normalise.py@main\npath: github://acme/widgets/src/normalise.py@main\nLanguage: python\nsymbol: normalise\nSymbol: normalise\nkind: Function\nSignature: def normalise(value):\n [skeleton]\ndef normalise(value):\n\n// Key identifiers:\n// defined: normalise\n// params: value\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 284,
+    "identifiers": {
+      "defined_symbol": "other",
+      "key_strings": [
+        "_other"
+      ],
+      "parameters": [
+        "value"
+      ],
+      "referenced_functions": [
+        "other",
+        "normalise"
+      ],
+      "referenced_types": []
+    },
+    "index": 2,
+    "metadata": {
+      "content_hash": "a71d9561e0e5fdc1",
+      "end_byte": 284,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/normalise.py@main",
+      "start_byte": 228,
+      "symbol": "other",
+      "visibility": "Private"
+    },
+    "start_offset": 228,
+    "text": "File: github://acme/widgets/src/normalise.py@main\npath: github://acme/widgets/src/normalise.py@main\nLanguage: python\nsymbol: other\nSymbol: other\nkind: Function\nSignature: def other(value):\n\ndef other(value):\n    return normalise(value) + \"_other\"\n\n// Identifiers:\n// symbol: other\n// params: value\n// calls: other, normalise\n// keys: _other\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 284,
+    "identifiers": {
+      "defined_symbol": "other",
+      "key_strings": [
+        "_other"
+      ],
+      "parameters": [
+        "value"
+      ],
+      "referenced_functions": [
+        "other",
+        "normalise"
+      ],
+      "referenced_types": []
+    },
+    "index": 3,
+    "metadata": {
+      "content_hash": "1c616293d560bfb0",
+      "end_byte": 284,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/normalise.py@main",
+      "start_byte": 228,
+      "symbol": "other",
+      "visibility": "Private"
+    },
+    "start_offset": 228,
+    "text": "File: github://acme/widgets/src/normalise.py@main\npath: github://acme/widgets/src/normalise.py@main\nLanguage: python\nsymbol: other\nSymbol: other\nkind: Function\nSignature: def other(value):\n [skeleton]\ndef other(value):\n\n// Key identifiers:\n// defined: other\n// params: value\n"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 226,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 4,
+    "metadata": {
+      "content_hash": "e179a6b044834bc1",
+      "end_byte": 226,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/normalise.py@main",
+      "start_byte": 114,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 114,
+    "text": "File: github://acme/widgets/src/normalise.py@main\npath: github://acme/widgets/src/normalise.py@main\nLanguage: python\nkind: top_level\n\ndef normalise(value):\n    text = str(value).strip().lower()\n    return text.replace(\"-\", \"_\").replace(\" \", \"_\")"
+  }
+]

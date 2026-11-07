@@ -1,0 +1,29 @@
+[
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 791,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 0,
+    "metadata": {
+      "content_hash": "66a2fa316e5703f1",
+      "end_byte": 791,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/migrations/0001_orders.sql@main",
+      "start_byte": 0,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 0,
+    "text": "File: github://acme/widgets/migrations/0001_orders.sql@main\npath: github://acme/widgets/migrations/0001_orders.sql@main\nLanguage: sql\nkind: top_level\n\n-- Orders schema for the widgets shop.\n\nCREATE TABLE IF NOT EXISTS customers (\n    id UUID PRIMARY KEY,\n    email TEXT NOT NULL UNIQUE,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\n\nCREATE TABLE orders (\n    id UUID PRIMARY KEY,\n    customer_id UUID NOT NULL REFERENCES customers (id) ON DELETE CASCADE,\n    total_cents BIGINT NOT NULL CHECK (total_cents >= 0),\n    status TEXT NOT NULL DEFAULT 'pending'\n);\n\nCREATE INDEX orders_customer_idx ON orders (customer_id);\n\nCREATE OR REPLACE FUNCTION order_count(target UUID) RETURNS BIGINT AS $$\n    SELECT count(*) FROM orders WHERE customer_id = target;\n$$ LANGUAGE SQL STABLE;\n\nALTER TABLE orders ADD COLUMN shipped_at TIMESTAMPTZ;\n\nINSERT INTO customers (id, email) VALUES ('00000000-0000-0000-0000-000000000001', 'ada@example.com');"
+  }
+]

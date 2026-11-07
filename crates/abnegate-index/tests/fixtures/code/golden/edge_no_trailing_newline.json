@@ -1,0 +1,292 @@
+[
+  {
+    "chunk_type": "FileHeader",
+    "end_offset": 28,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 0,
+    "metadata": {
+      "content_hash": "0315e766deac6dbb",
+      "end_byte": 28,
+      "is_generated": false,
+      "is_test": false,
+      "kind": null,
+      "module": "package clock",
+      "parents": [],
+      "path": "github://acme/widgets/internal/clock/clock.go@main",
+      "start_byte": 15,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 15,
+    "text": "path: github://acme/widgets/internal/clock/clock.go@main\nkind: file_header\n\n// Clock returns the current time.\n\npackage clock\nimport \"time\""
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 133,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": [
+        "Clock",
+        "Now",
+        "Time"
+      ]
+    },
+    "index": 1,
+    "metadata": {
+      "content_hash": "4a1ea7d30bcc5c1b",
+      "end_byte": 133,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/internal/clock/clock.go@main",
+      "start_byte": 65,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 65,
+    "text": "// Clock returns the current time.\ntype Clock interface {\n\tNow() time.Time\n}\n\ntype systemClock struct{}"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 198,
+    "identifiers": {
+      "defined_symbol": "Now",
+      "key_strings": [],
+      "parameters": [
+        "systemClock",
+        "Now"
+      ],
+      "referenced_functions": [],
+      "referenced_types": [
+        "Now",
+        "Time",
+        "UTC"
+      ]
+    },
+    "index": 2,
+    "metadata": {
+      "content_hash": "58d6db98ab73ac9e",
+      "end_byte": 198,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/internal/clock/clock.go@main",
+      "start_byte": 135,
+      "symbol": "Now",
+      "visibility": "Public"
+    },
+    "start_offset": 135,
+    "text": "File: github://acme/widgets/internal/clock/clock.go@main\npath: github://acme/widgets/internal/clock/clock.go@main\nLanguage: go\nsymbol: Now\nSymbol: Now\nkind: Method\nSignature: func (systemClock) Now() time.Time\n\n// Imports:\nimport \"time\"\n\nfunc (systemClock) Now() time.Time {\n\treturn time.Now().UTC()\n}\n\n// Identifiers:\n// symbol: Now\n// params: systemClock, Now\n// types: Now, Time, UTC\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 198,
+    "identifiers": {
+      "defined_symbol": "Now",
+      "key_strings": [],
+      "parameters": [
+        "systemClock",
+        "Now"
+      ],
+      "referenced_functions": [],
+      "referenced_types": [
+        "Now",
+        "Time",
+        "UTC"
+      ]
+    },
+    "index": 3,
+    "metadata": {
+      "content_hash": "76b23666d1894d51",
+      "end_byte": 198,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Method",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/internal/clock/clock.go@main",
+      "start_byte": 135,
+      "symbol": "Now",
+      "visibility": "Public"
+    },
+    "start_offset": 135,
+    "text": "File: github://acme/widgets/internal/clock/clock.go@main\npath: github://acme/widgets/internal/clock/clock.go@main\nLanguage: go\nsymbol: Now\nSymbol: Now\nkind: Method\nSignature: func (systemClock) Now() time.Time\n [skeleton]\nfunc (systemClock) Now() time.Time\n\n// Key identifiers:\n// defined: Now\n// params: systemClock, Now\n// types: Now, Time, UTC\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 349,
+    "identifiers": {
+      "defined_symbol": "Since",
+      "key_strings": [],
+      "parameters": [
+        "clock",
+        "Clock",
+        "start",
+        "time",
+        "Time"
+      ],
+      "referenced_functions": [],
+      "referenced_types": [
+        "Since",
+        "Clock",
+        "Time",
+        "Duration",
+        "Now",
+        "Sub"
+      ]
+    },
+    "index": 4,
+    "metadata": {
+      "content_hash": "a819b5257c24f02a",
+      "end_byte": 349,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/internal/clock/clock.go@main",
+      "start_byte": 260,
+      "symbol": "Since",
+      "visibility": "Public"
+    },
+    "start_offset": 260,
+    "text": "File: github://acme/widgets/internal/clock/clock.go@main\npath: github://acme/widgets/internal/clock/clock.go@main\nLanguage: go\nsymbol: Since\nSymbol: Since\nkind: Function\nSignature: func Since(clock Clock, start time.Time) time.Duration\n\n// Since reports how long ago start was according to clock.\n// Imports:\nimport \"time\"\n\nfunc Since(clock Clock, start time.Time) time.Duration {\n\treturn clock.Now().Sub(start)\n}\n\n// Identifiers:\n// symbol: Since\n// params: clock, Clock, start, time, Time\n// types: Since, Clock, Time, Duration, Now, Sub\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 349,
+    "identifiers": {
+      "defined_symbol": "Since",
+      "key_strings": [],
+      "parameters": [
+        "clock",
+        "Clock",
+        "start",
+        "time",
+        "Time"
+      ],
+      "referenced_functions": [],
+      "referenced_types": [
+        "Since",
+        "Clock",
+        "Time",
+        "Duration",
+        "Now",
+        "Sub"
+      ]
+    },
+    "index": 5,
+    "metadata": {
+      "content_hash": "543a393360b082b9",
+      "end_byte": 349,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/internal/clock/clock.go@main",
+      "start_byte": 260,
+      "symbol": "Since",
+      "visibility": "Public"
+    },
+    "start_offset": 260,
+    "text": "File: github://acme/widgets/internal/clock/clock.go@main\npath: github://acme/widgets/internal/clock/clock.go@main\nLanguage: go\nsymbol: Since\nSymbol: Since\nkind: Function\nSignature: func Since(clock Clock, start time.Time) time.Duration\n [skeleton]\n// Since reports how long ago start was according to clock.\nfunc Since(clock Clock, start time.Time) time.Duration\n\n// Key identifiers:\n// defined: Since\n// params: clock, Clock, start, time, Time\n// types: Since, Clock, Time, Duration, Now\n"
+  },
+  {
+    "chunk_type": "ApiSurface",
+    "end_offset": 349,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": [
+        "Now",
+        "Since"
+      ]
+    },
+    "index": 6,
+    "metadata": {
+      "content_hash": "6915bd7069b0152c",
+      "end_byte": 349,
+      "is_generated": false,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/internal/clock/clock.go@main",
+      "start_byte": 135,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 135,
+    "text": "path: github://acme/widgets/internal/clock/clock.go@main\nkind: api_surface\n\n// Public API:\n\nfunc (systemClock) Now() time.Time\n\n// Since reports how long ago start was according to clock.\nfunc Since(clock Clock, start time.Time) time.Duration\n\n"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 65,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 7,
+    "metadata": {
+      "content_hash": "9105a4099f1c221d",
+      "end_byte": 65,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/internal/clock/clock.go@main",
+      "start_byte": 30,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 30,
+    "text": "File: github://acme/widgets/internal/clock/clock.go@main\npath: github://acme/widgets/internal/clock/clock.go@main\nLanguage: go\nkind: top_level\n\n// Clock returns the current time."
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 260,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 8,
+    "metadata": {
+      "content_hash": "283ea74a4252c2dc",
+      "end_byte": 260,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/internal/clock/clock.go@main",
+      "start_byte": 200,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 200,
+    "text": "File: github://acme/widgets/internal/clock/clock.go@main\npath: github://acme/widgets/internal/clock/clock.go@main\nLanguage: go\nkind: top_level\n\n// Since reports how long ago start was according to clock."
+  }
+]

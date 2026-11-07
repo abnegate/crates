@@ -1,0 +1,20 @@
+[
+  {
+    "end_offset": 243,
+    "index": 0,
+    "start_offset": 0,
+    "text": "# Widgets guide\n\n## Installing\n\nRun `npm install widgets` and import the components you need.\n\n```js\nimport { CartBadge } from 'widgets';\n```\n\n## Configuring\n\nCreate `widgets.config.json` next to your package manifest. Every key is optional:\n\n"
+  },
+  {
+    "end_offset": 465,
+    "index": 1,
+    "start_offset": 211,
+    "text": "nifest. Every key is optional:\n\n- `retries`: how many times a request is retried.\n- `verbose`: log every request.\n- `outputDirectory`: where builds go.\n\n## Troubleshooting\n\nIf the badge never updates, check that `count` is a number. Strings are ignored.\n"
+  },
+  {
+    "end_offset": 465,
+    "index": 2,
+    "start_offset": 433,
+    "text": " a number. Strings are ignored.\n"
+  }
+]

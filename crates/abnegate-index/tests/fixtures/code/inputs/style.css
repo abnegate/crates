@@ -1,0 +1,19 @@
+:root {
+  --badge-color: #d33;
+}
+
+.badge {
+  display: inline-flex;
+  padding: 0.25rem 0.5rem;
+  border-radius: 999px;
+  background: var(--badge-color);
+}
+
+.badge--pulse {
+  animation: pulse 300ms ease-out;
+}
+
+@keyframes pulse {
+  from { transform: scale(1.2); }
+  to { transform: scale(1); }
+}

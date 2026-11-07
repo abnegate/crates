@@ -1,0 +1,20 @@
+[
+  {
+    "end_offset": 209,
+    "index": 0,
+    "start_offset": 0,
+    "text": "Release notes for widgets 1.4.\n\nThe checkout flow now validates postcodes before asking for payment. Customers who\nenter an invalid postcode see the error next to the field instead of at the top of\nthe page.\n\n"
+  },
+  {
+    "end_offset": 409,
+    "index": 1,
+    "start_offset": 177,
+    "text": "ead of at the top of\nthe page.\n\nKnown issues: the wishlist export still uses the old date format. A fix is planned\nfor the next minor release! Questions? Ask in the support channel.\n\nThanks to everyone who reported bugs this cycle.\n"
+  },
+  {
+    "end_offset": 409,
+    "index": 2,
+    "start_offset": 377,
+    "text": "e who reported bugs this cycle.\n"
+  }
+]

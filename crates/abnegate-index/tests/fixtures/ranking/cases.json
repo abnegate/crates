@@ -1,0 +1,2914 @@
+{
+  "queries": [
+    {
+      "label": "snake",
+      "text": "reserve_stock"
+    },
+    {
+      "label": "snake_question",
+      "text": "What does reserve_stock do when the bin is locked?"
+    },
+    {
+      "label": "camel",
+      "text": "InvoiceService"
+    },
+    {
+      "label": "camel_question",
+      "text": "How is sendInvoice retried after a timeout?"
+    },
+    {
+      "label": "kebab",
+      "text": "retry-policy configuration"
+    },
+    {
+      "label": "rust_path",
+      "text": "inventory::warehouse::Warehouse"
+    },
+    {
+      "label": "api_path",
+      "text": "/api/invoices/send"
+    },
+    {
+      "label": "api_path_question",
+      "text": "which handler serves /api/invoices/send"
+    },
+    {
+      "label": "screaming",
+      "text": "DEFAULT_TIMEOUT_MS"
+    },
+    {
+      "label": "screaming_env",
+      "text": "where is RETRY_LIMIT read from the environment"
+    },
+    {
+      "label": "request_type",
+      "text": "CreateOrderRequest fields"
+    },
+    {
+      "label": "natural_how",
+      "text": "how are expired sessions cleaned up"
+    },
+    {
+      "label": "natural_where",
+      "text": "where is the postcode validated before payment"
+    },
+    {
+      "label": "natural_not",
+      "text": "why is the webhook not configured"
+    },
+    {
+      "label": "natural_derived",
+      "text": "how is the cache key derived from the request"
+    },
+    {
+      "label": "natural_authorized",
+      "text": "who is authorized to refund an invoice"
+    },
+    {
+      "label": "mixed",
+      "text": "parse_quantity rejects negative values in OrderIntake"
+    },
+    {
+      "label": "two_identifiers",
+      "text": "reserve_stock and restock_bin"
+    },
+    {
+      "label": "schema",
+      "text": "orders table schema columns"
+    },
+    {
+      "label": "migration",
+      "text": "which migration adds shipped_at"
+    },
+    {
+      "label": "tool",
+      "text": "list_products tool definition"
+    },
+    {
+      "label": "reexport",
+      "text": "where is Warehouse re-exported"
+    },
+    {
+      "label": "enum_variant",
+      "text": "InvoiceState Pending variant"
+    },
+    {
+      "label": "file_stem",
+      "text": "settings_fingerprint"
+    },
+    {
+      "label": "plural_path",
+      "text": "where are the authenticators registered"
+    },
+    {
+      "label": "unicode",
+      "text": "こんにちは greet 関数"
+    },
+    {
+      "label": "unicode_identifier",
+      "text": "café_menu pricing rules"
+    },
+    {
+      "label": "empty",
+      "text": ""
+    },
+    {
+      "label": "stopwords",
+      "text": "what is the"
+    },
+    {
+      "label": "punctuation",
+      "text": "!!! ??? ..."
+    },
+    {
+      "label": "long",
+      "text": "Please explain in detail how the warehouse reservation flow works end to end, starting from the moment a customer adds a widget to the cart, through the reserve_stock call on the Warehouse, the retry policy that wraps the HTTP client, the invoice that is drafted and sent through /api/invoices/send, and finally how expired sessions are cleaned up so reserved stock returns to the bins; also mention which migration adds shipped_at and whether DEFAULT_TIMEOUT_MS is read from the environment or hard coded, because the operations team keeps asking about it."
+    }
+  ],
+  "candidates": [
+    {
+      "label": "reserve_definition",
+      "uri": "github://acme/widgets/src/inventory/warehouse.rs@main",
+      "title": "warehouse.rs",
+      "text": "File: github://acme/widgets/src/inventory/warehouse.rs@main\npath: github://acme/widgets/src/inventory/warehouse.rs@main\nLanguage: rust\nsymbol: Warehouse.reserve_stock\nSymbol: Warehouse.reserve_stock\nkind: Method\nParent: Warehouse\nparents: Warehouse\nSignature: pub fn reserve_stock(&self, id: BinId, requested: u64) -> Result<u64, ReservationError>\n/// Reserve stock for an order unless the bin is locked.\npub fn reserve_stock(&self, id: BinId, requested: u64) -> Result<u64, ReservationError> {\n    if self.locked {\n        return Err(ReservationError::Locked);\n    }\n    let mut bins = self.bins.lock().map_err(|_| ReservationError::Locked)?;\n    let bin = bins.get_mut(&id).ok_or(ReservationError::UnknownBin(id))?;\n    bin.reserved += requested;\n    Ok(bin.quantity - bin.reserved)\n}\n\n// Identifiers:\n// symbol: reserve_stock\n// params: id, requested\n// types: BinId, ReservationError\n",
+      "semantic": 0.71,
+      "keyword": 0.38,
+      "keyword_rank": 1,
+      "semantic_rank": 3,
+      "fusion": 0.0161
+    },
+    {
+      "label": "restock_definition",
+      "uri": "github://acme/widgets/src/inventory/warehouse.rs@main",
+      "title": "warehouse.rs",
+      "text": "File: github://acme/widgets/src/inventory/warehouse.rs@main\npath: github://acme/widgets/src/inventory/warehouse.rs@main\nLanguage: rust\nsymbol: Warehouse.restock_bin\nSymbol: Warehouse.restock_bin\nkind: Method\nParent: Warehouse\nparents: Warehouse\nSignature: pub fn restock_bin(&self, id: BinId, label: &str, quantity: u64) -> Result<u64, StockError>\n/// Add stock to a bin, creating it when missing.\npub fn restock_bin(&self, id: BinId, label: &str, quantity: u64) -> Result<u64, StockError> {\n    let mut bins = self.bins.lock().map_err(|_| StockError::Poisoned)?;\n    let bin = bins.entry(id).or_default();\n    bin.quantity = bin.quantity.saturating_add(quantity);\n    Ok(bin.quantity)\n}\n",
+      "semantic": 0.64,
+      "keyword": 0.21,
+      "keyword_rank": 4,
+      "semantic_rank": 6,
+      "fusion": 0.0139
+    },
+    {
+      "label": "warehouse_header",
+      "uri": "github://acme/widgets/src/inventory/warehouse.rs@main",
+      "title": "warehouse.rs",
+      "text": "path: github://acme/widgets/src/inventory/warehouse.rs@main\nkind: file_header\n\n//! Inventory bookkeeping for the widget warehouse.\nuse std::collections::HashMap;\nuse crate::error::StockError;\n",
+      "semantic": 0.52,
+      "keyword": 0.09,
+      "keyword_rank": 9,
+      "semantic_rank": 12,
+      "fusion": 0.0101
+    },
+    {
+      "label": "warehouse_api_surface",
+      "uri": "github://acme/widgets/src/inventory/warehouse.rs@main",
+      "title": "warehouse.rs",
+      "text": "path: github://acme/widgets/src/inventory/warehouse.rs@main\nkind: api_surface\n\npub struct Warehouse\npub fn reserve_stock(&self, id: BinId, requested: u64) -> Result<u64, ReservationError>\npub fn restock_bin(&self, id: BinId, label: &str, quantity: u64) -> Result<u64, StockError>\n",
+      "semantic": 0.6,
+      "keyword": 0.27,
+      "keyword_rank": 2,
+      "semantic_rank": 8,
+      "fusion": 0.0129
+    },
+    {
+      "label": "warehouse_prelude",
+      "uri": "github://acme/widgets/src/inventory/mod.rs@main",
+      "title": "mod.rs",
+      "text": "File: github://acme/widgets/src/inventory/mod.rs@main\npath: github://acme/widgets/src/inventory/mod.rs@main\nLanguage: rust\nkind: top_level\n\n//! Inventory: bins, stock levels and reservations.\n//! See the warehouse module for the reservation rules.\nmod bins;\nmod warehouse;\n",
+      "semantic": 0.57,
+      "keyword": null,
+      "keyword_rank": null,
+      "semantic_rank": 10,
+      "fusion": 0.0098
+    },
+    {
+      "label": "reexport",
+      "uri": "github://acme/widgets/src/lib.rs@main",
+      "title": "lib.rs",
+      "text": "File: github://acme/widgets/src/lib.rs@main\npath: github://acme/widgets/src/lib.rs@main\nLanguage: rust\nkind: top_level\n\npub use crate::inventory::warehouse::Warehouse;\npub use crate::invoices::InvoiceService;\n",
+      "semantic": 0.49,
+      "keyword": 0.18,
+      "keyword_rank": 5,
+      "semantic_rank": 15,
+      "fusion": 0.0094
+    },
+    {
+      "label": "checkout_caller",
+      "uri": "github://acme/widgets/src/orders/checkout.rs@main",
+      "title": "checkout.rs",
+      "text": "File: github://acme/widgets/src/orders/checkout.rs@main\npath: github://acme/widgets/src/orders/checkout.rs@main\nLanguage: rust\nsymbol: checkout\nSymbol: checkout\nkind: Function\nSignature: pub fn checkout(cart: &Cart, warehouse: &Warehouse) -> Result<Receipt, CheckoutError>\npub fn checkout(cart: &Cart, warehouse: &Warehouse) -> Result<Receipt, CheckoutError> {\n    for line in &cart.lines {\n        warehouse.reserve_stock(line.bin, line.quantity)?;\n    }\n    Ok(Receipt::new(cart))\n}\n",
+      "semantic": 0.66,
+      "keyword": 0.12,
+      "keyword_rank": 6,
+      "semantic_rank": 2,
+      "fusion": 0.0142
+    },
+    {
+      "label": "bins_neighbour",
+      "uri": "github://acme/widgets/src/inventory/bins.rs@main",
+      "title": "bins.rs",
+      "text": "File: github://acme/widgets/src/inventory/bins.rs@main\npath: github://acme/widgets/src/inventory/bins.rs@main\nLanguage: rust\nsymbol: BinLabel\nSymbol: BinLabel\nkind: Struct\nSignature: pub struct BinLabel\npub struct BinLabel {\n    pub aisle: u8,\n    pub shelf: u8,\n}\n",
+      "semantic": 0.55,
+      "keyword": null,
+      "keyword_rank": null,
+      "semantic_rank": 7,
+      "fusion": 0.0087
+    },
+    {
+      "label": "reserve_test",
+      "uri": "github://acme/widgets/tests/warehouse_test.rs@main",
+      "title": "warehouse_test.rs",
+      "text": "File: github://acme/widgets/tests/warehouse_test.rs@main\npath: github://acme/widgets/tests/warehouse_test.rs@main\nLanguage: rust\nsymbol: reserve_stock_reduces_availability\nSymbol: reserve_stock_reduces_availability\nkind: Function\nSignature: fn reserve_stock_reduces_availability()\n#[test]\nfn reserve_stock_reduces_availability() {\n    let warehouse = Warehouse::new();\n    assert_eq!(warehouse.reserve_stock(7, 4).unwrap(), 6);\n}\n",
+      "semantic": 0.69,
+      "keyword": 0.33,
+      "keyword_rank": 3,
+      "semantic_rank": 4,
+      "fusion": 0.0151
+    },
+    {
+      "label": "eval_fixture",
+      "uri": "github://acme/widgets/evals/retrieval.json@main",
+      "title": "retrieval.json",
+      "text": "{\"query\": \"What does reserve_stock do when the bin is locked?\", \"expect\": [\"warehouse.rs\"]}\n",
+      "semantic": 0.73,
+      "keyword": 0.29,
+      "keyword_rank": 7,
+      "semantic_rank": 1,
+      "fusion": 0.0147
+    },
+    {
+      "label": "quoted_definition",
+      "uri": "github://acme/widgets/src/docs/examples.rs@main",
+      "title": "examples.rs",
+      "text": "File: github://acme/widgets/src/docs/examples.rs@main\npath: github://acme/widgets/src/docs/examples.rs@main\nLanguage: rust\nsymbol: EXAMPLE\nSymbol: EXAMPLE\nkind: Constant\nSignature: pub const EXAMPLE: &str\npub const EXAMPLE: &str = \"fn reserve_stock(&self) is documented here\";\n",
+      "semantic": 0.44,
+      "keyword": 0.05,
+      "keyword_rank": 11,
+      "semantic_rank": 14,
+      "fusion": 0.0078
+    },
+    {
+      "label": "both_identifiers",
+      "uri": "github://acme/widgets/src/inventory/rebalance.rs@main",
+      "title": "rebalance.rs",
+      "text": "File: github://acme/widgets/src/inventory/rebalance.rs@main\npath: github://acme/widgets/src/inventory/rebalance.rs@main\nLanguage: rust\nsymbol: rebalance\nSymbol: rebalance\nkind: Function\nSignature: pub fn rebalance(warehouse: &Warehouse)\npub fn rebalance(warehouse: &Warehouse) {\n    warehouse.restock_bin(1, \"spare\", 5).ok();\n    warehouse.reserve_stock(1, 2).ok();\n}\n",
+      "semantic": 0.5,
+      "keyword": 0.15,
+      "keyword_rank": 8,
+      "semantic_rank": 9,
+      "fusion": 0.0109
+    },
+    {
+      "label": "invoice_service_class",
+      "uri": "github://acme/widgets/src/invoices/service.ts@main",
+      "title": "service.ts",
+      "text": "File: github://acme/widgets/src/invoices/service.ts@main\npath: github://acme/widgets/src/invoices/service.ts@main\nLanguage: typescript\nsymbol: InvoiceService\nSymbol: InvoiceService\nkind: Class\nSignature: export class InvoiceService\nexport class InvoiceService {\n  constructor(private readonly client: HttpClient) {}\n  async sendInvoice(id: string): Promise<void> {\n    await this.client.post('/api/invoices/send', { id });\n  }\n}\n",
+      "semantic": 0.62,
+      "keyword": 0.31,
+      "keyword_rank": 2,
+      "semantic_rank": 5,
+      "fusion": 0.0133
+    },
+    {
+      "label": "invoice_route",
+      "uri": "github://acme/widgets/src/routes/invoices.rs@main",
+      "title": "invoices.rs",
+      "text": "File: github://acme/widgets/src/routes/invoices.rs@main\npath: github://acme/widgets/src/routes/invoices.rs@main\nLanguage: rust\nsymbol: routes\nSymbol: routes\nkind: Function\nSignature: pub fn routes() -> Router\npub fn routes() -> Router {\n    Router::new().route(\"/api/invoices/send\", post(send_invoice))\n}\n",
+      "semantic": 0.58,
+      "keyword": 0.26,
+      "keyword_rank": 3,
+      "semantic_rank": 6,
+      "fusion": 0.0127
+    },
+    {
+      "label": "invoice_state_enum",
+      "uri": "github://acme/widgets/src/invoices/state.rs@main",
+      "title": "state.rs",
+      "text": "File: github://acme/widgets/src/invoices/state.rs@main\npath: github://acme/widgets/src/invoices/state.rs@main\nLanguage: rust\nsymbol: InvoiceState\nSymbol: InvoiceState\nkind: Enum\nSignature: pub enum InvoiceState\npub enum InvoiceState {\n    Draft,\n    Pending,\n    Paid,\n}\n",
+      "semantic": 0.53,
+      "keyword": 0.22,
+      "keyword_rank": 4,
+      "semantic_rank": 7,
+      "fusion": 0.0118
+    },
+    {
+      "label": "timeout_constant",
+      "uri": "github://acme/widgets/src/http/client.rs@main",
+      "title": "client.rs",
+      "text": "File: github://acme/widgets/src/http/client.rs@main\npath: github://acme/widgets/src/http/client.rs@main\nLanguage: rust\nsymbol: DEFAULT_TIMEOUT_MS\nSymbol: DEFAULT_TIMEOUT_MS\nkind: Constant\nSignature: pub const DEFAULT_TIMEOUT_MS: u64\n/// Milliseconds before a request is abandoned.\npub const DEFAULT_TIMEOUT_MS: u64 = 2500;\n",
+      "semantic": 0.47,
+      "keyword": 0.41,
+      "keyword_rank": 1,
+      "semantic_rank": 9,
+      "fusion": 0.0121
+    },
+    {
+      "label": "retry_environment",
+      "uri": "github://acme/widgets/src/http/retry.rs@main",
+      "title": "retry.rs",
+      "text": "File: github://acme/widgets/src/http/retry.rs@main\npath: github://acme/widgets/src/http/retry.rs@main\nLanguage: rust\nsymbol: retry_limit\nSymbol: retry_limit\nkind: Function\nSignature: fn retry_limit() -> u32\nfn retry_limit() -> u32 {\n    std::env::var(\"RETRY_LIMIT\").ok().and_then(|value| value.parse().ok()).unwrap_or(3)\n}\n",
+      "semantic": 0.51,
+      "keyword": 0.19,
+      "keyword_rank": 5,
+      "semantic_rank": 8,
+      "fusion": 0.0112
+    },
+    {
+      "label": "tool_definition",
+      "uri": "github://acme/widgets/src/tools/list_products.rs@main",
+      "title": "list_products.rs",
+      "text": "File: github://acme/widgets/src/tools/list_products.rs@main\npath: github://acme/widgets/src/tools/list_products.rs@main\nLanguage: rust\nkind: Impl\nSignature: impl Tool for ListProducts\nimpl Tool for ListProducts {\n    fn name(&self) -> &str {\n        \"list_products\"\n    }\n}\n",
+      "semantic": 0.59,
+      "keyword": 0.24,
+      "keyword_rank": 2,
+      "semantic_rank": 4,
+      "fusion": 0.0136
+    },
+    {
+      "label": "orders_schema",
+      "uri": "github://acme/widgets/migrations/0001_orders.sql@main",
+      "title": "0001_orders.sql",
+      "text": "File: github://acme/widgets/migrations/0001_orders.sql@main\npath: github://acme/widgets/migrations/0001_orders.sql@main\nLanguage: sql\nkind: top_level\n\nCREATE TABLE orders (\n    id UUID PRIMARY KEY,\n    total_cents BIGINT NOT NULL\n);\n",
+      "semantic": 0.6,
+      "keyword": 0.35,
+      "keyword_rank": 1,
+      "semantic_rank": 3,
+      "fusion": 0.0157
+    },
+    {
+      "label": "shipped_migration",
+      "uri": "github://acme/widgets/migrations/0003_add_shipped_at.sql@main",
+      "title": "0003_add_shipped_at.sql",
+      "text": "File: github://acme/widgets/migrations/0003_add_shipped_at.sql@main\npath: github://acme/widgets/migrations/0003_add_shipped_at.sql@main\nLanguage: sql\nkind: SqlStatement\n\nALTER TABLE orders ADD COLUMN shipped_at TIMESTAMPTZ;\n",
+      "semantic": 0.56,
+      "keyword": 0.3,
+      "keyword_rank": 2,
+      "semantic_rank": 5,
+      "fusion": 0.0144
+    },
+    {
+      "label": "session_cleanup",
+      "uri": "github://acme/widgets/src/sessions/cleanup.rs@main",
+      "title": "cleanup.rs",
+      "text": "File: github://acme/widgets/src/sessions/cleanup.rs@main\npath: github://acme/widgets/src/sessions/cleanup.rs@main\nLanguage: rust\nsymbol: purge_expired_sessions\nSymbol: purge_expired_sessions\nkind: Function\nSignature: pub async fn purge_expired_sessions(pool: &Pool) -> Result<u64>\n/// Clean up expired sessions so reserved stock returns to the bins.\npub async fn purge_expired_sessions(pool: &Pool) -> Result<u64> {\n    let removed = pool.delete_where(\"expires_at < now()\").await?;\n    Ok(removed)\n}\n",
+      "semantic": 0.68,
+      "keyword": 0.2,
+      "keyword_rank": 3,
+      "semantic_rank": 2,
+      "fusion": 0.0146
+    },
+    {
+      "label": "session_store",
+      "uri": "github://acme/widgets/src/sessions/store.rs@main",
+      "title": "store.rs",
+      "text": "File: github://acme/widgets/src/sessions/store.rs@main\npath: github://acme/widgets/src/sessions/store.rs@main\nLanguage: rust\nsymbol: SessionStore\nSymbol: SessionStore\nkind: Struct\nSignature: pub struct SessionStore\npub struct SessionStore {\n    sessions: HashMap<SessionId, Session>,\n    ttl: Duration,\n}\n",
+      "semantic": 0.61,
+      "keyword": 0.07,
+      "keyword_rank": 9,
+      "semantic_rank": 4,
+      "fusion": 0.0103
+    },
+    {
+      "label": "postcode_validation",
+      "uri": "github://acme/widgets/src/checkout/postcode.rs@main",
+      "title": "postcode.rs",
+      "text": "File: github://acme/widgets/src/checkout/postcode.rs@main\npath: github://acme/widgets/src/checkout/postcode.rs@main\nLanguage: rust\nsymbol: validate_postcode\nSymbol: validate_postcode\nkind: Function\nSignature: pub fn validate_postcode(raw: &str) -> Result<Postcode, PostcodeError>\n/// The postcode is validated before payment is requested.\npub fn validate_postcode(raw: &str) -> Result<Postcode, PostcodeError> {\n    Postcode::parse(raw.trim())\n}\n",
+      "semantic": 0.65,
+      "keyword": 0.16,
+      "keyword_rank": 4,
+      "semantic_rank": 3,
+      "fusion": 0.0131
+    },
+    {
+      "label": "webhook_settings",
+      "uri": "github://acme/widgets/src/webhooks/settings.rs@main",
+      "title": "settings.rs",
+      "text": "File: github://acme/widgets/src/webhooks/settings.rs@main\npath: github://acme/widgets/src/webhooks/settings.rs@main\nLanguage: rust\nsymbol: webhook_url\nSymbol: webhook_url\nkind: Function\nSignature: pub fn webhook_url(config: &Config) -> Option<Url>\n/// Returns None when the webhook is not configured.\npub fn webhook_url(config: &Config) -> Option<Url> {\n    config.webhook.as_ref().map(|webhook| webhook.url.clone())\n}\n",
+      "semantic": 0.63,
+      "keyword": 0.11,
+      "keyword_rank": 6,
+      "semantic_rank": 4,
+      "fusion": 0.0119
+    },
+    {
+      "label": "cache_key",
+      "uri": "github://acme/widgets/src/cache/key.rs@main",
+      "title": "key.rs",
+      "text": "File: github://acme/widgets/src/cache/key.rs@main\npath: github://acme/widgets/src/cache/key.rs@main\nLanguage: rust\nsymbol: derive_cache_key\nSymbol: derive_cache_key\nkind: Function\nSignature: pub fn derive_cache_key(request: &Request) -> CacheKey\n/// The cache key is derived from the request method and path.\npub fn derive_cache_key(request: &Request) -> CacheKey {\n    CacheKey::new(request.method(), request.path())\n}\n",
+      "semantic": 0.67,
+      "keyword": 0.14,
+      "keyword_rank": 5,
+      "semantic_rank": 2,
+      "fusion": 0.0137
+    },
+    {
+      "label": "refund_policy",
+      "uri": "github://acme/widgets/src/billing/refund.rs@main",
+      "title": "refund.rs",
+      "text": "File: github://acme/widgets/src/billing/refund.rs@main\npath: github://acme/widgets/src/billing/refund.rs@main\nLanguage: rust\nsymbol: authorize_refund\nSymbol: authorize_refund\nkind: Function\nSignature: pub fn authorize_refund(user: &User, invoice: &Invoice) -> bool\n/// Only owners and finance staff are authorized to refund an invoice.\npub fn authorize_refund(user: &User, invoice: &Invoice) -> bool {\n    user.is_owner(invoice) || user.has_role(Role::Finance)\n}\n",
+      "semantic": 0.62,
+      "keyword": 0.17,
+      "keyword_rank": 3,
+      "semantic_rank": 5,
+      "fusion": 0.0128
+    },
+    {
+      "label": "parse_quantity",
+      "uri": "github://acme/widgets/src/orders/parser.py@main",
+      "title": "parser.py",
+      "text": "File: github://acme/widgets/src/orders/parser.py@main\npath: github://acme/widgets/src/orders/parser.py@main\nLanguage: python\nsymbol: parse_quantity\nSymbol: parse_quantity\nkind: Function\nSignature: def parse_quantity(raw: str) -> int\ndef parse_quantity(raw: str) -> int:\n    value = int(raw)\n    if value < 0:\n        raise ValueError(\"negative values are rejected\")\n    return value\n",
+      "semantic": 0.6,
+      "keyword": 0.28,
+      "keyword_rank": 2,
+      "semantic_rank": 6,
+      "fusion": 0.0124
+    },
+    {
+      "label": "settings_fingerprint",
+      "uri": "github://acme/widgets/src/settings.rs@main",
+      "title": "settings.rs",
+      "text": "File: github://acme/widgets/src/settings.rs@main\npath: github://acme/widgets/src/settings.rs@main\nLanguage: rust\nsymbol: settings_fingerprint\nSymbol: settings_fingerprint\nkind: Function\nSignature: pub fn settings_fingerprint(settings: &BTreeMap<String, String>, salt: u64) -> u64\npub fn settings_fingerprint(settings: &BTreeMap<String, String>, salt: u64) -> u64 {\n    settings.len() as u64 ^ salt\n}\n",
+      "semantic": 0.58,
+      "keyword": 0.39,
+      "keyword_rank": 1,
+      "semantic_rank": 7,
+      "fusion": 0.0141
+    },
+    {
+      "label": "authenticator_registry",
+      "uri": "github://acme/widgets/src/auth/authenticator.rs@main",
+      "title": "authenticator.rs",
+      "text": "File: github://acme/widgets/src/auth/authenticator.rs@main\npath: github://acme/widgets/src/auth/authenticator.rs@main\nLanguage: rust\nsymbol: register\nSymbol: register\nkind: Function\nSignature: pub fn register(registry: &mut Registry)\n/// Authenticators are registered at startup.\npub fn register(registry: &mut Registry) {\n    registry.add(PasswordAuthenticator::default());\n}\n",
+      "semantic": 0.57,
+      "keyword": 0.13,
+      "keyword_rank": 7,
+      "semantic_rank": 3,
+      "fusion": 0.0108
+    },
+    {
+      "label": "greeting_unicode",
+      "uri": "github://acme/widgets/src/greetings.py@main",
+      "title": "greetings.py",
+      "text": "File: github://acme/widgets/src/greetings.py@main\npath: github://acme/widgets/src/greetings.py@main\nLanguage: python\nsymbol: greet\nSymbol: greet\nkind: Function\nSignature: def greet(language: str, name: str) -> str\ndef greet(language: str, name: str) -> str:\n    \"\"\"こんにちは と 挨拶する関数 👋\"\"\"\n    return f\"こんにちは, {name}\"\n",
+      "semantic": 0.7,
+      "keyword": 0.1,
+      "keyword_rank": 8,
+      "semantic_rank": 1,
+      "fusion": 0.0115
+    },
+    {
+      "label": "cafe_menu",
+      "uri": "github://acme/widgets/src/menu/pricing.rs@main",
+      "title": "pricing.rs",
+      "text": "File: github://acme/widgets/src/menu/pricing.rs@main\npath: github://acme/widgets/src/menu/pricing.rs@main\nLanguage: rust\nsymbol: café_menu\nSymbol: café_menu\nkind: Function\nSignature: pub fn café_menu(prices: &[u32]) -> u32\n/// Pricing rules for the café menu.\npub fn café_menu(prices: &[u32]) -> u32 {\n    prices.iter().sum()\n}\n",
+      "semantic": 0.54,
+      "keyword": 0.23,
+      "keyword_rank": 4,
+      "semantic_rank": 6,
+      "fusion": 0.0117
+    },
+    {
+      "label": "e2e_checkout",
+      "uri": "github://acme/widgets/e2e/checkout.spec.ts@main",
+      "title": "checkout.spec.ts",
+      "text": "File: github://acme/widgets/e2e/checkout.spec.ts@main\npath: github://acme/widgets/e2e/checkout.spec.ts@main\nLanguage: typescript\nkind: Function\nSignature: test('checkout reserves stock')\ntest('checkout reserves stock', async () => {\n  await page.click('#checkout');\n});\n",
+      "semantic": 0.45,
+      "keyword": 0.06,
+      "keyword_rank": 10,
+      "semantic_rank": 11,
+      "fusion": 0.0081
+    },
+    {
+      "label": "order_request",
+      "uri": "github://acme/widgets/src/orders/request.rs@main",
+      "title": "request.rs",
+      "text": "File: github://acme/widgets/src/orders/request.rs@main\npath: github://acme/widgets/src/orders/request.rs@main\nLanguage: rust\nsymbol: CreateOrderRequest\nSymbol: CreateOrderRequest\nkind: Struct\nSignature: pub struct CreateOrderRequest\npub struct CreateOrderRequest {\n    pub customer_id: Uuid,\n    pub lines: Vec<OrderLine>,\n}\n",
+      "semantic": 0.64,
+      "keyword": 0.37,
+      "keyword_rank": 1,
+      "semantic_rank": 2,
+      "fusion": 0.0158
+    },
+    {
+      "label": "no_signals",
+      "uri": "github://acme/widgets/README.txt@main",
+      "title": "README.txt",
+      "text": "A short note with nothing in particular.\n",
+      "semantic": null,
+      "keyword": null,
+      "keyword_rank": null,
+      "semantic_rank": null,
+      "fusion": 0.0
+    }
+  ],
+  "scored": [
+    {
+      "query": "snake",
+      "candidates": [
+        "reserve_definition",
+        "restock_definition",
+        "warehouse_header",
+        "warehouse_api_surface",
+        "warehouse_prelude",
+        "reexport",
+        "checkout_caller",
+        "bins_neighbour",
+        "reserve_test",
+        "eval_fixture",
+        "quoted_definition",
+        "both_identifiers",
+        "invoice_service_class",
+        "invoice_route",
+        "invoice_state_enum",
+        "timeout_constant",
+        "retry_environment",
+        "tool_definition",
+        "orders_schema",
+        "shipped_migration",
+        "session_cleanup",
+        "session_store",
+        "postcode_validation",
+        "webhook_settings",
+        "cache_key",
+        "refund_policy",
+        "parse_quantity",
+        "settings_fingerprint",
+        "authenticator_registry",
+        "greeting_unicode",
+        "cafe_menu",
+        "e2e_checkout",
+        "order_request",
+        "no_signals"
+      ]
+    },
+    {
+      "query": "snake_question",
+      "candidates": [
+        "reserve_definition",
+        "restock_definition",
+        "warehouse_header",
+        "warehouse_api_surface",
+        "warehouse_prelude",
+        "reexport",
+        "checkout_caller",
+        "bins_neighbour",
+        "reserve_test",
+        "eval_fixture",
+        "quoted_definition",
+        "both_identifiers",
+        "invoice_service_class",
+        "invoice_route",
+        "invoice_state_enum",
+        "timeout_constant",
+        "retry_environment",
+        "tool_definition",
+        "orders_schema",
+        "shipped_migration",
+        "session_cleanup",
+        "session_store",
+        "postcode_validation",
+        "webhook_settings",
+        "cache_key",
+        "refund_policy",
+        "parse_quantity",
+        "settings_fingerprint",
+        "authenticator_registry",
+        "greeting_unicode",
+        "cafe_menu",
+        "e2e_checkout",
+        "order_request",
+        "no_signals"
+      ]
+    },
+    {
+      "query": "camel",
+      "candidates": [
+        "reserve_definition",
+        "restock_definition",
+        "warehouse_header",
+        "warehouse_api_surface",
+        "warehouse_prelude",
+        "reexport",
+        "checkout_caller",
+        "bins_neighbour",
+        "reserve_test",
+        "eval_fixture",
+        "quoted_definition",
+        "both_identifiers",
+        "invoice_service_class",
+        "invoice_route",
+        "invoice_state_enum",
+        "timeout_constant",
+        "retry_environment",
+        "tool_definition",
+        "orders_schema",
+        "shipped_migration",
+        "session_cleanup",
+        "session_store",
+        "postcode_validation",
+        "webhook_settings",
+        "cache_key",
+        "refund_policy",
+        "parse_quantity",
+        "settings_fingerprint",
+        "authenticator_registry",
+        "greeting_unicode",
+        "cafe_menu",
+        "e2e_checkout",
+        "order_request",
+        "no_signals"
+      ]
+    },
+    {
+      "query": "camel_question",
+      "candidates": [
+        "reserve_definition",
+        "restock_definition",
+        "warehouse_header",
+        "warehouse_api_surface",
+        "warehouse_prelude",
+        "reexport",
+        "checkout_caller",
+        "bins_neighbour",
+        "reserve_test",
+        "eval_fixture",
+        "quoted_definition",
+        "both_identifiers",
+        "invoice_service_class",
+        "invoice_route",
+        "invoice_state_enum",
+        "timeout_constant",
+        "retry_environment",
+        "tool_definition",
+        "orders_schema",
+        "shipped_migration",
+        "session_cleanup",
+        "session_store",
+        "postcode_validation",
+        "webhook_settings",
+        "cache_key",
+        "refund_policy",
+        "parse_quantity",
+        "settings_fingerprint",
+        "authenticator_registry",
+        "greeting_unicode",
+        "cafe_menu",
+        "e2e_checkout",
+        "order_request",
+        "no_signals"
+      ]
+    },
+    {
+      "query": "kebab",
+      "candidates": [
+        "reserve_definition",
+        "restock_definition",
+        "warehouse_header",
+        "warehouse_api_surface",
+        "warehouse_prelude",
+        "reexport",
+        "checkout_caller",
+        "bins_neighbour",
+        "reserve_test",
+        "eval_fixture",
+        "quoted_definition",
+        "both_identifiers",
+        "invoice_service_class",
+        "invoice_route",
+        "invoice_state_enum",
+        "timeout_constant",
+        "retry_environment",
+        "tool_definition",
+        "orders_schema",
+        "shipped_migration",
+        "session_cleanup",
+        "session_store",
+        "postcode_validation",
+        "webhook_settings",
+        "cache_key",
+        "refund_policy",
+        "parse_quantity",
+        "settings_fingerprint",
+        "authenticator_registry",
+        "greeting_unicode",
+        "cafe_menu",
+        "e2e_checkout",
+        "order_request",
+        "no_signals"
+      ]
+    },
+    {
+      "query": "rust_path",
+      "candidates": [
+        "reserve_definition",
+        "restock_definition",
+        "warehouse_header",
+        "warehouse_api_surface",
+        "warehouse_prelude",
+        "reexport",
+        "checkout_caller",
+        "bins_neighbour",
+        "reserve_test",
+        "eval_fixture",
+        "quoted_definition",
+        "both_identifiers",
+        "invoice_service_class",
+        "invoice_route",
+        "invoice_state_enum",
+        "timeout_constant",
+        "retry_environment",
+        "tool_definition",
+        "orders_schema",
+        "shipped_migration",
+        "session_cleanup",
+        "session_store",
+        "postcode_validation",
+        "webhook_settings",
+        "cache_key",
+        "refund_policy",
+        "parse_quantity",
+        "settings_fingerprint",
+        "authenticator_registry",
+        "greeting_unicode",
+        "cafe_menu",
+        "e2e_checkout",
+        "order_request",
+        "no_signals"
+      ]
+    },
+    {
+      "query": "api_path",
+      "candidates": [
+        "reserve_definition",
+        "restock_definition",
+        "warehouse_header",
+        "warehouse_api_surface",
+        "warehouse_prelude",
+        "reexport",
+        "checkout_caller",
+        "bins_neighbour",
+        "reserve_test",
+        "eval_fixture",
+        "quoted_definition",
+        "both_identifiers",
+        "invoice_service_class",
+        "invoice_route",
+        "invoice_state_enum",
+        "timeout_constant",
+        "retry_environment",
+        "tool_definition",
+        "orders_schema",
+        "shipped_migration",
+        "session_cleanup",
+        "session_store",
+        "postcode_validation",
+        "webhook_settings",
+        "cache_key",
+        "refund_policy",
+        "parse_quantity",
+        "settings_fingerprint",
+        "authenticator_registry",
+        "greeting_unicode",
+        "cafe_menu",
+        "e2e_checkout",
+        "order_request",
+        "no_signals"
+      ]
+    },
+    {
+      "query": "api_path_question",
+      "candidates": [
+        "reserve_definition",
+        "restock_definition",
+        "warehouse_header",
+        "warehouse_api_surface",
+        "warehouse_prelude",
+        "reexport",
+        "checkout_caller",
+        "bins_neighbour",
+        "reserve_test",
+        "eval_fixture",
+        "quoted_definition",
+        "both_identifiers",
+        "invoice_service_class",
+        "invoice_route",
+        "invoice_state_enum",
+        "timeout_constant",
+        "retry_environment",
+        "tool_definition",
+        "orders_schema",
+        "shipped_migration",
+        "session_cleanup",
+        "session_store",
+        "postcode_validation",
+        "webhook_settings",
+        "cache_key",
+        "refund_policy",
+        "parse_quantity",
+        "settings_fingerprint",
+        "authenticator_registry",
+        "greeting_unicode",
+        "cafe_menu",
+        "e2e_checkout",
+        "order_request",
+        "no_signals"
+      ]
+    },
+    {
+      "query": "screaming",
+      "candidates": [
+        "reserve_definition",
+        "restock_definition",
+        "warehouse_header",
+        "warehouse_api_surface",
+        "warehouse_prelude",
+        "reexport",
+        "checkout_caller",
+        "bins_neighbour",
+        "reserve_test",
+        "eval_fixture",
+        "quoted_definition",
+        "both_identifiers",
+        "invoice_service_class",
+        "invoice_route",
+        "invoice_state_enum",
+        "timeout_constant",
+        "retry_environment",
+        "tool_definition",
+        "orders_schema",
+        "shipped_migration",
+        "session_cleanup",
+        "session_store",
+        "postcode_validation",
+        "webhook_settings",
+        "cache_key",
+        "refund_policy",
+        "parse_quantity",
+        "settings_fingerprint",
+        "authenticator_registry",
+        "greeting_unicode",
+        "cafe_menu",
+        "e2e_checkout",
+        "order_request",
+        "no_signals"
+      ]
+    },
+    {
+      "query": "screaming_env",
+      "candidates": [
+        "reserve_definition",
+        "restock_definition",
+        "warehouse_header",
+        "warehouse_api_surface",
+        "warehouse_prelude",
+        "reexport",
+        "checkout_caller",
+        "bins_neighbour",
+        "reserve_test",
+        "eval_fixture",
+        "quoted_definition",
+        "both_identifiers",
+        "invoice_service_class",
+        "invoice_route",
+        "invoice_state_enum",
+        "timeout_constant",
+        "retry_environment",
+        "tool_definition",
+        "orders_schema",
+        "shipped_migration",
+        "session_cleanup",
+        "session_store",
+        "postcode_validation",
+        "webhook_settings",
+        "cache_key",
+        "refund_policy",
+        "parse_quantity",
+        "settings_fingerprint",
+        "authenticator_registry",
+        "greeting_unicode",
+        "cafe_menu",
+        "e2e_checkout",
+        "order_request",
+        "no_signals"
+      ]
+    },
+    {
+      "query": "request_type",
+      "candidates": [
+        "reserve_definition",
+        "restock_definition",
+        "warehouse_header",
+        "warehouse_api_surface",
+        "warehouse_prelude",
+        "reexport",
+        "checkout_caller",
+        "bins_neighbour",
+        "reserve_test",
+        "eval_fixture",
+        "quoted_definition",
+        "both_identifiers",
+        "invoice_service_class",
+        "invoice_route",
+        "invoice_state_enum",
+        "timeout_constant",
+        "retry_environment",
+        "tool_definition",
+        "orders_schema",
+        "shipped_migration",
+        "session_cleanup",
+        "session_store",
+        "postcode_validation",
+        "webhook_settings",
+        "cache_key",
+        "refund_policy",
+        "parse_quantity",
+        "settings_fingerprint",
+        "authenticator_registry",
+        "greeting_unicode",
+        "cafe_menu",
+        "e2e_checkout",
+        "order_request",
+        "no_signals"
+      ]
+    },
+    {
+      "query": "natural_how",
+      "candidates": [
+        "reserve_definition",
+        "restock_definition",
+        "warehouse_header",
+        "warehouse_api_surface",
+        "warehouse_prelude",
+        "reexport",
+        "checkout_caller",
+        "bins_neighbour",
+        "reserve_test",
+        "eval_fixture",
+        "quoted_definition",
+        "both_identifiers",
+        "invoice_service_class",
+        "invoice_route",
+        "invoice_state_enum",
+        "timeout_constant",
+        "retry_environment",
+        "tool_definition",
+        "orders_schema",
+        "shipped_migration",
+        "session_cleanup",
+        "session_store",
+        "postcode_validation",
+        "webhook_settings",
+        "cache_key",
+        "refund_policy",
+        "parse_quantity",
+        "settings_fingerprint",
+        "authenticator_registry",
+        "greeting_unicode",
+        "cafe_menu",
+        "e2e_checkout",
+        "order_request",
+        "no_signals"
+      ]
+    },
+    {
+      "query": "natural_where",
+      "candidates": [
+        "reserve_definition",
+        "restock_definition",
+        "warehouse_header",
+        "warehouse_api_surface",
+        "warehouse_prelude",
+        "reexport",
+        "checkout_caller",
+        "bins_neighbour",
+        "reserve_test",
+        "eval_fixture",
+        "quoted_definition",
+        "both_identifiers",
+        "invoice_service_class",
+        "invoice_route",
+        "invoice_state_enum",
+        "timeout_constant",
+        "retry_environment",
+        "tool_definition",
+        "orders_schema",
+        "shipped_migration",
+        "session_cleanup",
+        "session_store",
+        "postcode_validation",
+        "webhook_settings",
+        "cache_key",
+        "refund_policy",
+        "parse_quantity",
+        "settings_fingerprint",
+        "authenticator_registry",
+        "greeting_unicode",
+        "cafe_menu",
+        "e2e_checkout",
+        "order_request",
+        "no_signals"
+      ]
+    },
+    {
+      "query": "natural_not",
+      "candidates": [
+        "reserve_definition",
+        "restock_definition",
+        "warehouse_header",
+        "warehouse_api_surface",
+        "warehouse_prelude",
+        "reexport",
+        "checkout_caller",
+        "bins_neighbour",
+        "reserve_test",
+        "eval_fixture",
+        "quoted_definition",
+        "both_identifiers",
+        "invoice_service_class",
+        "invoice_route",
+        "invoice_state_enum",
+        "timeout_constant",
+        "retry_environment",
+        "tool_definition",
+        "orders_schema",
+        "shipped_migration",
+        "session_cleanup",
+        "session_store",
+        "postcode_validation",
+        "webhook_settings",
+        "cache_key",
+        "refund_policy",
+        "parse_quantity",
+        "settings_fingerprint",
+        "authenticator_registry",
+        "greeting_unicode",
+        "cafe_menu",
+        "e2e_checkout",
+        "order_request",
+        "no_signals"
+      ]
+    },
+    {
+      "query": "natural_derived",
+      "candidates": [
+        "reserve_definition",
+        "restock_definition",
+        "warehouse_header",
+        "warehouse_api_surface",
+        "warehouse_prelude",
+        "reexport",
+        "checkout_caller",
+        "bins_neighbour",
+        "reserve_test",
+        "eval_fixture",
+        "quoted_definition",
+        "both_identifiers",
+        "invoice_service_class",
+        "invoice_route",
+        "invoice_state_enum",
+        "timeout_constant",
+        "retry_environment",
+        "tool_definition",
+        "orders_schema",
+        "shipped_migration",
+        "session_cleanup",
+        "session_store",
+        "postcode_validation",
+        "webhook_settings",
+        "cache_key",
+        "refund_policy",
+        "parse_quantity",
+        "settings_fingerprint",
+        "authenticator_registry",
+        "greeting_unicode",
+        "cafe_menu",
+        "e2e_checkout",
+        "order_request",
+        "no_signals"
+      ]
+    },
+    {
+      "query": "natural_authorized",
+      "candidates": [
+        "reserve_definition",
+        "restock_definition",
+        "warehouse_header",
+        "warehouse_api_surface",
+        "warehouse_prelude",
+        "reexport",
+        "checkout_caller",
+        "bins_neighbour",
+        "reserve_test",
+        "eval_fixture",
+        "quoted_definition",
+        "both_identifiers",
+        "invoice_service_class",
+        "invoice_route",
+        "invoice_state_enum",
+        "timeout_constant",
+        "retry_environment",
+        "tool_definition",
+        "orders_schema",
+        "shipped_migration",
+        "session_cleanup",
+        "session_store",
+        "postcode_validation",
+        "webhook_settings",
+        "cache_key",
+        "refund_policy",
+        "parse_quantity",
+        "settings_fingerprint",
+        "authenticator_registry",
+        "greeting_unicode",
+        "cafe_menu",
+        "e2e_checkout",
+        "order_request",
+        "no_signals"
+      ]
+    },
+    {
+      "query": "mixed",
+      "candidates": [
+        "reserve_definition",
+        "restock_definition",
+        "warehouse_header",
+        "warehouse_api_surface",
+        "warehouse_prelude",
+        "reexport",
+        "checkout_caller",
+        "bins_neighbour",
+        "reserve_test",
+        "eval_fixture",
+        "quoted_definition",
+        "both_identifiers",
+        "invoice_service_class",
+        "invoice_route",
+        "invoice_state_enum",
+        "timeout_constant",
+        "retry_environment",
+        "tool_definition",
+        "orders_schema",
+        "shipped_migration",
+        "session_cleanup",
+        "session_store",
+        "postcode_validation",
+        "webhook_settings",
+        "cache_key",
+        "refund_policy",
+        "parse_quantity",
+        "settings_fingerprint",
+        "authenticator_registry",
+        "greeting_unicode",
+        "cafe_menu",
+        "e2e_checkout",
+        "order_request",
+        "no_signals"
+      ]
+    },
+    {
+      "query": "two_identifiers",
+      "candidates": [
+        "reserve_definition",
+        "restock_definition",
+        "warehouse_header",
+        "warehouse_api_surface",
+        "warehouse_prelude",
+        "reexport",
+        "checkout_caller",
+        "bins_neighbour",
+        "reserve_test",
+        "eval_fixture",
+        "quoted_definition",
+        "both_identifiers",
+        "invoice_service_class",
+        "invoice_route",
+        "invoice_state_enum",
+        "timeout_constant",
+        "retry_environment",
+        "tool_definition",
+        "orders_schema",
+        "shipped_migration",
+        "session_cleanup",
+        "session_store",
+        "postcode_validation",
+        "webhook_settings",
+        "cache_key",
+        "refund_policy",
+        "parse_quantity",
+        "settings_fingerprint",
+        "authenticator_registry",
+        "greeting_unicode",
+        "cafe_menu",
+        "e2e_checkout",
+        "order_request",
+        "no_signals"
+      ]
+    },
+    {
+      "query": "schema",
+      "candidates": [
+        "reserve_definition",
+        "restock_definition",
+        "warehouse_header",
+        "warehouse_api_surface",
+        "warehouse_prelude",
+        "reexport",
+        "checkout_caller",
+        "bins_neighbour",
+        "reserve_test",
+        "eval_fixture",
+        "quoted_definition",
+        "both_identifiers",
+        "invoice_service_class",
+        "invoice_route",
+        "invoice_state_enum",
+        "timeout_constant",
+        "retry_environment",
+        "tool_definition",
+        "orders_schema",
+        "shipped_migration",
+        "session_cleanup",
+        "session_store",
+        "postcode_validation",
+        "webhook_settings",
+        "cache_key",
+        "refund_policy",
+        "parse_quantity",
+        "settings_fingerprint",
+        "authenticator_registry",
+        "greeting_unicode",
+        "cafe_menu",
+        "e2e_checkout",
+        "order_request",
+        "no_signals"
+      ]
+    },
+    {
+      "query": "migration",
+      "candidates": [
+        "reserve_definition",
+        "restock_definition",
+        "warehouse_header",
+        "warehouse_api_surface",
+        "warehouse_prelude",
+        "reexport",
+        "checkout_caller",
+        "bins_neighbour",
+        "reserve_test",
+        "eval_fixture",
+        "quoted_definition",
+        "both_identifiers",
+        "invoice_service_class",
+        "invoice_route",
+        "invoice_state_enum",
+        "timeout_constant",
+        "retry_environment",
+        "tool_definition",
+        "orders_schema",
+        "shipped_migration",
+        "session_cleanup",
+        "session_store",
+        "postcode_validation",
+        "webhook_settings",
+        "cache_key",
+        "refund_policy",
+        "parse_quantity",
+        "settings_fingerprint",
+        "authenticator_registry",
+        "greeting_unicode",
+        "cafe_menu",
+        "e2e_checkout",
+        "order_request",
+        "no_signals"
+      ]
+    },
+    {
+      "query": "tool",
+      "candidates": [
+        "reserve_definition",
+        "restock_definition",
+        "warehouse_header",
+        "warehouse_api_surface",
+        "warehouse_prelude",
+        "reexport",
+        "checkout_caller",
+        "bins_neighbour",
+        "reserve_test",
+        "eval_fixture",
+        "quoted_definition",
+        "both_identifiers",
+        "invoice_service_class",
+        "invoice_route",
+        "invoice_state_enum",
+        "timeout_constant",
+        "retry_environment",
+        "tool_definition",
+        "orders_schema",
+        "shipped_migration",
+        "session_cleanup",
+        "session_store",
+        "postcode_validation",
+        "webhook_settings",
+        "cache_key",
+        "refund_policy",
+        "parse_quantity",
+        "settings_fingerprint",
+        "authenticator_registry",
+        "greeting_unicode",
+        "cafe_menu",
+        "e2e_checkout",
+        "order_request",
+        "no_signals"
+      ]
+    },
+    {
+      "query": "reexport",
+      "candidates": [
+        "reserve_definition",
+        "restock_definition",
+        "warehouse_header",
+        "warehouse_api_surface",
+        "warehouse_prelude",
+        "reexport",
+        "checkout_caller",
+        "bins_neighbour",
+        "reserve_test",
+        "eval_fixture",
+        "quoted_definition",
+        "both_identifiers",
+        "invoice_service_class",
+        "invoice_route",
+        "invoice_state_enum",
+        "timeout_constant",
+        "retry_environment",
+        "tool_definition",
+        "orders_schema",
+        "shipped_migration",
+        "session_cleanup",
+        "session_store",
+        "postcode_validation",
+        "webhook_settings",
+        "cache_key",
+        "refund_policy",
+        "parse_quantity",
+        "settings_fingerprint",
+        "authenticator_registry",
+        "greeting_unicode",
+        "cafe_menu",
+        "e2e_checkout",
+        "order_request",
+        "no_signals"
+      ]
+    },
+    {
+      "query": "enum_variant",
+      "candidates": [
+        "reserve_definition",
+        "restock_definition",
+        "warehouse_header",
+        "warehouse_api_surface",
+        "warehouse_prelude",
+        "reexport",
+        "checkout_caller",
+        "bins_neighbour",
+        "reserve_test",
+        "eval_fixture",
+        "quoted_definition",
+        "both_identifiers",
+        "invoice_service_class",
+        "invoice_route",
+        "invoice_state_enum",
+        "timeout_constant",
+        "retry_environment",
+        "tool_definition",
+        "orders_schema",
+        "shipped_migration",
+        "session_cleanup",
+        "session_store",
+        "postcode_validation",
+        "webhook_settings",
+        "cache_key",
+        "refund_policy",
+        "parse_quantity",
+        "settings_fingerprint",
+        "authenticator_registry",
+        "greeting_unicode",
+        "cafe_menu",
+        "e2e_checkout",
+        "order_request",
+        "no_signals"
+      ]
+    },
+    {
+      "query": "file_stem",
+      "candidates": [
+        "reserve_definition",
+        "restock_definition",
+        "warehouse_header",
+        "warehouse_api_surface",
+        "warehouse_prelude",
+        "reexport",
+        "checkout_caller",
+        "bins_neighbour",
+        "reserve_test",
+        "eval_fixture",
+        "quoted_definition",
+        "both_identifiers",
+        "invoice_service_class",
+        "invoice_route",
+        "invoice_state_enum",
+        "timeout_constant",
+        "retry_environment",
+        "tool_definition",
+        "orders_schema",
+        "shipped_migration",
+        "session_cleanup",
+        "session_store",
+        "postcode_validation",
+        "webhook_settings",
+        "cache_key",
+        "refund_policy",
+        "parse_quantity",
+        "settings_fingerprint",
+        "authenticator_registry",
+        "greeting_unicode",
+        "cafe_menu",
+        "e2e_checkout",
+        "order_request",
+        "no_signals"
+      ]
+    },
+    {
+      "query": "plural_path",
+      "candidates": [
+        "reserve_definition",
+        "restock_definition",
+        "warehouse_header",
+        "warehouse_api_surface",
+        "warehouse_prelude",
+        "reexport",
+        "checkout_caller",
+        "bins_neighbour",
+        "reserve_test",
+        "eval_fixture",
+        "quoted_definition",
+        "both_identifiers",
+        "invoice_service_class",
+        "invoice_route",
+        "invoice_state_enum",
+        "timeout_constant",
+        "retry_environment",
+        "tool_definition",
+        "orders_schema",
+        "shipped_migration",
+        "session_cleanup",
+        "session_store",
+        "postcode_validation",
+        "webhook_settings",
+        "cache_key",
+        "refund_policy",
+        "parse_quantity",
+        "settings_fingerprint",
+        "authenticator_registry",
+        "greeting_unicode",
+        "cafe_menu",
+        "e2e_checkout",
+        "order_request",
+        "no_signals"
+      ]
+    },
+    {
+      "query": "unicode",
+      "candidates": [
+        "reserve_definition",
+        "restock_definition",
+        "warehouse_header",
+        "warehouse_api_surface",
+        "warehouse_prelude",
+        "reexport",
+        "checkout_caller",
+        "bins_neighbour",
+        "reserve_test",
+        "eval_fixture",
+        "quoted_definition",
+        "both_identifiers",
+        "invoice_service_class",
+        "invoice_route",
+        "invoice_state_enum",
+        "timeout_constant",
+        "retry_environment",
+        "tool_definition",
+        "orders_schema",
+        "shipped_migration",
+        "session_cleanup",
+        "session_store",
+        "postcode_validation",
+        "webhook_settings",
+        "cache_key",
+        "refund_policy",
+        "parse_quantity",
+        "settings_fingerprint",
+        "authenticator_registry",
+        "greeting_unicode",
+        "cafe_menu",
+        "e2e_checkout",
+        "order_request",
+        "no_signals"
+      ]
+    },
+    {
+      "query": "unicode_identifier",
+      "candidates": [
+        "reserve_definition",
+        "restock_definition",
+        "warehouse_header",
+        "warehouse_api_surface",
+        "warehouse_prelude",
+        "reexport",
+        "checkout_caller",
+        "bins_neighbour",
+        "reserve_test",
+        "eval_fixture",
+        "quoted_definition",
+        "both_identifiers",
+        "invoice_service_class",
+        "invoice_route",
+        "invoice_state_enum",
+        "timeout_constant",
+        "retry_environment",
+        "tool_definition",
+        "orders_schema",
+        "shipped_migration",
+        "session_cleanup",
+        "session_store",
+        "postcode_validation",
+        "webhook_settings",
+        "cache_key",
+        "refund_policy",
+        "parse_quantity",
+        "settings_fingerprint",
+        "authenticator_registry",
+        "greeting_unicode",
+        "cafe_menu",
+        "e2e_checkout",
+        "order_request",
+        "no_signals"
+      ]
+    },
+    {
+      "query": "empty",
+      "candidates": [
+        "reserve_definition",
+        "restock_definition",
+        "warehouse_header",
+        "warehouse_api_surface",
+        "warehouse_prelude",
+        "reexport",
+        "checkout_caller",
+        "bins_neighbour",
+        "reserve_test",
+        "eval_fixture",
+        "quoted_definition",
+        "both_identifiers",
+        "invoice_service_class",
+        "invoice_route",
+        "invoice_state_enum",
+        "timeout_constant",
+        "retry_environment",
+        "tool_definition",
+        "orders_schema",
+        "shipped_migration",
+        "session_cleanup",
+        "session_store",
+        "postcode_validation",
+        "webhook_settings",
+        "cache_key",
+        "refund_policy",
+        "parse_quantity",
+        "settings_fingerprint",
+        "authenticator_registry",
+        "greeting_unicode",
+        "cafe_menu",
+        "e2e_checkout",
+        "order_request",
+        "no_signals"
+      ]
+    },
+    {
+      "query": "stopwords",
+      "candidates": [
+        "reserve_definition",
+        "restock_definition",
+        "warehouse_header",
+        "warehouse_api_surface",
+        "warehouse_prelude",
+        "reexport",
+        "checkout_caller",
+        "bins_neighbour",
+        "reserve_test",
+        "eval_fixture",
+        "quoted_definition",
+        "both_identifiers",
+        "invoice_service_class",
+        "invoice_route",
+        "invoice_state_enum",
+        "timeout_constant",
+        "retry_environment",
+        "tool_definition",
+        "orders_schema",
+        "shipped_migration",
+        "session_cleanup",
+        "session_store",
+        "postcode_validation",
+        "webhook_settings",
+        "cache_key",
+        "refund_policy",
+        "parse_quantity",
+        "settings_fingerprint",
+        "authenticator_registry",
+        "greeting_unicode",
+        "cafe_menu",
+        "e2e_checkout",
+        "order_request",
+        "no_signals"
+      ]
+    },
+    {
+      "query": "punctuation",
+      "candidates": [
+        "reserve_definition",
+        "restock_definition",
+        "warehouse_header",
+        "warehouse_api_surface",
+        "warehouse_prelude",
+        "reexport",
+        "checkout_caller",
+        "bins_neighbour",
+        "reserve_test",
+        "eval_fixture",
+        "quoted_definition",
+        "both_identifiers",
+        "invoice_service_class",
+        "invoice_route",
+        "invoice_state_enum",
+        "timeout_constant",
+        "retry_environment",
+        "tool_definition",
+        "orders_schema",
+        "shipped_migration",
+        "session_cleanup",
+        "session_store",
+        "postcode_validation",
+        "webhook_settings",
+        "cache_key",
+        "refund_policy",
+        "parse_quantity",
+        "settings_fingerprint",
+        "authenticator_registry",
+        "greeting_unicode",
+        "cafe_menu",
+        "e2e_checkout",
+        "order_request",
+        "no_signals"
+      ]
+    },
+    {
+      "query": "long",
+      "candidates": [
+        "reserve_definition",
+        "restock_definition",
+        "warehouse_header",
+        "warehouse_api_surface",
+        "warehouse_prelude",
+        "reexport",
+        "checkout_caller",
+        "bins_neighbour",
+        "reserve_test",
+        "eval_fixture",
+        "quoted_definition",
+        "both_identifiers",
+        "invoice_service_class",
+        "invoice_route",
+        "invoice_state_enum",
+        "timeout_constant",
+        "retry_environment",
+        "tool_definition",
+        "orders_schema",
+        "shipped_migration",
+        "session_cleanup",
+        "session_store",
+        "postcode_validation",
+        "webhook_settings",
+        "cache_key",
+        "refund_policy",
+        "parse_quantity",
+        "settings_fingerprint",
+        "authenticator_registry",
+        "greeting_unicode",
+        "cafe_menu",
+        "e2e_checkout",
+        "order_request",
+        "no_signals"
+      ]
+    }
+  ],
+  "first_stage": [
+    {
+      "query": "What does reserve_stock do when the bin is locked?",
+      "hits": [
+        "reserve_definition",
+        "checkout_caller"
+      ]
+    },
+    {
+      "query": "What does reserve_stock do when the bin is locked?",
+      "hits": [
+        "reserve_test",
+        "reserve_definition"
+      ]
+    },
+    {
+      "query": "What does reserve_stock do when the bin is locked?",
+      "hits": [
+        "warehouse_api_surface"
+      ]
+    },
+    {
+      "query": "reserve_stock and restock_bin",
+      "hits": [
+        "reserve_definition"
+      ]
+    },
+    {
+      "query": "reserve_stock and restock_bin",
+      "hits": [
+        "both_identifiers"
+      ]
+    },
+    {
+      "query": "list_products tool definition",
+      "hits": [
+        "tool_definition"
+      ]
+    },
+    {
+      "query": "which migration adds shipped_at",
+      "hits": [
+        "shipped_migration"
+      ]
+    },
+    {
+      "query": "orders table schema columns",
+      "hits": [
+        "orders_schema"
+      ]
+    },
+    {
+      "query": "how are expired sessions cleaned up",
+      "hits": [
+        "session_cleanup"
+      ]
+    },
+    {
+      "query": "DEFAULT_TIMEOUT_MS",
+      "hits": [
+        "timeout_constant"
+      ]
+    },
+    {
+      "query": "settings_fingerprint",
+      "hits": [
+        "settings_fingerprint"
+      ]
+    },
+    {
+      "query": "reserve_stock",
+      "hits": []
+    },
+    {
+      "query": "",
+      "hits": [
+        "reserve_definition"
+      ]
+    }
+  ],
+  "training": {
+    "steps": 250,
+    "learning_rate": 0.35,
+    "pairs": [
+      {
+        "query": "What does reserve_stock do when the bin is locked?",
+        "positive": "reserve_definition",
+        "negative": "checkout_caller"
+      },
+      {
+        "query": "What does reserve_stock do when the bin is locked?",
+        "positive": "reserve_definition",
+        "negative": "reserve_test"
+      },
+      {
+        "query": "What does reserve_stock do when the bin is locked?",
+        "positive": "checkout_caller",
+        "negative": "eval_fixture"
+      },
+      {
+        "query": "What does reserve_stock do when the bin is locked?",
+        "positive": "reserve_definition",
+        "negative": "warehouse_header"
+      },
+      {
+        "query": "InvoiceService",
+        "positive": "invoice_service_class",
+        "negative": "reexport"
+      },
+      {
+        "query": "/api/invoices/send",
+        "positive": "invoice_route",
+        "negative": "invoice_state_enum"
+      },
+      {
+        "query": "DEFAULT_TIMEOUT_MS",
+        "positive": "timeout_constant",
+        "negative": "retry_environment"
+      },
+      {
+        "query": "how are expired sessions cleaned up",
+        "positive": "session_cleanup",
+        "negative": "session_store"
+      },
+      {
+        "query": "where is the postcode validated before payment",
+        "positive": "postcode_validation",
+        "negative": "checkout_caller"
+      },
+      {
+        "query": "why is the webhook not configured",
+        "positive": "webhook_settings",
+        "negative": "no_signals"
+      },
+      {
+        "query": "which migration adds shipped_at",
+        "positive": "shipped_migration",
+        "negative": "orders_schema"
+      },
+      {
+        "query": "list_products tool definition",
+        "positive": "tool_definition",
+        "negative": "e2e_checkout"
+      },
+      {
+        "query": "settings_fingerprint",
+        "positive": "settings_fingerprint",
+        "negative": "quoted_definition"
+      },
+      {
+        "query": "parse_quantity rejects negative values in OrderIntake",
+        "positive": "parse_quantity",
+        "negative": "order_request"
+      }
+    ]
+  },
+  "blend": [
+    {
+      "learned": 0.0,
+      "cross_encoder": 0.0
+    },
+    {
+      "learned": 1.25,
+      "cross_encoder": 0.4
+    },
+    {
+      "learned": -2.5,
+      "cross_encoder": 0.9
+    },
+    {
+      "learned": 3.75,
+      "cross_encoder": 1.0
+    },
+    {
+      "learned": 0.1,
+      "cross_encoder": 0.2
+    },
+    {
+      "learned": -0.333,
+      "cross_encoder": 0.777
+    }
+  ],
+  "lists": [
+    {
+      "name": "definition_question",
+      "query": "What does reserve_stock do when the bin is locked?",
+      "limit": 6,
+      "per_file": 2,
+      "results": [
+        {
+          "label": "eval_fixture",
+          "uri": "github://acme/widgets/evals/retrieval.json@main",
+          "title": "retrieval.json",
+          "text": "{\"query\": \"What does reserve_stock do when the bin is locked?\", \"expect\": [\"warehouse.rs\"]}\n",
+          "score": 0.0147,
+          "fusion_score": 0.0147,
+          "keyword_rank": 7,
+          "semantic_rank": 1,
+          "keyword_score": 0.29,
+          "semantic_score": 0.73
+        },
+        {
+          "label": "reserve_test",
+          "uri": "github://acme/widgets/tests/warehouse_test.rs@main",
+          "title": "warehouse_test.rs",
+          "text": "File: github://acme/widgets/tests/warehouse_test.rs@main\npath: github://acme/widgets/tests/warehouse_test.rs@main\nLanguage: rust\nsymbol: reserve_stock_reduces_availability\nSymbol: reserve_stock_reduces_availability\nkind: Function\nSignature: fn reserve_stock_reduces_availability()\n#[test]\nfn reserve_stock_reduces_availability() {\n    let warehouse = Warehouse::new();\n    assert_eq!(warehouse.reserve_stock(7, 4).unwrap(), 6);\n}\n",
+          "score": 0.0151,
+          "fusion_score": 0.0151,
+          "keyword_rank": 3,
+          "semantic_rank": 4,
+          "keyword_score": 0.33,
+          "semantic_score": 0.69
+        },
+        {
+          "label": "checkout_caller",
+          "uri": "github://acme/widgets/src/orders/checkout.rs@main",
+          "title": "checkout.rs",
+          "text": "File: github://acme/widgets/src/orders/checkout.rs@main\npath: github://acme/widgets/src/orders/checkout.rs@main\nLanguage: rust\nsymbol: checkout\nSymbol: checkout\nkind: Function\nSignature: pub fn checkout(cart: &Cart, warehouse: &Warehouse) -> Result<Receipt, CheckoutError>\npub fn checkout(cart: &Cart, warehouse: &Warehouse) -> Result<Receipt, CheckoutError> {\n    for line in &cart.lines {\n        warehouse.reserve_stock(line.bin, line.quantity)?;\n    }\n    Ok(Receipt::new(cart))\n}\n",
+          "score": 0.0142,
+          "fusion_score": 0.0142,
+          "keyword_rank": 6,
+          "semantic_rank": 2,
+          "keyword_score": 0.12,
+          "semantic_score": 0.66
+        },
+        {
+          "label": "reserve_definition",
+          "uri": "github://acme/widgets/src/inventory/warehouse.rs@main",
+          "title": "warehouse.rs",
+          "text": "File: github://acme/widgets/src/inventory/warehouse.rs@main\npath: github://acme/widgets/src/inventory/warehouse.rs@main\nLanguage: rust\nsymbol: Warehouse.reserve_stock\nSymbol: Warehouse.reserve_stock\nkind: Method\nParent: Warehouse\nparents: Warehouse\nSignature: pub fn reserve_stock(&self, id: BinId, requested: u64) -> Result<u64, ReservationError>\n/// Reserve stock for an order unless the bin is locked.\npub fn reserve_stock(&self, id: BinId, requested: u64) -> Result<u64, ReservationError> {\n    if self.locked {\n        return Err(ReservationError::Locked);\n    }\n    let mut bins = self.bins.lock().map_err(|_| ReservationError::Locked)?;\n    let bin = bins.get_mut(&id).ok_or(ReservationError::UnknownBin(id))?;\n    bin.reserved += requested;\n    Ok(bin.quantity - bin.reserved)\n}\n\n// Identifiers:\n// symbol: reserve_stock\n// params: id, requested\n// types: BinId, ReservationError\n",
+          "score": 0.0161,
+          "fusion_score": 0.0161,
+          "keyword_rank": 1,
+          "semantic_rank": 3,
+          "keyword_score": 0.38,
+          "semantic_score": 0.71
+        },
+        {
+          "label": "warehouse_api_surface",
+          "uri": "github://acme/widgets/src/inventory/warehouse.rs@main",
+          "title": "warehouse.rs",
+          "text": "path: github://acme/widgets/src/inventory/warehouse.rs@main\nkind: api_surface\n\npub struct Warehouse\npub fn reserve_stock(&self, id: BinId, requested: u64) -> Result<u64, ReservationError>\npub fn restock_bin(&self, id: BinId, label: &str, quantity: u64) -> Result<u64, StockError>\n",
+          "score": 0.0129,
+          "fusion_score": 0.0129,
+          "keyword_rank": 2,
+          "semantic_rank": 8,
+          "keyword_score": 0.27,
+          "semantic_score": 0.6
+        },
+        {
+          "label": "restock_definition",
+          "uri": "github://acme/widgets/src/inventory/warehouse.rs@main",
+          "title": "warehouse.rs",
+          "text": "File: github://acme/widgets/src/inventory/warehouse.rs@main\npath: github://acme/widgets/src/inventory/warehouse.rs@main\nLanguage: rust\nsymbol: Warehouse.restock_bin\nSymbol: Warehouse.restock_bin\nkind: Method\nParent: Warehouse\nparents: Warehouse\nSignature: pub fn restock_bin(&self, id: BinId, label: &str, quantity: u64) -> Result<u64, StockError>\n/// Add stock to a bin, creating it when missing.\npub fn restock_bin(&self, id: BinId, label: &str, quantity: u64) -> Result<u64, StockError> {\n    let mut bins = self.bins.lock().map_err(|_| StockError::Poisoned)?;\n    let bin = bins.entry(id).or_default();\n    bin.quantity = bin.quantity.saturating_add(quantity);\n    Ok(bin.quantity)\n}\n",
+          "score": 0.0139,
+          "fusion_score": 0.0139,
+          "keyword_rank": 4,
+          "semantic_rank": 6,
+          "keyword_score": 0.21,
+          "semantic_score": 0.64
+        },
+        {
+          "label": "bins_neighbour",
+          "uri": "github://acme/widgets/src/inventory/bins.rs@main",
+          "title": "bins.rs",
+          "text": "File: github://acme/widgets/src/inventory/bins.rs@main\npath: github://acme/widgets/src/inventory/bins.rs@main\nLanguage: rust\nsymbol: BinLabel\nSymbol: BinLabel\nkind: Struct\nSignature: pub struct BinLabel\npub struct BinLabel {\n    pub aisle: u8,\n    pub shelf: u8,\n}\n",
+          "score": 0.0087,
+          "fusion_score": 0.0087,
+          "keyword_rank": null,
+          "semantic_rank": 7,
+          "keyword_score": null,
+          "semantic_score": 0.55
+        },
+        {
+          "label": "warehouse_header",
+          "uri": "github://acme/widgets/src/inventory/warehouse.rs@main",
+          "title": "warehouse.rs",
+          "text": "path: github://acme/widgets/src/inventory/warehouse.rs@main\nkind: file_header\n\n//! Inventory bookkeeping for the widget warehouse.\nuse std::collections::HashMap;\nuse crate::error::StockError;\n",
+          "score": 0.0101,
+          "fusion_score": 0.0101,
+          "keyword_rank": 9,
+          "semantic_rank": 12,
+          "keyword_score": 0.09,
+          "semantic_score": 0.52
+        },
+        {
+          "label": "warehouse_prelude",
+          "uri": "github://acme/widgets/src/inventory/mod.rs@main",
+          "title": "mod.rs",
+          "text": "File: github://acme/widgets/src/inventory/mod.rs@main\npath: github://acme/widgets/src/inventory/mod.rs@main\nLanguage: rust\nkind: top_level\n\n//! Inventory: bins, stock levels and reservations.\n//! See the warehouse module for the reservation rules.\nmod bins;\nmod warehouse;\n",
+          "score": 0.0098,
+          "fusion_score": 0.0098,
+          "keyword_rank": null,
+          "semantic_rank": 10,
+          "keyword_score": null,
+          "semantic_score": 0.57
+        },
+        {
+          "label": "quoted_definition",
+          "uri": "github://acme/widgets/src/docs/examples.rs@main",
+          "title": "examples.rs",
+          "text": "File: github://acme/widgets/src/docs/examples.rs@main\npath: github://acme/widgets/src/docs/examples.rs@main\nLanguage: rust\nsymbol: EXAMPLE\nSymbol: EXAMPLE\nkind: Constant\nSignature: pub const EXAMPLE: &str\npub const EXAMPLE: &str = \"fn reserve_stock(&self) is documented here\";\n",
+          "score": 0.0078,
+          "fusion_score": 0.0078,
+          "keyword_rank": 11,
+          "semantic_rank": 14,
+          "keyword_score": 0.05,
+          "semantic_score": 0.44
+        },
+        {
+          "label": "both_identifiers",
+          "uri": "github://acme/widgets/src/inventory/rebalance.rs@main",
+          "title": "rebalance.rs",
+          "text": "File: github://acme/widgets/src/inventory/rebalance.rs@main\npath: github://acme/widgets/src/inventory/rebalance.rs@main\nLanguage: rust\nsymbol: rebalance\nSymbol: rebalance\nkind: Function\nSignature: pub fn rebalance(warehouse: &Warehouse)\npub fn rebalance(warehouse: &Warehouse) {\n    warehouse.restock_bin(1, \"spare\", 5).ok();\n    warehouse.reserve_stock(1, 2).ok();\n}\n",
+          "score": 0.0109,
+          "fusion_score": 0.0109,
+          "keyword_rank": 8,
+          "semantic_rank": 9,
+          "keyword_score": 0.15,
+          "semantic_score": 0.5
+        }
+      ]
+    },
+    {
+      "name": "two_identifiers",
+      "query": "reserve_stock and restock_bin",
+      "limit": 4,
+      "per_file": 2,
+      "results": [
+        {
+          "label": "both_identifiers",
+          "uri": "github://acme/widgets/src/inventory/rebalance.rs@main",
+          "title": "rebalance.rs",
+          "text": "File: github://acme/widgets/src/inventory/rebalance.rs@main\npath: github://acme/widgets/src/inventory/rebalance.rs@main\nLanguage: rust\nsymbol: rebalance\nSymbol: rebalance\nkind: Function\nSignature: pub fn rebalance(warehouse: &Warehouse)\npub fn rebalance(warehouse: &Warehouse) {\n    warehouse.restock_bin(1, \"spare\", 5).ok();\n    warehouse.reserve_stock(1, 2).ok();\n}\n",
+          "score": 0.0109,
+          "fusion_score": 0.0109,
+          "keyword_rank": 8,
+          "semantic_rank": 9,
+          "keyword_score": 0.15,
+          "semantic_score": 0.5
+        },
+        {
+          "label": "reserve_definition",
+          "uri": "github://acme/widgets/src/inventory/warehouse.rs@main",
+          "title": "warehouse.rs",
+          "text": "File: github://acme/widgets/src/inventory/warehouse.rs@main\npath: github://acme/widgets/src/inventory/warehouse.rs@main\nLanguage: rust\nsymbol: Warehouse.reserve_stock\nSymbol: Warehouse.reserve_stock\nkind: Method\nParent: Warehouse\nparents: Warehouse\nSignature: pub fn reserve_stock(&self, id: BinId, requested: u64) -> Result<u64, ReservationError>\n/// Reserve stock for an order unless the bin is locked.\npub fn reserve_stock(&self, id: BinId, requested: u64) -> Result<u64, ReservationError> {\n    if self.locked {\n        return Err(ReservationError::Locked);\n    }\n    let mut bins = self.bins.lock().map_err(|_| ReservationError::Locked)?;\n    let bin = bins.get_mut(&id).ok_or(ReservationError::UnknownBin(id))?;\n    bin.reserved += requested;\n    Ok(bin.quantity - bin.reserved)\n}\n\n// Identifiers:\n// symbol: reserve_stock\n// params: id, requested\n// types: BinId, ReservationError\n",
+          "score": 0.0161,
+          "fusion_score": 0.0161,
+          "keyword_rank": 1,
+          "semantic_rank": 3,
+          "keyword_score": 0.38,
+          "semantic_score": 0.71
+        },
+        {
+          "label": "restock_definition",
+          "uri": "github://acme/widgets/src/inventory/warehouse.rs@main",
+          "title": "warehouse.rs",
+          "text": "File: github://acme/widgets/src/inventory/warehouse.rs@main\npath: github://acme/widgets/src/inventory/warehouse.rs@main\nLanguage: rust\nsymbol: Warehouse.restock_bin\nSymbol: Warehouse.restock_bin\nkind: Method\nParent: Warehouse\nparents: Warehouse\nSignature: pub fn restock_bin(&self, id: BinId, label: &str, quantity: u64) -> Result<u64, StockError>\n/// Add stock to a bin, creating it when missing.\npub fn restock_bin(&self, id: BinId, label: &str, quantity: u64) -> Result<u64, StockError> {\n    let mut bins = self.bins.lock().map_err(|_| StockError::Poisoned)?;\n    let bin = bins.entry(id).or_default();\n    bin.quantity = bin.quantity.saturating_add(quantity);\n    Ok(bin.quantity)\n}\n",
+          "score": 0.0139,
+          "fusion_score": 0.0139,
+          "keyword_rank": 4,
+          "semantic_rank": 6,
+          "keyword_score": 0.21,
+          "semantic_score": 0.64
+        },
+        {
+          "label": "warehouse_api_surface",
+          "uri": "github://acme/widgets/src/inventory/warehouse.rs@main",
+          "title": "warehouse.rs",
+          "text": "path: github://acme/widgets/src/inventory/warehouse.rs@main\nkind: api_surface\n\npub struct Warehouse\npub fn reserve_stock(&self, id: BinId, requested: u64) -> Result<u64, ReservationError>\npub fn restock_bin(&self, id: BinId, label: &str, quantity: u64) -> Result<u64, StockError>\n",
+          "score": 0.0129,
+          "fusion_score": 0.0129,
+          "keyword_rank": 2,
+          "semantic_rank": 8,
+          "keyword_score": 0.27,
+          "semantic_score": 0.6
+        },
+        {
+          "label": "checkout_caller",
+          "uri": "github://acme/widgets/src/orders/checkout.rs@main",
+          "title": "checkout.rs",
+          "text": "File: github://acme/widgets/src/orders/checkout.rs@main\npath: github://acme/widgets/src/orders/checkout.rs@main\nLanguage: rust\nsymbol: checkout\nSymbol: checkout\nkind: Function\nSignature: pub fn checkout(cart: &Cart, warehouse: &Warehouse) -> Result<Receipt, CheckoutError>\npub fn checkout(cart: &Cart, warehouse: &Warehouse) -> Result<Receipt, CheckoutError> {\n    for line in &cart.lines {\n        warehouse.reserve_stock(line.bin, line.quantity)?;\n    }\n    Ok(Receipt::new(cart))\n}\n",
+          "score": 0.0142,
+          "fusion_score": 0.0142,
+          "keyword_rank": 6,
+          "semantic_rank": 2,
+          "keyword_score": 0.12,
+          "semantic_score": 0.66
+        },
+        {
+          "label": "reserve_test",
+          "uri": "github://acme/widgets/tests/warehouse_test.rs@main",
+          "title": "warehouse_test.rs",
+          "text": "File: github://acme/widgets/tests/warehouse_test.rs@main\npath: github://acme/widgets/tests/warehouse_test.rs@main\nLanguage: rust\nsymbol: reserve_stock_reduces_availability\nSymbol: reserve_stock_reduces_availability\nkind: Function\nSignature: fn reserve_stock_reduces_availability()\n#[test]\nfn reserve_stock_reduces_availability() {\n    let warehouse = Warehouse::new();\n    assert_eq!(warehouse.reserve_stock(7, 4).unwrap(), 6);\n}\n",
+          "score": 0.0151,
+          "fusion_score": 0.0151,
+          "keyword_rank": 3,
+          "semantic_rank": 4,
+          "keyword_score": 0.33,
+          "semantic_score": 0.69
+        }
+      ]
+    },
+    {
+      "name": "api_path",
+      "query": "which handler serves /api/invoices/send",
+      "limit": 3,
+      "per_file": 1,
+      "results": [
+        {
+          "label": "invoice_service_class",
+          "uri": "github://acme/widgets/src/invoices/service.ts@main",
+          "title": "service.ts",
+          "text": "File: github://acme/widgets/src/invoices/service.ts@main\npath: github://acme/widgets/src/invoices/service.ts@main\nLanguage: typescript\nsymbol: InvoiceService\nSymbol: InvoiceService\nkind: Class\nSignature: export class InvoiceService\nexport class InvoiceService {\n  constructor(private readonly client: HttpClient) {}\n  async sendInvoice(id: string): Promise<void> {\n    await this.client.post('/api/invoices/send', { id });\n  }\n}\n",
+          "score": 0.0133,
+          "fusion_score": 0.0133,
+          "keyword_rank": 2,
+          "semantic_rank": 5,
+          "keyword_score": 0.31,
+          "semantic_score": 0.62
+        },
+        {
+          "label": "invoice_route",
+          "uri": "github://acme/widgets/src/routes/invoices.rs@main",
+          "title": "invoices.rs",
+          "text": "File: github://acme/widgets/src/routes/invoices.rs@main\npath: github://acme/widgets/src/routes/invoices.rs@main\nLanguage: rust\nsymbol: routes\nSymbol: routes\nkind: Function\nSignature: pub fn routes() -> Router\npub fn routes() -> Router {\n    Router::new().route(\"/api/invoices/send\", post(send_invoice))\n}\n",
+          "score": 0.0127,
+          "fusion_score": 0.0127,
+          "keyword_rank": 3,
+          "semantic_rank": 6,
+          "keyword_score": 0.26,
+          "semantic_score": 0.58
+        },
+        {
+          "label": "invoice_state_enum",
+          "uri": "github://acme/widgets/src/invoices/state.rs@main",
+          "title": "state.rs",
+          "text": "File: github://acme/widgets/src/invoices/state.rs@main\npath: github://acme/widgets/src/invoices/state.rs@main\nLanguage: rust\nsymbol: InvoiceState\nSymbol: InvoiceState\nkind: Enum\nSignature: pub enum InvoiceState\npub enum InvoiceState {\n    Draft,\n    Pending,\n    Paid,\n}\n",
+          "score": 0.0118,
+          "fusion_score": 0.0118,
+          "keyword_rank": 4,
+          "semantic_rank": 7,
+          "keyword_score": 0.22,
+          "semantic_score": 0.53
+        },
+        {
+          "label": "reexport",
+          "uri": "github://acme/widgets/src/lib.rs@main",
+          "title": "lib.rs",
+          "text": "File: github://acme/widgets/src/lib.rs@main\npath: github://acme/widgets/src/lib.rs@main\nLanguage: rust\nkind: top_level\n\npub use crate::inventory::warehouse::Warehouse;\npub use crate::invoices::InvoiceService;\n",
+          "score": 0.0094,
+          "fusion_score": 0.0094,
+          "keyword_rank": 5,
+          "semantic_rank": 15,
+          "keyword_score": 0.18,
+          "semantic_score": 0.49
+        },
+        {
+          "label": "e2e_checkout",
+          "uri": "github://acme/widgets/e2e/checkout.spec.ts@main",
+          "title": "checkout.spec.ts",
+          "text": "File: github://acme/widgets/e2e/checkout.spec.ts@main\npath: github://acme/widgets/e2e/checkout.spec.ts@main\nLanguage: typescript\nkind: Function\nSignature: test('checkout reserves stock')\ntest('checkout reserves stock', async () => {\n  await page.click('#checkout');\n});\n",
+          "score": 0.0081,
+          "fusion_score": 0.0081,
+          "keyword_rank": 10,
+          "semantic_rank": 11,
+          "keyword_score": 0.06,
+          "semantic_score": 0.45
+        }
+      ]
+    },
+    {
+      "name": "natural_language",
+      "query": "how are expired sessions cleaned up",
+      "limit": 5,
+      "per_file": 2,
+      "results": [
+        {
+          "label": "session_store",
+          "uri": "github://acme/widgets/src/sessions/store.rs@main",
+          "title": "store.rs",
+          "text": "File: github://acme/widgets/src/sessions/store.rs@main\npath: github://acme/widgets/src/sessions/store.rs@main\nLanguage: rust\nsymbol: SessionStore\nSymbol: SessionStore\nkind: Struct\nSignature: pub struct SessionStore\npub struct SessionStore {\n    sessions: HashMap<SessionId, Session>,\n    ttl: Duration,\n}\n",
+          "score": 0.0103,
+          "fusion_score": 0.0103,
+          "keyword_rank": 9,
+          "semantic_rank": 4,
+          "keyword_score": 0.07,
+          "semantic_score": 0.61
+        },
+        {
+          "label": "session_cleanup",
+          "uri": "github://acme/widgets/src/sessions/cleanup.rs@main",
+          "title": "cleanup.rs",
+          "text": "File: github://acme/widgets/src/sessions/cleanup.rs@main\npath: github://acme/widgets/src/sessions/cleanup.rs@main\nLanguage: rust\nsymbol: purge_expired_sessions\nSymbol: purge_expired_sessions\nkind: Function\nSignature: pub async fn purge_expired_sessions(pool: &Pool) -> Result<u64>\n/// Clean up expired sessions so reserved stock returns to the bins.\npub async fn purge_expired_sessions(pool: &Pool) -> Result<u64> {\n    let removed = pool.delete_where(\"expires_at < now()\").await?;\n    Ok(removed)\n}\n",
+          "score": 0.0146,
+          "fusion_score": 0.0146,
+          "keyword_rank": 3,
+          "semantic_rank": 2,
+          "keyword_score": 0.2,
+          "semantic_score": 0.68
+        },
+        {
+          "label": "cache_key",
+          "uri": "github://acme/widgets/src/cache/key.rs@main",
+          "title": "key.rs",
+          "text": "File: github://acme/widgets/src/cache/key.rs@main\npath: github://acme/widgets/src/cache/key.rs@main\nLanguage: rust\nsymbol: derive_cache_key\nSymbol: derive_cache_key\nkind: Function\nSignature: pub fn derive_cache_key(request: &Request) -> CacheKey\n/// The cache key is derived from the request method and path.\npub fn derive_cache_key(request: &Request) -> CacheKey {\n    CacheKey::new(request.method(), request.path())\n}\n",
+          "score": 0.0137,
+          "fusion_score": 0.0137,
+          "keyword_rank": 5,
+          "semantic_rank": 2,
+          "keyword_score": 0.14,
+          "semantic_score": 0.67
+        },
+        {
+          "label": "postcode_validation",
+          "uri": "github://acme/widgets/src/checkout/postcode.rs@main",
+          "title": "postcode.rs",
+          "text": "File: github://acme/widgets/src/checkout/postcode.rs@main\npath: github://acme/widgets/src/checkout/postcode.rs@main\nLanguage: rust\nsymbol: validate_postcode\nSymbol: validate_postcode\nkind: Function\nSignature: pub fn validate_postcode(raw: &str) -> Result<Postcode, PostcodeError>\n/// The postcode is validated before payment is requested.\npub fn validate_postcode(raw: &str) -> Result<Postcode, PostcodeError> {\n    Postcode::parse(raw.trim())\n}\n",
+          "score": 0.0131,
+          "fusion_score": 0.0131,
+          "keyword_rank": 4,
+          "semantic_rank": 3,
+          "keyword_score": 0.16,
+          "semantic_score": 0.65
+        },
+        {
+          "label": "webhook_settings",
+          "uri": "github://acme/widgets/src/webhooks/settings.rs@main",
+          "title": "settings.rs",
+          "text": "File: github://acme/widgets/src/webhooks/settings.rs@main\npath: github://acme/widgets/src/webhooks/settings.rs@main\nLanguage: rust\nsymbol: webhook_url\nSymbol: webhook_url\nkind: Function\nSignature: pub fn webhook_url(config: &Config) -> Option<Url>\n/// Returns None when the webhook is not configured.\npub fn webhook_url(config: &Config) -> Option<Url> {\n    config.webhook.as_ref().map(|webhook| webhook.url.clone())\n}\n",
+          "score": 0.0119,
+          "fusion_score": 0.0119,
+          "keyword_rank": 6,
+          "semantic_rank": 4,
+          "keyword_score": 0.11,
+          "semantic_score": 0.63
+        },
+        {
+          "label": "warehouse_prelude",
+          "uri": "github://acme/widgets/src/inventory/mod.rs@main",
+          "title": "mod.rs",
+          "text": "File: github://acme/widgets/src/inventory/mod.rs@main\npath: github://acme/widgets/src/inventory/mod.rs@main\nLanguage: rust\nkind: top_level\n\n//! Inventory: bins, stock levels and reservations.\n//! See the warehouse module for the reservation rules.\nmod bins;\nmod warehouse;\n",
+          "score": 0.0098,
+          "fusion_score": 0.0098,
+          "keyword_rank": null,
+          "semantic_rank": 10,
+          "keyword_score": null,
+          "semantic_score": 0.57
+        }
+      ]
+    },
+    {
+      "name": "schema",
+      "query": "which migration adds shipped_at",
+      "limit": 3,
+      "per_file": 2,
+      "results": [
+        {
+          "label": "orders_schema",
+          "uri": "github://acme/widgets/migrations/0001_orders.sql@main",
+          "title": "0001_orders.sql",
+          "text": "File: github://acme/widgets/migrations/0001_orders.sql@main\npath: github://acme/widgets/migrations/0001_orders.sql@main\nLanguage: sql\nkind: top_level\n\nCREATE TABLE orders (\n    id UUID PRIMARY KEY,\n    total_cents BIGINT NOT NULL\n);\n",
+          "score": 0.0157,
+          "fusion_score": 0.0157,
+          "keyword_rank": 1,
+          "semantic_rank": 3,
+          "keyword_score": 0.35,
+          "semantic_score": 0.6
+        },
+        {
+          "label": "shipped_migration",
+          "uri": "github://acme/widgets/migrations/0003_add_shipped_at.sql@main",
+          "title": "0003_add_shipped_at.sql",
+          "text": "File: github://acme/widgets/migrations/0003_add_shipped_at.sql@main\npath: github://acme/widgets/migrations/0003_add_shipped_at.sql@main\nLanguage: sql\nkind: SqlStatement\n\nALTER TABLE orders ADD COLUMN shipped_at TIMESTAMPTZ;\n",
+          "score": 0.0144,
+          "fusion_score": 0.0144,
+          "keyword_rank": 2,
+          "semantic_rank": 5,
+          "keyword_score": 0.3,
+          "semantic_score": 0.56
+        },
+        {
+          "label": "order_request",
+          "uri": "github://acme/widgets/src/orders/request.rs@main",
+          "title": "request.rs",
+          "text": "File: github://acme/widgets/src/orders/request.rs@main\npath: github://acme/widgets/src/orders/request.rs@main\nLanguage: rust\nsymbol: CreateOrderRequest\nSymbol: CreateOrderRequest\nkind: Struct\nSignature: pub struct CreateOrderRequest\npub struct CreateOrderRequest {\n    pub customer_id: Uuid,\n    pub lines: Vec<OrderLine>,\n}\n",
+          "score": 0.0158,
+          "fusion_score": 0.0158,
+          "keyword_rank": 1,
+          "semantic_rank": 2,
+          "keyword_score": 0.37,
+          "semantic_score": 0.64
+        },
+        {
+          "label": "eval_fixture",
+          "uri": "github://acme/widgets/evals/retrieval.json@main",
+          "title": "retrieval.json",
+          "text": "{\"query\": \"What does reserve_stock do when the bin is locked?\", \"expect\": [\"warehouse.rs\"]}\n",
+          "score": 0.0147,
+          "fusion_score": 0.0147,
+          "keyword_rank": 7,
+          "semantic_rank": 1,
+          "keyword_score": 0.29,
+          "semantic_score": 0.73
+        }
+      ]
+    },
+    {
+      "name": "nan_score",
+      "query": "DEFAULT_TIMEOUT_MS",
+      "limit": 4,
+      "per_file": 2,
+      "results": [
+        {
+          "label": "timeout_constant",
+          "uri": "github://acme/widgets/src/http/client.rs@main",
+          "title": "client.rs",
+          "text": "File: github://acme/widgets/src/http/client.rs@main\npath: github://acme/widgets/src/http/client.rs@main\nLanguage: rust\nsymbol: DEFAULT_TIMEOUT_MS\nSymbol: DEFAULT_TIMEOUT_MS\nkind: Constant\nSignature: pub const DEFAULT_TIMEOUT_MS: u64\n/// Milliseconds before a request is abandoned.\npub const DEFAULT_TIMEOUT_MS: u64 = 2500;\n",
+          "score": 0.0121,
+          "fusion_score": 0.0121,
+          "keyword_rank": 1,
+          "semantic_rank": 9,
+          "keyword_score": 0.41,
+          "semantic_score": 0.47
+        },
+        {
+          "label": "retry_environment",
+          "uri": "github://acme/widgets/src/http/retry.rs@main",
+          "title": "retry.rs",
+          "text": "File: github://acme/widgets/src/http/retry.rs@main\npath: github://acme/widgets/src/http/retry.rs@main\nLanguage: rust\nsymbol: retry_limit\nSymbol: retry_limit\nkind: Function\nSignature: fn retry_limit() -> u32\nfn retry_limit() -> u32 {\n    std::env::var(\"RETRY_LIMIT\").ok().and_then(|value| value.parse().ok()).unwrap_or(3)\n}\n",
+          "score": "NaN",
+          "fusion_score": 0.0112,
+          "keyword_rank": 5,
+          "semantic_rank": 8,
+          "keyword_score": 0.19,
+          "semantic_score": 0.51
+        },
+        {
+          "label": "e2e_checkout",
+          "uri": "github://acme/widgets/e2e/checkout.spec.ts@main",
+          "title": "checkout.spec.ts",
+          "text": "File: github://acme/widgets/e2e/checkout.spec.ts@main\npath: github://acme/widgets/e2e/checkout.spec.ts@main\nLanguage: typescript\nkind: Function\nSignature: test('checkout reserves stock')\ntest('checkout reserves stock', async () => {\n  await page.click('#checkout');\n});\n",
+          "score": 0.0081,
+          "fusion_score": 0.0081,
+          "keyword_rank": 10,
+          "semantic_rank": 11,
+          "keyword_score": 0.06,
+          "semantic_score": 0.45
+        },
+        {
+          "label": "settings_fingerprint",
+          "uri": "github://acme/widgets/src/settings.rs@main",
+          "title": "settings.rs",
+          "text": "File: github://acme/widgets/src/settings.rs@main\npath: github://acme/widgets/src/settings.rs@main\nLanguage: rust\nsymbol: settings_fingerprint\nSymbol: settings_fingerprint\nkind: Function\nSignature: pub fn settings_fingerprint(settings: &BTreeMap<String, String>, salt: u64) -> u64\npub fn settings_fingerprint(settings: &BTreeMap<String, String>, salt: u64) -> u64 {\n    settings.len() as u64 ^ salt\n}\n",
+          "score": 0.0141,
+          "fusion_score": 0.0141,
+          "keyword_rank": 1,
+          "semantic_rank": 7,
+          "keyword_score": 0.39,
+          "semantic_score": 0.58
+        }
+      ]
+    },
+    {
+      "name": "zero_fusion",
+      "query": "how is the cache key derived from the request",
+      "limit": 5,
+      "per_file": 3,
+      "results": [
+        {
+          "label": "cache_key",
+          "uri": "github://acme/widgets/src/cache/key.rs@main",
+          "title": "key.rs",
+          "text": "File: github://acme/widgets/src/cache/key.rs@main\npath: github://acme/widgets/src/cache/key.rs@main\nLanguage: rust\nsymbol: derive_cache_key\nSymbol: derive_cache_key\nkind: Function\nSignature: pub fn derive_cache_key(request: &Request) -> CacheKey\n/// The cache key is derived from the request method and path.\npub fn derive_cache_key(request: &Request) -> CacheKey {\n    CacheKey::new(request.method(), request.path())\n}\n",
+          "score": 0.0137,
+          "fusion_score": 0.0137,
+          "keyword_rank": 5,
+          "semantic_rank": 2,
+          "keyword_score": 0.14,
+          "semantic_score": 0.67
+        },
+        {
+          "label": "refund_policy",
+          "uri": "github://acme/widgets/src/billing/refund.rs@main",
+          "title": "refund.rs",
+          "text": "File: github://acme/widgets/src/billing/refund.rs@main\npath: github://acme/widgets/src/billing/refund.rs@main\nLanguage: rust\nsymbol: authorize_refund\nSymbol: authorize_refund\nkind: Function\nSignature: pub fn authorize_refund(user: &User, invoice: &Invoice) -> bool\n/// Only owners and finance staff are authorized to refund an invoice.\npub fn authorize_refund(user: &User, invoice: &Invoice) -> bool {\n    user.is_owner(invoice) || user.has_role(Role::Finance)\n}\n",
+          "score": 0.0123,
+          "fusion_score": 0.0,
+          "keyword_rank": null,
+          "semantic_rank": null,
+          "keyword_score": null,
+          "semantic_score": null
+        },
+        {
+          "label": "authenticator_registry",
+          "uri": "github://acme/widgets/src/auth/authenticator.rs@main",
+          "title": "authenticator.rs",
+          "text": "File: github://acme/widgets/src/auth/authenticator.rs@main\npath: github://acme/widgets/src/auth/authenticator.rs@main\nLanguage: rust\nsymbol: register\nSymbol: register\nkind: Function\nSignature: pub fn register(registry: &mut Registry)\n/// Authenticators are registered at startup.\npub fn register(registry: &mut Registry) {\n    registry.add(PasswordAuthenticator::default());\n}\n",
+          "score": 0.0,
+          "fusion_score": 0.0,
+          "keyword_rank": null,
+          "semantic_rank": null,
+          "keyword_score": null,
+          "semantic_score": null
+        },
+        {
+          "label": "webhook_settings",
+          "uri": "github://acme/widgets/src/webhooks/settings.rs@main",
+          "title": "settings.rs",
+          "text": "File: github://acme/widgets/src/webhooks/settings.rs@main\npath: github://acme/widgets/src/webhooks/settings.rs@main\nLanguage: rust\nsymbol: webhook_url\nSymbol: webhook_url\nkind: Function\nSignature: pub fn webhook_url(config: &Config) -> Option<Url>\n/// Returns None when the webhook is not configured.\npub fn webhook_url(config: &Config) -> Option<Url> {\n    config.webhook.as_ref().map(|webhook| webhook.url.clone())\n}\n",
+          "score": 0.0119,
+          "fusion_score": 0.0119,
+          "keyword_rank": 6,
+          "semantic_rank": 4,
+          "keyword_score": 0.11,
+          "semantic_score": 0.63
+        }
+      ]
+    },
+    {
+      "name": "limit_one",
+      "query": "settings_fingerprint",
+      "limit": 1,
+      "per_file": 1,
+      "results": [
+        {
+          "label": "quoted_definition",
+          "uri": "github://acme/widgets/src/docs/examples.rs@main",
+          "title": "examples.rs",
+          "text": "File: github://acme/widgets/src/docs/examples.rs@main\npath: github://acme/widgets/src/docs/examples.rs@main\nLanguage: rust\nsymbol: EXAMPLE\nSymbol: EXAMPLE\nkind: Constant\nSignature: pub const EXAMPLE: &str\npub const EXAMPLE: &str = \"fn reserve_stock(&self) is documented here\";\n",
+          "score": 0.0078,
+          "fusion_score": 0.0078,
+          "keyword_rank": 11,
+          "semantic_rank": 14,
+          "keyword_score": 0.05,
+          "semantic_score": 0.44
+        },
+        {
+          "label": "settings_fingerprint",
+          "uri": "github://acme/widgets/src/settings.rs@main",
+          "title": "settings.rs",
+          "text": "File: github://acme/widgets/src/settings.rs@main\npath: github://acme/widgets/src/settings.rs@main\nLanguage: rust\nsymbol: settings_fingerprint\nSymbol: settings_fingerprint\nkind: Function\nSignature: pub fn settings_fingerprint(settings: &BTreeMap<String, String>, salt: u64) -> u64\npub fn settings_fingerprint(settings: &BTreeMap<String, String>, salt: u64) -> u64 {\n    settings.len() as u64 ^ salt\n}\n",
+          "score": 0.0141,
+          "fusion_score": 0.0141,
+          "keyword_rank": 1,
+          "semantic_rank": 7,
+          "keyword_score": 0.39,
+          "semantic_score": 0.58
+        },
+        {
+          "label": "webhook_settings",
+          "uri": "github://acme/widgets/src/webhooks/settings.rs@main",
+          "title": "settings.rs",
+          "text": "File: github://acme/widgets/src/webhooks/settings.rs@main\npath: github://acme/widgets/src/webhooks/settings.rs@main\nLanguage: rust\nsymbol: webhook_url\nSymbol: webhook_url\nkind: Function\nSignature: pub fn webhook_url(config: &Config) -> Option<Url>\n/// Returns None when the webhook is not configured.\npub fn webhook_url(config: &Config) -> Option<Url> {\n    config.webhook.as_ref().map(|webhook| webhook.url.clone())\n}\n",
+          "score": 0.0119,
+          "fusion_score": 0.0119,
+          "keyword_rank": 6,
+          "semantic_rank": 4,
+          "keyword_score": 0.11,
+          "semantic_score": 0.63
+        }
+      ]
+    },
+    {
+      "name": "limit_zero",
+      "query": "settings_fingerprint",
+      "limit": 0,
+      "per_file": 2,
+      "results": [
+        {
+          "label": "settings_fingerprint",
+          "uri": "github://acme/widgets/src/settings.rs@main",
+          "title": "settings.rs",
+          "text": "File: github://acme/widgets/src/settings.rs@main\npath: github://acme/widgets/src/settings.rs@main\nLanguage: rust\nsymbol: settings_fingerprint\nSymbol: settings_fingerprint\nkind: Function\nSignature: pub fn settings_fingerprint(settings: &BTreeMap<String, String>, salt: u64) -> u64\npub fn settings_fingerprint(settings: &BTreeMap<String, String>, salt: u64) -> u64 {\n    settings.len() as u64 ^ salt\n}\n",
+          "score": 0.0141,
+          "fusion_score": 0.0141,
+          "keyword_rank": 1,
+          "semantic_rank": 7,
+          "keyword_score": 0.39,
+          "semantic_score": 0.58
+        },
+        {
+          "label": "webhook_settings",
+          "uri": "github://acme/widgets/src/webhooks/settings.rs@main",
+          "title": "settings.rs",
+          "text": "File: github://acme/widgets/src/webhooks/settings.rs@main\npath: github://acme/widgets/src/webhooks/settings.rs@main\nLanguage: rust\nsymbol: webhook_url\nSymbol: webhook_url\nkind: Function\nSignature: pub fn webhook_url(config: &Config) -> Option<Url>\n/// Returns None when the webhook is not configured.\npub fn webhook_url(config: &Config) -> Option<Url> {\n    config.webhook.as_ref().map(|webhook| webhook.url.clone())\n}\n",
+          "score": 0.0119,
+          "fusion_score": 0.0119,
+          "keyword_rank": 6,
+          "semantic_rank": 4,
+          "keyword_score": 0.11,
+          "semantic_score": 0.63
+        }
+      ]
+    },
+    {
+      "name": "empty_query",
+      "query": "",
+      "limit": 3,
+      "per_file": 2,
+      "results": [
+        {
+          "label": "no_signals",
+          "uri": "github://acme/widgets/README.txt@main",
+          "title": "README.txt",
+          "text": "A short note with nothing in particular.\n",
+          "score": 0.0,
+          "fusion_score": 0.0,
+          "keyword_rank": null,
+          "semantic_rank": null,
+          "keyword_score": null,
+          "semantic_score": null
+        },
+        {
+          "label": "greeting_unicode",
+          "uri": "github://acme/widgets/src/greetings.py@main",
+          "title": "greetings.py",
+          "text": "File: github://acme/widgets/src/greetings.py@main\npath: github://acme/widgets/src/greetings.py@main\nLanguage: python\nsymbol: greet\nSymbol: greet\nkind: Function\nSignature: def greet(language: str, name: str) -> str\ndef greet(language: str, name: str) -> str:\n    \"\"\"こんにちは と 挨拶する関数 👋\"\"\"\n    return f\"こんにちは, {name}\"\n",
+          "score": 0.0115,
+          "fusion_score": 0.0115,
+          "keyword_rank": 8,
+          "semantic_rank": 1,
+          "keyword_score": 0.1,
+          "semantic_score": 0.7
+        },
+        {
+          "label": "cafe_menu",
+          "uri": "github://acme/widgets/src/menu/pricing.rs@main",
+          "title": "pricing.rs",
+          "text": "File: github://acme/widgets/src/menu/pricing.rs@main\npath: github://acme/widgets/src/menu/pricing.rs@main\nLanguage: rust\nsymbol: café_menu\nSymbol: café_menu\nkind: Function\nSignature: pub fn café_menu(prices: &[u32]) -> u32\n/// Pricing rules for the café menu.\npub fn café_menu(prices: &[u32]) -> u32 {\n    prices.iter().sum()\n}\n",
+          "score": 0.0117,
+          "fusion_score": 0.0117,
+          "keyword_rank": 4,
+          "semantic_rank": 6,
+          "keyword_score": 0.23,
+          "semantic_score": 0.54
+        }
+      ]
+    }
+  ],
+  "fusion": [
+    {
+      "keyword": [
+        {
+          "label": "reserve_definition",
+          "uri": "github://acme/widgets/src/inventory/warehouse.rs@main",
+          "title": "warehouse.rs",
+          "text": "File: github://acme/widgets/src/inventory/warehouse.rs@main\npath: github://acme/widgets/src/inventory/warehouse.rs@main\nLanguage: rust\nsymbol: Warehouse.reserve_stock\nSymbol: Warehouse.reserve_stock\nkind: Method\nParent: Warehouse\nparents: Warehouse\nSignature: pub fn reserve_stock(&self, id: BinId, requested: u64) -> Result<u64, ReservationError>\n/// Reserve stock for an order unless the bin is locked.\npub fn reserve_stock(&self, id: BinId, requested: u64) -> Result<u64, ReservationError> {\n    if self.locked {\n        return Err(ReservationError::Locked);\n    }\n    let mut bins = self.bins.lock().map_err(|_| ReservationError::Locked)?;\n    let bin = bins.get_mut(&id).ok_or(ReservationError::UnknownBin(id))?;\n    bin.reserved += requested;\n    Ok(bin.quantity - bin.reserved)\n}\n\n// Identifiers:\n// symbol: reserve_stock\n// params: id, requested\n// types: BinId, ReservationError\n",
+          "score": 0.41
+        },
+        {
+          "label": "reserve_test",
+          "uri": "github://acme/widgets/tests/warehouse_test.rs@main",
+          "title": "warehouse_test.rs",
+          "text": "File: github://acme/widgets/tests/warehouse_test.rs@main\npath: github://acme/widgets/tests/warehouse_test.rs@main\nLanguage: rust\nsymbol: reserve_stock_reduces_availability\nSymbol: reserve_stock_reduces_availability\nkind: Function\nSignature: fn reserve_stock_reduces_availability()\n#[test]\nfn reserve_stock_reduces_availability() {\n    let warehouse = Warehouse::new();\n    assert_eq!(warehouse.reserve_stock(7, 4).unwrap(), 6);\n}\n",
+          "score": 0.33
+        },
+        {
+          "label": "checkout_caller",
+          "uri": "github://acme/widgets/src/orders/checkout.rs@main",
+          "title": "checkout.rs",
+          "text": "File: github://acme/widgets/src/orders/checkout.rs@main\npath: github://acme/widgets/src/orders/checkout.rs@main\nLanguage: rust\nsymbol: checkout\nSymbol: checkout\nkind: Function\nSignature: pub fn checkout(cart: &Cart, warehouse: &Warehouse) -> Result<Receipt, CheckoutError>\npub fn checkout(cart: &Cart, warehouse: &Warehouse) -> Result<Receipt, CheckoutError> {\n    for line in &cart.lines {\n        warehouse.reserve_stock(line.bin, line.quantity)?;\n    }\n    Ok(Receipt::new(cart))\n}\n",
+          "score": 0.12
+        },
+        {
+          "label": "warehouse_api_surface",
+          "uri": "github://acme/widgets/src/inventory/warehouse.rs@main",
+          "title": "warehouse.rs",
+          "text": "path: github://acme/widgets/src/inventory/warehouse.rs@main\nkind: api_surface\n\npub struct Warehouse\npub fn reserve_stock(&self, id: BinId, requested: u64) -> Result<u64, ReservationError>\npub fn restock_bin(&self, id: BinId, label: &str, quantity: u64) -> Result<u64, StockError>\n",
+          "score": 0.08
+        }
+      ],
+      "semantic": [
+        {
+          "label": "eval_fixture",
+          "uri": "github://acme/widgets/evals/retrieval.json@main",
+          "title": "retrieval.json",
+          "text": "{\"query\": \"What does reserve_stock do when the bin is locked?\", \"expect\": [\"warehouse.rs\"]}\n",
+          "score": 0.73
+        },
+        {
+          "label": "reserve_definition",
+          "uri": "github://acme/widgets/src/inventory/warehouse.rs@main",
+          "title": "warehouse.rs",
+          "text": "File: github://acme/widgets/src/inventory/warehouse.rs@main\npath: github://acme/widgets/src/inventory/warehouse.rs@main\nLanguage: rust\nsymbol: Warehouse.reserve_stock\nSymbol: Warehouse.reserve_stock\nkind: Method\nParent: Warehouse\nparents: Warehouse\nSignature: pub fn reserve_stock(&self, id: BinId, requested: u64) -> Result<u64, ReservationError>\n/// Reserve stock for an order unless the bin is locked.\npub fn reserve_stock(&self, id: BinId, requested: u64) -> Result<u64, ReservationError> {\n    if self.locked {\n        return Err(ReservationError::Locked);\n    }\n    let mut bins = self.bins.lock().map_err(|_| ReservationError::Locked)?;\n    let bin = bins.get_mut(&id).ok_or(ReservationError::UnknownBin(id))?;\n    bin.reserved += requested;\n    Ok(bin.quantity - bin.reserved)\n}\n\n// Identifiers:\n// symbol: reserve_stock\n// params: id, requested\n// types: BinId, ReservationError\n",
+          "score": 0.71
+        },
+        {
+          "label": "checkout_caller",
+          "uri": "github://acme/widgets/src/orders/checkout.rs@main",
+          "title": "checkout.rs",
+          "text": "File: github://acme/widgets/src/orders/checkout.rs@main\npath: github://acme/widgets/src/orders/checkout.rs@main\nLanguage: rust\nsymbol: checkout\nSymbol: checkout\nkind: Function\nSignature: pub fn checkout(cart: &Cart, warehouse: &Warehouse) -> Result<Receipt, CheckoutError>\npub fn checkout(cart: &Cart, warehouse: &Warehouse) -> Result<Receipt, CheckoutError> {\n    for line in &cart.lines {\n        warehouse.reserve_stock(line.bin, line.quantity)?;\n    }\n    Ok(Receipt::new(cart))\n}\n",
+          "score": 0.66
+        },
+        {
+          "label": "bins_neighbour",
+          "uri": "github://acme/widgets/src/inventory/bins.rs@main",
+          "title": "bins.rs",
+          "text": "File: github://acme/widgets/src/inventory/bins.rs@main\npath: github://acme/widgets/src/inventory/bins.rs@main\nLanguage: rust\nsymbol: BinLabel\nSymbol: BinLabel\nkind: Struct\nSignature: pub struct BinLabel\npub struct BinLabel {\n    pub aisle: u8,\n    pub shelf: u8,\n}\n",
+          "score": 0.55
+        },
+        {
+          "label": "warehouse_prelude",
+          "uri": "github://acme/widgets/src/inventory/mod.rs@main",
+          "title": "mod.rs",
+          "text": "File: github://acme/widgets/src/inventory/mod.rs@main\npath: github://acme/widgets/src/inventory/mod.rs@main\nLanguage: rust\nkind: top_level\n\n//! Inventory: bins, stock levels and reservations.\n//! See the warehouse module for the reservation rules.\nmod bins;\nmod warehouse;\n",
+          "score": 0.52
+        }
+      ],
+      "semantic_weight": 0.7,
+      "fusion_constant": 60.0
+    },
+    {
+      "keyword": [
+        {
+          "label": "timeout_constant",
+          "uri": "github://acme/widgets/src/http/client.rs@main",
+          "title": "client.rs",
+          "text": "File: github://acme/widgets/src/http/client.rs@main\npath: github://acme/widgets/src/http/client.rs@main\nLanguage: rust\nsymbol: DEFAULT_TIMEOUT_MS\nSymbol: DEFAULT_TIMEOUT_MS\nkind: Constant\nSignature: pub const DEFAULT_TIMEOUT_MS: u64\n/// Milliseconds before a request is abandoned.\npub const DEFAULT_TIMEOUT_MS: u64 = 2500;\n",
+          "score": 0.41
+        },
+        {
+          "label": "retry_environment",
+          "uri": "github://acme/widgets/src/http/retry.rs@main",
+          "title": "retry.rs",
+          "text": "File: github://acme/widgets/src/http/retry.rs@main\npath: github://acme/widgets/src/http/retry.rs@main\nLanguage: rust\nsymbol: retry_limit\nSymbol: retry_limit\nkind: Function\nSignature: fn retry_limit() -> u32\nfn retry_limit() -> u32 {\n    std::env::var(\"RETRY_LIMIT\").ok().and_then(|value| value.parse().ok()).unwrap_or(3)\n}\n",
+          "score": 0.19
+        },
+        {
+          "label": "settings_fingerprint",
+          "uri": "github://acme/widgets/src/settings.rs@main",
+          "title": "settings.rs",
+          "text": "File: github://acme/widgets/src/settings.rs@main\npath: github://acme/widgets/src/settings.rs@main\nLanguage: rust\nsymbol: settings_fingerprint\nSymbol: settings_fingerprint\nkind: Function\nSignature: pub fn settings_fingerprint(settings: &BTreeMap<String, String>, salt: u64) -> u64\npub fn settings_fingerprint(settings: &BTreeMap<String, String>, salt: u64) -> u64 {\n    settings.len() as u64 ^ salt\n}\n",
+          "score": 0.15
+        }
+      ],
+      "semantic": [
+        {
+          "label": "retry_environment",
+          "uri": "github://acme/widgets/src/http/retry.rs@main",
+          "title": "retry.rs",
+          "text": "File: github://acme/widgets/src/http/retry.rs@main\npath: github://acme/widgets/src/http/retry.rs@main\nLanguage: rust\nsymbol: retry_limit\nSymbol: retry_limit\nkind: Function\nSignature: fn retry_limit() -> u32\nfn retry_limit() -> u32 {\n    std::env::var(\"RETRY_LIMIT\").ok().and_then(|value| value.parse().ok()).unwrap_or(3)\n}\n",
+          "score": 0.51
+        },
+        {
+          "label": "timeout_constant",
+          "uri": "github://acme/widgets/src/http/client.rs@main",
+          "title": "client.rs",
+          "text": "File: github://acme/widgets/src/http/client.rs@main\npath: github://acme/widgets/src/http/client.rs@main\nLanguage: rust\nsymbol: DEFAULT_TIMEOUT_MS\nSymbol: DEFAULT_TIMEOUT_MS\nkind: Constant\nSignature: pub const DEFAULT_TIMEOUT_MS: u64\n/// Milliseconds before a request is abandoned.\npub const DEFAULT_TIMEOUT_MS: u64 = 2500;\n",
+          "score": 0.47
+        }
+      ],
+      "semantic_weight": 0.45,
+      "fusion_constant": 60.0
+    },
+    {
+      "keyword": [
+        {
+          "label": "session_cleanup",
+          "uri": "github://acme/widgets/src/sessions/cleanup.rs@main",
+          "title": "cleanup.rs",
+          "text": "File: github://acme/widgets/src/sessions/cleanup.rs@main\npath: github://acme/widgets/src/sessions/cleanup.rs@main\nLanguage: rust\nsymbol: purge_expired_sessions\nSymbol: purge_expired_sessions\nkind: Function\nSignature: pub async fn purge_expired_sessions(pool: &Pool) -> Result<u64>\n/// Clean up expired sessions so reserved stock returns to the bins.\npub async fn purge_expired_sessions(pool: &Pool) -> Result<u64> {\n    let removed = pool.delete_where(\"expires_at < now()\").await?;\n    Ok(removed)\n}\n",
+          "score": 0.2
+        },
+        {
+          "label": "session_store",
+          "uri": "github://acme/widgets/src/sessions/store.rs@main",
+          "title": "store.rs",
+          "text": "File: github://acme/widgets/src/sessions/store.rs@main\npath: github://acme/widgets/src/sessions/store.rs@main\nLanguage: rust\nsymbol: SessionStore\nSymbol: SessionStore\nkind: Struct\nSignature: pub struct SessionStore\npub struct SessionStore {\n    sessions: HashMap<SessionId, Session>,\n    ttl: Duration,\n}\n",
+          "score": 0.07
+        }
+      ],
+      "semantic": [
+        {
+          "label": "cache_key",
+          "uri": "github://acme/widgets/src/cache/key.rs@main",
+          "title": "key.rs",
+          "text": "File: github://acme/widgets/src/cache/key.rs@main\npath: github://acme/widgets/src/cache/key.rs@main\nLanguage: rust\nsymbol: derive_cache_key\nSymbol: derive_cache_key\nkind: Function\nSignature: pub fn derive_cache_key(request: &Request) -> CacheKey\n/// The cache key is derived from the request method and path.\npub fn derive_cache_key(request: &Request) -> CacheKey {\n    CacheKey::new(request.method(), request.path())\n}\n",
+          "score": 0.67
+        },
+        {
+          "label": "postcode_validation",
+          "uri": "github://acme/widgets/src/checkout/postcode.rs@main",
+          "title": "postcode.rs",
+          "text": "File: github://acme/widgets/src/checkout/postcode.rs@main\npath: github://acme/widgets/src/checkout/postcode.rs@main\nLanguage: rust\nsymbol: validate_postcode\nSymbol: validate_postcode\nkind: Function\nSignature: pub fn validate_postcode(raw: &str) -> Result<Postcode, PostcodeError>\n/// The postcode is validated before payment is requested.\npub fn validate_postcode(raw: &str) -> Result<Postcode, PostcodeError> {\n    Postcode::parse(raw.trim())\n}\n",
+          "score": 0.65
+        },
+        {
+          "label": "webhook_settings",
+          "uri": "github://acme/widgets/src/webhooks/settings.rs@main",
+          "title": "settings.rs",
+          "text": "File: github://acme/widgets/src/webhooks/settings.rs@main\npath: github://acme/widgets/src/webhooks/settings.rs@main\nLanguage: rust\nsymbol: webhook_url\nSymbol: webhook_url\nkind: Function\nSignature: pub fn webhook_url(config: &Config) -> Option<Url>\n/// Returns None when the webhook is not configured.\npub fn webhook_url(config: &Config) -> Option<Url> {\n    config.webhook.as_ref().map(|webhook| webhook.url.clone())\n}\n",
+          "score": 0.63
+        }
+      ],
+      "semantic_weight": 0.3,
+      "fusion_constant": 10.0
+    },
+    {
+      "keyword": [],
+      "semantic": [
+        {
+          "label": "greeting_unicode",
+          "uri": "github://acme/widgets/src/greetings.py@main",
+          "title": "greetings.py",
+          "text": "File: github://acme/widgets/src/greetings.py@main\npath: github://acme/widgets/src/greetings.py@main\nLanguage: python\nsymbol: greet\nSymbol: greet\nkind: Function\nSignature: def greet(language: str, name: str) -> str\ndef greet(language: str, name: str) -> str:\n    \"\"\"こんにちは と 挨拶する関数 👋\"\"\"\n    return f\"こんにちは, {name}\"\n",
+          "score": 0.7
+        },
+        {
+          "label": "cafe_menu",
+          "uri": "github://acme/widgets/src/menu/pricing.rs@main",
+          "title": "pricing.rs",
+          "text": "File: github://acme/widgets/src/menu/pricing.rs@main\npath: github://acme/widgets/src/menu/pricing.rs@main\nLanguage: rust\nsymbol: café_menu\nSymbol: café_menu\nkind: Function\nSignature: pub fn café_menu(prices: &[u32]) -> u32\n/// Pricing rules for the café menu.\npub fn café_menu(prices: &[u32]) -> u32 {\n    prices.iter().sum()\n}\n",
+          "score": 0.54
+        }
+      ],
+      "semantic_weight": 0.7,
+      "fusion_constant": 60.0
+    },
+    {
+      "keyword": [
+        {
+          "label": "orders_schema",
+          "uri": "github://acme/widgets/migrations/0001_orders.sql@main",
+          "title": "0001_orders.sql",
+          "text": "File: github://acme/widgets/migrations/0001_orders.sql@main\npath: github://acme/widgets/migrations/0001_orders.sql@main\nLanguage: sql\nkind: top_level\n\nCREATE TABLE orders (\n    id UUID PRIMARY KEY,\n    total_cents BIGINT NOT NULL\n);\n",
+          "score": 0.35
+        }
+      ],
+      "semantic": [],
+      "semantic_weight": 0.7,
+      "fusion_constant": 60.0
+    },
+    {
+      "keyword": [],
+      "semantic": [],
+      "semantic_weight": 0.7,
+      "fusion_constant": 60.0
+    }
+  ],
+  "answers": [
+    {
+      "items": [
+        {
+          "label": "warehouse_header",
+          "uri": "github://acme/widgets/src/inventory/warehouse.rs@main",
+          "text": "path: github://acme/widgets/src/inventory/warehouse.rs@main\nkind: file_header\n\n//! Inventory bookkeeping for the widget warehouse.\nuse std::collections::HashMap;\nuse crate::error::StockError;\n"
+        },
+        {
+          "label": "eval_fixture",
+          "uri": "github://acme/widgets/evals/retrieval.json@main",
+          "text": "{\"query\": \"What does reserve_stock do when the bin is locked?\", \"expect\": [\"warehouse.rs\"]}\n"
+        },
+        {
+          "label": "reserve_definition",
+          "uri": "github://acme/widgets/src/inventory/warehouse.rs@main",
+          "text": "File: github://acme/widgets/src/inventory/warehouse.rs@main\npath: github://acme/widgets/src/inventory/warehouse.rs@main\nLanguage: rust\nsymbol: Warehouse.reserve_stock\nSymbol: Warehouse.reserve_stock\nkind: Method\nParent: Warehouse\nparents: Warehouse\nSignature: pub fn reserve_stock(&self, id: BinId, requested: u64) -> Result<u64, ReservationError>\n/// Reserve stock for an order unless the bin is locked.\npub fn reserve_stock(&self, id: BinId, requested: u64) -> Result<u64, ReservationError> {\n    if self.locked {\n        return Err(ReservationError::Locked);\n    }\n    let mut bins = self.bins.lock().map_err(|_| ReservationError::Locked)?;\n    let bin = bins.get_mut(&id).ok_or(ReservationError::UnknownBin(id))?;\n    bin.reserved += requested;\n    Ok(bin.quantity - bin.reserved)\n}\n\n// Identifiers:\n// symbol: reserve_stock\n// params: id, requested\n// types: BinId, ReservationError\n"
+        },
+        {
+          "label": "warehouse_api_surface",
+          "uri": "github://acme/widgets/src/inventory/warehouse.rs@main",
+          "text": "path: github://acme/widgets/src/inventory/warehouse.rs@main\nkind: api_surface\n\npub struct Warehouse\npub fn reserve_stock(&self, id: BinId, requested: u64) -> Result<u64, ReservationError>\npub fn restock_bin(&self, id: BinId, label: &str, quantity: u64) -> Result<u64, StockError>\n"
+        },
+        {
+          "label": "checkout_caller",
+          "uri": "github://acme/widgets/src/orders/checkout.rs@main",
+          "text": "File: github://acme/widgets/src/orders/checkout.rs@main\npath: github://acme/widgets/src/orders/checkout.rs@main\nLanguage: rust\nsymbol: checkout\nSymbol: checkout\nkind: Function\nSignature: pub fn checkout(cart: &Cart, warehouse: &Warehouse) -> Result<Receipt, CheckoutError>\npub fn checkout(cart: &Cart, warehouse: &Warehouse) -> Result<Receipt, CheckoutError> {\n    for line in &cart.lines {\n        warehouse.reserve_stock(line.bin, line.quantity)?;\n    }\n    Ok(Receipt::new(cart))\n}\n"
+        },
+        {
+          "label": "reserve_test",
+          "uri": "github://acme/widgets/tests/warehouse_test.rs@main",
+          "text": "File: github://acme/widgets/tests/warehouse_test.rs@main\npath: github://acme/widgets/tests/warehouse_test.rs@main\nLanguage: rust\nsymbol: reserve_stock_reduces_availability\nSymbol: reserve_stock_reduces_availability\nkind: Function\nSignature: fn reserve_stock_reduces_availability()\n#[test]\nfn reserve_stock_reduces_availability() {\n    let warehouse = Warehouse::new();\n    assert_eq!(warehouse.reserve_stock(7, 4).unwrap(), 6);\n}\n"
+        },
+        {
+          "label": "restock_definition",
+          "uri": "github://acme/widgets/src/inventory/warehouse.rs@main",
+          "text": "File: github://acme/widgets/src/inventory/warehouse.rs@main\npath: github://acme/widgets/src/inventory/warehouse.rs@main\nLanguage: rust\nsymbol: Warehouse.restock_bin\nSymbol: Warehouse.restock_bin\nkind: Method\nParent: Warehouse\nparents: Warehouse\nSignature: pub fn restock_bin(&self, id: BinId, label: &str, quantity: u64) -> Result<u64, StockError>\n/// Add stock to a bin, creating it when missing.\npub fn restock_bin(&self, id: BinId, label: &str, quantity: u64) -> Result<u64, StockError> {\n    let mut bins = self.bins.lock().map_err(|_| StockError::Poisoned)?;\n    let bin = bins.entry(id).or_default();\n    bin.quantity = bin.quantity.saturating_add(quantity);\n    Ok(bin.quantity)\n}\n"
+        }
+      ],
+      "limits": [
+        0,
+        1,
+        2,
+        3,
+        5,
+        10
+      ],
+      "queries": [
+        "What does reserve_stock do when the bin is locked?",
+        "reserve_stock and restock_bin",
+        "how are expired sessions cleaned up",
+        ""
+      ]
+    },
+    {
+      "items": [
+        {
+          "label": "warehouse_api_surface",
+          "uri": "github://acme/widgets/src/inventory/warehouse.rs@main",
+          "text": "path: github://acme/widgets/src/inventory/warehouse.rs@main\nkind: api_surface\n\npub struct Warehouse\npub fn reserve_stock(&self, id: BinId, requested: u64) -> Result<u64, ReservationError>\npub fn restock_bin(&self, id: BinId, label: &str, quantity: u64) -> Result<u64, StockError>\n"
+        },
+        {
+          "label": "warehouse_header",
+          "uri": "github://acme/widgets/src/inventory/warehouse.rs@main",
+          "text": "path: github://acme/widgets/src/inventory/warehouse.rs@main\nkind: file_header\n\n//! Inventory bookkeeping for the widget warehouse.\nuse std::collections::HashMap;\nuse crate::error::StockError;\n"
+        }
+      ],
+      "limits": [
+        1,
+        3
+      ],
+      "queries": [
+        "reserve_stock",
+        "こんにちは greet 関数"
+      ]
+    },
+    {
+      "items": [],
+      "limits": [
+        0,
+        4
+      ],
+      "queries": [
+        "reserve_stock"
+      ]
+    }
+  ],
+  "stems": [
+    {
+      "uri": "github://acme/widgets/src/inventory/warehouse.rs@main",
+      "identifiers": [
+        "warehouse"
+      ]
+    },
+    {
+      "uri": "github://acme/widgets/src/inventory/warehouse.rs@main",
+      "identifiers": [
+        "reserve_stock"
+      ]
+    },
+    {
+      "uri": "github://acme/widgets/src/stock/reserve.rs@main",
+      "identifiers": [
+        "reserve_stock"
+      ]
+    },
+    {
+      "uri": "github://acme/widgets/src/settings.rs@main",
+      "identifiers": [
+        "settings_fingerprint"
+      ]
+    },
+    {
+      "uri": "github://acme/widgets/src/api.rs@main",
+      "identifiers": [
+        "api"
+      ]
+    },
+    {
+      "uri": "github://acme/widgets/src/routes/invoices.rs@main",
+      "identifiers": [
+        "/api/invoices/send"
+      ]
+    },
+    {
+      "uri": "github://acme/widgets/src/retry-policy.ts@main",
+      "identifiers": [
+        "retry-policy"
+      ]
+    },
+    {
+      "uri": "github://acme/widgets/src/InvoiceService.ts@main",
+      "identifiers": [
+        "InvoiceService"
+      ]
+    },
+    {
+      "uri": "github://acme/widgets/src/lib.rs@main",
+      "identifiers": [
+        "library"
+      ]
+    },
+    {
+      "uri": "github://acme/widgets/src/checkout.rs@main",
+      "identifiers": []
+    },
+    {
+      "uri": "",
+      "identifiers": [
+        "anything"
+      ]
+    },
+    {
+      "uri": "no-slash-or-at",
+      "identifiers": [
+        "no-slash-or-at"
+      ]
+    }
+  ]
+}

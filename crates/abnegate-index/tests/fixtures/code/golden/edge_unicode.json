@@ -1,0 +1,167 @@
+[
+  {
+    "chunk_type": "Body",
+    "end_offset": 412,
+    "identifiers": {
+      "defined_symbol": "greet",
+      "key_strings": [
+        " for the language code.",
+        "\n    template = GREETINGS.get(language, "
+      ],
+      "parameters": [],
+      "referenced_functions": [
+        "greet",
+        "get"
+      ],
+      "referenced_types": [
+        "Return",
+        "GREETINGS",
+        "Hello"
+      ]
+    },
+    "index": 0,
+    "metadata": {
+      "content_hash": "4d60069035de4a5e",
+      "end_byte": 412,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/greetings.py@main",
+      "start_byte": 198,
+      "symbol": "greet",
+      "visibility": "Private"
+    },
+    "start_offset": 198,
+    "text": "File: github://acme/widgets/src/greetings.py@main\npath: github://acme/widgets/src/greetings.py@main\nLanguage: python\nsymbol: greet\nSymbol: greet\nkind: Function\nSignature: def greet(language:\n\ndef greet(language: str, name: str) -> str:\n    \"\"\"Return a greeting such as 'こんにちは, 太郎' for the language code.\"\"\"\n    template = GREETINGS.get(language, \"Hello\")\n    return f\"{template}, {name} 🎉\"\n\n// Identifiers:\n// symbol: greet\n// types: Return, GREETINGS, Hello\n// calls: greet, get\n// keys:  for the language code., \n    template = GREETINGS.get(language, \n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 412,
+    "identifiers": {
+      "defined_symbol": "greet",
+      "key_strings": [
+        " for the language code.",
+        "\n    template = GREETINGS.get(language, "
+      ],
+      "parameters": [],
+      "referenced_functions": [
+        "greet",
+        "get"
+      ],
+      "referenced_types": [
+        "Return",
+        "GREETINGS",
+        "Hello"
+      ]
+    },
+    "index": 1,
+    "metadata": {
+      "content_hash": "0d65608137c11d92",
+      "end_byte": 412,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/greetings.py@main",
+      "start_byte": 198,
+      "symbol": "greet",
+      "visibility": "Private"
+    },
+    "start_offset": 198,
+    "text": "File: github://acme/widgets/src/greetings.py@main\npath: github://acme/widgets/src/greetings.py@main\nLanguage: python\nsymbol: greet\nSymbol: greet\nkind: Function\nSignature: def greet(language:\n [skeleton]\ndef greet(language:\n\n// Key identifiers:\n// defined: greet\n// types: Return, GREETINGS, Hello\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 567,
+    "identifiers": {
+      "defined_symbol": "widths",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "widths",
+        "ord"
+      ],
+      "referenced_types": [
+        "Count"
+      ]
+    },
+    "index": 2,
+    "metadata": {
+      "content_hash": "0e2c09f80f8aedaa",
+      "end_byte": 567,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/greetings.py@main",
+      "start_byte": 415,
+      "symbol": "widths",
+      "visibility": "Private"
+    },
+    "start_offset": 415,
+    "text": "File: github://acme/widgets/src/greetings.py@main\npath: github://acme/widgets/src/greetings.py@main\nLanguage: python\nsymbol: widths\nSymbol: widths\nkind: Function\nSignature: def widths(text:\n\ndef widths(text: str) -> list:\n    # Count east asian wide characters: 漢字 take two columns.\n    return [2 if ord(ch) > 0x2E80 else 1 for ch in text]\n\n// Identifiers:\n// symbol: widths\n// types: Count\n// calls: widths, ord\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 567,
+    "identifiers": {
+      "defined_symbol": "widths",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "widths",
+        "ord"
+      ],
+      "referenced_types": [
+        "Count"
+      ]
+    },
+    "index": 3,
+    "metadata": {
+      "content_hash": "6faf56fde24f0693",
+      "end_byte": 567,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Function",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/greetings.py@main",
+      "start_byte": 415,
+      "symbol": "widths",
+      "visibility": "Private"
+    },
+    "start_offset": 415,
+    "text": "File: github://acme/widgets/src/greetings.py@main\npath: github://acme/widgets/src/greetings.py@main\nLanguage: python\nsymbol: widths\nSymbol: widths\nkind: Function\nSignature: def widths(text:\n [skeleton]\ndef widths(text:\n\n// Key identifiers:\n// defined: widths\n// types: Count\n"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 196,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 4,
+    "metadata": {
+      "content_hash": "2842e0f03aaf5890",
+      "end_byte": 196,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/greetings.py@main",
+      "start_byte": 0,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 0,
+    "text": "File: github://acme/widgets/src/greetings.py@main\npath: github://acme/widgets/src/greetings.py@main\nLanguage: python\nkind: top_level\n\n\"\"\"Greeting helpers — 挨拶 and emoji 👋 support.\"\"\"\n\nGREETINGS = {\n    \"ja\": \"こんにちは世界\",\n    \"zh\": \"你好，世界\",\n    \"ko\": \"안녕하세요\",\n    \"emoji\": \"👋🌍✨\",\n}"
+  }
+]

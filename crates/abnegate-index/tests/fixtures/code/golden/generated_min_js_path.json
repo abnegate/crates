@@ -1,0 +1,56 @@
+[
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 655,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 0,
+    "metadata": {
+      "content_hash": "5681c44576d831d0",
+      "end_byte": 655,
+      "is_generated": true,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/static/load.min.js@main",
+      "start_byte": 0,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 0,
+    "text": "File: github://acme/widgets/static/load.min.js@main\npath: github://acme/widgets/static/load.min.js@main\nimport { readFile } from 'node:fs/promises';\nimport path from 'node:path';\n\nexport const CONFIG_NAME = 'widgets.config.json';\n\nexport async function loadConfig(directory) {\n  const file = path.join(directory, CONFIG_NAME);\n  const raw = await readFile(file, 'utf8');\n  const parsed = JSON.parse(raw);\n  return { ...defaults(), ...parsed };\n}\n\nfunction defaults() {\n  return { retries: 3, verbose: false, outputDirectory: 'dist' };\n}\n\nexport function mergeConfigs(base, override) {\n  const merged = { ...base };\n  for (const [key, value] of Object.entries(override)) {\n    if (value !== undefined) {\n      merged[key] = value;\n    }\n  }\n  return merged;\n}\n"
+  },
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 655,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 1,
+    "metadata": {
+      "content_hash": "52c2d2ac06e7dd3a",
+      "end_byte": 655,
+      "is_generated": true,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/static/load.min.js@main",
+      "start_byte": 451,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 451,
+    "text": "File: github://acme/widgets/static/load.min.js@main\npath: github://acme/widgets/static/load.min.js@main\nergeConfigs(base, override) {\n  const merged = { ...base };\n  for (const [key, value] of Object.entries(override)) {\n    if (value !== undefined) {\n      merged[key] = value;\n    }\n  }\n  return merged;\n}\n"
+  }
+]

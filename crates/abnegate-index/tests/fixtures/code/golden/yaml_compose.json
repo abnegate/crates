@@ -1,0 +1,259 @@
+[
+  {
+    "chunk_type": "Body",
+    "end_offset": 278,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": [
+        "POSTGRES_PASSWORD"
+      ]
+    },
+    "index": 0,
+    "metadata": {
+      "content_hash": "a5337c1597985645",
+      "end_byte": 278,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/compose.yml@main",
+      "start_byte": 0,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 0,
+    "text": "File: github://acme/widgets/compose.yml@main\npath: github://acme/widgets/compose.yml@main\nLanguage: yaml\nkind: Other\nSignature: services:\n\nservices:\n  database:\n    image: postgres:17\n    environment:\n      POSTGRES_PASSWORD: example\n    ports:\n      - \"5432:5432\"\n    volumes:\n      - data:/var/lib/postgresql/data\n  cache:\n    image: valkey/valkey:8\n    command: [\"valkey-server\", \"--save\", \"\"]\nvolumes:\n  data: {}\n\n\n// Identifiers:\n// types: POSTGRES_PASSWORD\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 278,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": [
+        "POSTGRES_PASSWORD"
+      ]
+    },
+    "index": 1,
+    "metadata": {
+      "content_hash": "0d74874f3f5f90a9",
+      "end_byte": 278,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/compose.yml@main",
+      "start_byte": 0,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 0,
+    "text": "File: github://acme/widgets/compose.yml@main\npath: github://acme/widgets/compose.yml@main\nLanguage: yaml\nkind: Other\nSignature: services:\n [skeleton]\nservices:\n\n// Key identifiers:\n// types: POSTGRES_PASSWORD\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 257,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": [
+        "POSTGRES_PASSWORD"
+      ]
+    },
+    "index": 2,
+    "metadata": {
+      "content_hash": "cebde03e0cbef93a",
+      "end_byte": 257,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/compose.yml@main",
+      "start_byte": 12,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 12,
+    "text": "File: github://acme/widgets/compose.yml@main\npath: github://acme/widgets/compose.yml@main\nLanguage: yaml\nkind: Other\nSignature: database:\n\ndatabase:\n    image: postgres:17\n    environment:\n      POSTGRES_PASSWORD: example\n    ports:\n      - \"5432:5432\"\n    volumes:\n      - data:/var/lib/postgresql/data\n  cache:\n    image: valkey/valkey:8\n    command: [\"valkey-server\", \"--save\", \"\"]\n\n// Identifiers:\n// types: POSTGRES_PASSWORD\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 257,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": [
+        "POSTGRES_PASSWORD"
+      ]
+    },
+    "index": 3,
+    "metadata": {
+      "content_hash": "c3d716628fa9c128",
+      "end_byte": 257,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/compose.yml@main",
+      "start_byte": 12,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 12,
+    "text": "File: github://acme/widgets/compose.yml@main\npath: github://acme/widgets/compose.yml@main\nLanguage: yaml\nkind: Other\nSignature: database:\n [skeleton]\ndatabase:\n\n// Key identifiers:\n// types: POSTGRES_PASSWORD\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 176,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": [
+        "POSTGRES_PASSWORD"
+      ]
+    },
+    "index": 4,
+    "metadata": {
+      "content_hash": "b70398047eebbd5d",
+      "end_byte": 176,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/compose.yml@main",
+      "start_byte": 26,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 26,
+    "text": "File: github://acme/widgets/compose.yml@main\npath: github://acme/widgets/compose.yml@main\nLanguage: yaml\nkind: Other\nSignature: image: postgres:17\n\nimage: postgres:17\n    environment:\n      POSTGRES_PASSWORD: example\n    ports:\n      - \"5432:5432\"\n    volumes:\n      - data:/var/lib/postgresql/data\n\n// Identifiers:\n// types: POSTGRES_PASSWORD\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 176,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": [
+        "POSTGRES_PASSWORD"
+      ]
+    },
+    "index": 5,
+    "metadata": {
+      "content_hash": "0fabd6a3e3d911be",
+      "end_byte": 176,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/compose.yml@main",
+      "start_byte": 26,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 26,
+    "text": "File: github://acme/widgets/compose.yml@main\npath: github://acme/widgets/compose.yml@main\nLanguage: yaml\nkind: Other\nSignature: image: postgres:17\n [skeleton]\nimage: postgres:17\n\n// Key identifiers:\n// types: POSTGRES_PASSWORD\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 176,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": [
+        "POSTGRES_PASSWORD"
+      ]
+    },
+    "index": 6,
+    "metadata": {
+      "content_hash": "bda3d5f268570294",
+      "end_byte": 176,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/compose.yml@main",
+      "start_byte": 68,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 68,
+    "text": "POSTGRES_PASSWORD: example\n\n- \"5432:5432\"\n\n- data:/var/lib/postgresql/data"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 257,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 7,
+    "metadata": {
+      "content_hash": "04233c53287e3046",
+      "end_byte": 257,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/compose.yml@main",
+      "start_byte": 190,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 190,
+    "text": "File: github://acme/widgets/compose.yml@main\npath: github://acme/widgets/compose.yml@main\nLanguage: yaml\nkind: Other\nSignature: image: valkey/valkey:8\n\nimage: valkey/valkey:8\n    command: [\"valkey-server\", \"--save\", \"\"]"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 278,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 8,
+    "metadata": {
+      "content_hash": "2b50b826df421cc3",
+      "end_byte": 278,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/compose.yml@main",
+      "start_byte": 269,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 269,
+    "text": "File: github://acme/widgets/compose.yml@main\npath: github://acme/widgets/compose.yml@main\nLanguage: yaml\nkind: Other\nSignature: data: {}\n\ndata: {}\n"
+  }
+]

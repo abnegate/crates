@@ -1,0 +1,422 @@
+[
+  {
+    "chunk_type": "FileHeader",
+    "end_offset": 58,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 0,
+    "metadata": {
+      "content_hash": "636b8ae42fc566b5",
+      "end_byte": 58,
+      "is_generated": false,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/native/matrix.cpp@main",
+      "start_byte": 0,
+      "symbol": null,
+      "visibility": "Public"
+    },
+    "start_offset": 0,
+    "text": "path: github://acme/widgets/native/matrix.cpp@main\nkind: file_header\n\n// namespace widgets\n\n#include <cstddef>\n\n#include <stdexcept>\n\n#include <vector>\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1216,
+    "identifiers": {
+      "defined_symbol": "widgets",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "rows_",
+        "columns_",
+        "values_",
+        "at",
+        "out_of_range",
+        "multiply",
+        "result",
+        "identity_shape"
+      ],
+      "referenced_types": [
+        "Matrix",
+        "Shape"
+      ]
+    },
+    "index": 1,
+    "metadata": {
+      "content_hash": "5a9606e36531ba00",
+      "end_byte": 1216,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/native/matrix.cpp@main",
+      "start_byte": 59,
+      "symbol": "widgets",
+      "visibility": "Private"
+    },
+    "start_offset": 59,
+    "text": "File: github://acme/widgets/native/matrix.cpp@main\npath: github://acme/widgets/native/matrix.cpp@main\nLanguage: cpp\nsymbol: widgets\nSymbol: widgets\nkind: Other\nSignature: namespace widgets\n\n// Imports:\n#include <cstddef>\n\n#include <stdexcept>\n\n#include <vector>\n\nnamespace widgets {\n\ntemplate <typename T>\nclass Matrix {\npublic:\n    Matrix(std::size_t rows, std::size_t columns)\n        : rows_(rows), columns_(columns), values_(rows * columns) {}\n\n    T& at(std::size_t row, std::size_t column) {\n        if (row >= rows_ || column >= columns_) {\n            throw std::out_of_range(\"matrix index\");\n        }\n        return values_[row * columns_ + column];\n    }\n\n    Matrix multiply(const Matrix& other) const {\n        Matrix result(rows_, other.columns_);\n        for (std::size_t i = 0; i < rows_; ++i) {\n            for (std::size_t j = 0; j < other.columns_; ++j) {\n                T sum{};\n                for (std::size_t k = 0; k < columns_; ++k) {\n                    sum += values_[i * columns_ + k] * other.values_[k * other.columns_ + j];\n                }\n                result.values_[i * other.columns_ + j] = sum;\n            }\n        }\n        return result;\n    }\n\nprivate:\n    std::size_t rows_;\n    std::size_t columns_;\n    std::vector<T> values_;\n};\n\nstruct Shape {\n    std::size_t rows;\n    std::size_t columns;\n};\n\nShape identity_shape(std::size_t size) {\n    return Shape{size, size};\n}\n\n}\n\n// Identifiers:\n// symbol: widgets\n// types: Matrix, Shape\n// calls: rows_, columns_, values_, at, out_of_range, multiply, result, identity_shape\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1073,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "rows_",
+        "columns_",
+        "values_",
+        "at",
+        "out_of_range",
+        "multiply",
+        "result"
+      ],
+      "referenced_types": [
+        "Matrix"
+      ]
+    },
+    "index": 2,
+    "metadata": {
+      "content_hash": "c66443ac57c6e2b1",
+      "end_byte": 1073,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "widgets"
+      ],
+      "path": "github://acme/widgets/native/matrix.cpp@main",
+      "start_byte": 80,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 80,
+    "text": "File: github://acme/widgets/native/matrix.cpp@main\npath: github://acme/widgets/native/matrix.cpp@main\nLanguage: cpp\nkind: Other\nParent: widgets\nparents: widgets\nSignature: template <typename T>\nclass Matrix\n\n// Imports:\n#include <cstddef>\n\n#include <stdexcept>\n\n#include <vector>\n\ntemplate <typename T>\nclass Matrix {\npublic:\n    Matrix(std::size_t rows, std::size_t columns)\n        : rows_(rows), columns_(columns), values_(rows * columns) {}\n\n    T& at(std::size_t row, std::size_t column) {\n        if (row >= rows_ || column >= columns_) {\n            throw std::out_of_range(\"matrix index\");\n        }\n        return values_[row * columns_ + column];\n    }\n\n    Matrix multiply(const Matrix& other) const {\n        Matrix result(rows_, other.columns_);\n        for (std::size_t i = 0; i < rows_; ++i) {\n            for (std::size_t j = 0; j < other.columns_; ++j) {\n                T sum{};\n                for (std::size_t k = 0; k < columns_; ++k) {\n                    sum += values_[i * columns_ + k] * other.values_[k * other.columns_ + j];\n                }\n                result.values_[i * other.columns_ + j] = sum;\n            }\n        }\n        return result;\n    }\n\nprivate:\n    std::size_t rows_;\n    std::size_t columns_;\n    std::vector<T> values_;\n};\n\n// Identifiers:\n// types: Matrix\n// calls: rows_, columns_, values_, at, out_of_range, multiply, result\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 1073,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "rows_",
+        "columns_",
+        "values_",
+        "at",
+        "out_of_range",
+        "multiply",
+        "result"
+      ],
+      "referenced_types": [
+        "Matrix"
+      ]
+    },
+    "index": 3,
+    "metadata": {
+      "content_hash": "68a50729a6498020",
+      "end_byte": 1073,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "widgets"
+      ],
+      "path": "github://acme/widgets/native/matrix.cpp@main",
+      "start_byte": 80,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 80,
+    "text": "File: github://acme/widgets/native/matrix.cpp@main\npath: github://acme/widgets/native/matrix.cpp@main\nLanguage: cpp\nkind: Other\nParent: widgets\nparents: widgets\nSignature: template <typename T>\nclass Matrix\n [skeleton]\ntemplate <typename T>\nclass Matrix\n\n// Key identifiers:\n// types: Matrix\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1072,
+    "identifiers": {
+      "defined_symbol": "Matrix",
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [
+        "rows_",
+        "columns_",
+        "values_",
+        "at",
+        "out_of_range",
+        "multiply",
+        "result"
+      ],
+      "referenced_types": [
+        "Matrix"
+      ]
+    },
+    "index": 4,
+    "metadata": {
+      "content_hash": "24f4c0059898384e",
+      "end_byte": 1072,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "widgets"
+      ],
+      "path": "github://acme/widgets/native/matrix.cpp@main",
+      "start_byte": 102,
+      "symbol": "Matrix",
+      "visibility": "Private"
+    },
+    "start_offset": 102,
+    "text": "File: github://acme/widgets/native/matrix.cpp@main\npath: github://acme/widgets/native/matrix.cpp@main\nLanguage: cpp\nsymbol: widgets.Matrix\nSymbol: widgets.Matrix\nkind: Other\nParent: widgets\nparents: widgets\nSignature: class Matrix\n\n// Imports:\n#include <cstddef>\n\n#include <stdexcept>\n\n#include <vector>\n\nclass Matrix {\npublic:\n    Matrix(std::size_t rows, std::size_t columns)\n        : rows_(rows), columns_(columns), values_(rows * columns) {}\n\n    T& at(std::size_t row, std::size_t column) {\n        if (row >= rows_ || column >= columns_) {\n            throw std::out_of_range(\"matrix index\");\n        }\n        return values_[row * columns_ + column];\n    }\n\n    Matrix multiply(const Matrix& other) const {\n        Matrix result(rows_, other.columns_);\n        for (std::size_t i = 0; i < rows_; ++i) {\n            for (std::size_t j = 0; j < other.columns_; ++j) {\n                T sum{};\n                for (std::size_t k = 0; k < columns_; ++k) {\n                    sum += values_[i * columns_ + k] * other.values_[k * other.columns_ + j];\n                }\n                result.values_[i * other.columns_ + j] = sum;\n            }\n        }\n        return result;\n    }\n\nprivate:\n    std::size_t rows_;\n    std::size_t columns_;\n    std::vector<T> values_;\n}\n\n// Identifiers:\n// symbol: Matrix\n// types: Matrix\n// calls: rows_, columns_, values_, at, out_of_range, multiply, result\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 243,
+    "identifiers": {
+      "defined_symbol": "Matrix",
+      "key_strings": [],
+      "parameters": [
+        "std",
+        "size_t",
+        "rows",
+        "columns",
+        "rows_",
+        "columns_",
+        "values_"
+      ],
+      "referenced_functions": [
+        "rows_",
+        "columns_",
+        "values_"
+      ],
+      "referenced_types": [
+        "Matrix"
+      ]
+    },
+    "index": 5,
+    "metadata": {
+      "content_hash": "9978b5b6d4aec77e",
+      "end_byte": 243,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "widgets",
+        "Matrix"
+      ],
+      "path": "github://acme/widgets/native/matrix.cpp@main",
+      "start_byte": 129,
+      "symbol": "Matrix",
+      "visibility": "Private"
+    },
+    "start_offset": 129,
+    "text": "File: github://acme/widgets/native/matrix.cpp@main\npath: github://acme/widgets/native/matrix.cpp@main\nLanguage: cpp\nsymbol: widgets.Matrix.Matrix\nSymbol: widgets.Matrix.Matrix\nkind: Other\nParent: widgets.Matrix\nparents: widgets.Matrix\nSignature: Matrix(std::size_t rows, std::size_t columns)\n        : rows_(rows), columns_(columns), values_(rows * columns)\n\n// Imports:\n#include <cstddef>\n\n#include <stdexcept>\n\n#include <vector>\n\nMatrix(std::size_t rows, std::size_t columns)\n        : rows_(rows), columns_(columns), values_(rows * columns) {}\n\n// Identifiers:\n// symbol: Matrix\n// params: std, size_t, rows, columns, rows_, columns_, values_\n// types: Matrix\n// calls: rows_, columns_, values_\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 461,
+    "identifiers": {
+      "defined_symbol": "& at(std::size_t row, std::size_t column)",
+      "key_strings": [],
+      "parameters": [
+        "std",
+        "size_t",
+        "row",
+        "column"
+      ],
+      "referenced_functions": [
+        "at",
+        "out_of_range"
+      ],
+      "referenced_types": []
+    },
+    "index": 6,
+    "metadata": {
+      "content_hash": "d08241a1e55ab949",
+      "end_byte": 461,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "widgets",
+        "Matrix"
+      ],
+      "path": "github://acme/widgets/native/matrix.cpp@main",
+      "start_byte": 249,
+      "symbol": "& at(std::size_t row, std::size_t column)",
+      "visibility": "Private"
+    },
+    "start_offset": 249,
+    "text": "File: github://acme/widgets/native/matrix.cpp@main\npath: github://acme/widgets/native/matrix.cpp@main\nLanguage: cpp\nsymbol: widgets.Matrix.& at(std::size_t row, std::size_t column)\nSymbol: widgets.Matrix.& at(std::size_t row, std::size_t column)\nkind: Other\nParent: widgets.Matrix\nparents: widgets.Matrix\nSignature: T& at(std::size_t row, std::size_t column)\n\n// Imports:\n#include <cstddef>\n\n#include <stdexcept>\n\n#include <vector>\n\nT& at(std::size_t row, std::size_t column) {\n        if (row >= rows_ || column >= columns_) {\n            throw std::out_of_range(\"matrix index\");\n        }\n        return values_[row * columns_ + column];\n    }\n\n// Identifiers:\n// symbol: & at(std::size_t row, std::size_t column)\n// params: std, size_t, row, column\n// calls: at, out_of_range\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 461,
+    "identifiers": {
+      "defined_symbol": "& at(std::size_t row, std::size_t column)",
+      "key_strings": [],
+      "parameters": [
+        "std",
+        "size_t",
+        "row",
+        "column"
+      ],
+      "referenced_functions": [
+        "at",
+        "out_of_range"
+      ],
+      "referenced_types": []
+    },
+    "index": 7,
+    "metadata": {
+      "content_hash": "e9404697b6c737e5",
+      "end_byte": 461,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "widgets",
+        "Matrix"
+      ],
+      "path": "github://acme/widgets/native/matrix.cpp@main",
+      "start_byte": 249,
+      "symbol": "& at(std::size_t row, std::size_t column)",
+      "visibility": "Private"
+    },
+    "start_offset": 249,
+    "text": "File: github://acme/widgets/native/matrix.cpp@main\npath: github://acme/widgets/native/matrix.cpp@main\nLanguage: cpp\nsymbol: widgets.Matrix.& at(std::size_t row, std::size_t column)\nSymbol: widgets.Matrix.& at(std::size_t row, std::size_t column)\nkind: Other\nParent: widgets.Matrix\nparents: widgets.Matrix\nSignature: T& at(std::size_t row, std::size_t column)\n [skeleton]\nT& at(std::size_t row, std::size_t column)\n\n// Key identifiers:\n// defined: & at(std::size_t row, std::size_t column)\n// params: std, size_t, row, column\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 983,
+    "identifiers": {
+      "defined_symbol": "multiply",
+      "key_strings": [],
+      "parameters": [
+        "const",
+        "Matrix",
+        "other"
+      ],
+      "referenced_functions": [
+        "multiply",
+        "result"
+      ],
+      "referenced_types": [
+        "Matrix"
+      ]
+    },
+    "index": 8,
+    "metadata": {
+      "content_hash": "36f3349d6f6c1698",
+      "end_byte": 983,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "widgets",
+        "Matrix"
+      ],
+      "path": "github://acme/widgets/native/matrix.cpp@main",
+      "start_byte": 467,
+      "symbol": "multiply",
+      "visibility": "Private"
+    },
+    "start_offset": 467,
+    "text": "File: github://acme/widgets/native/matrix.cpp@main\npath: github://acme/widgets/native/matrix.cpp@main\nLanguage: cpp\nsymbol: widgets.Matrix.multiply\nSymbol: widgets.Matrix.multiply\nkind: Other\nParent: widgets.Matrix\nparents: widgets.Matrix\nSignature: Matrix multiply(const Matrix& other) const\n\n// Imports:\n#include <cstddef>\n\n#include <stdexcept>\n\n#include <vector>\n\nMatrix multiply(const Matrix& other) const {\n        Matrix result(rows_, other.columns_);\n        for (std::size_t i = 0; i < rows_; ++i) {\n            for (std::size_t j = 0; j < other.columns_; ++j) {\n                T sum{};\n                for (std::size_t k = 0; k < columns_; ++k) {\n                    sum += values_[i * columns_ + k] * other.values_[k * other.columns_ + j];\n                }\n                result.values_[i * other.columns_ + j] = sum;\n            }\n        }\n        return result;\n    }\n\n// Identifiers:\n// symbol: multiply\n// params: const, Matrix, other\n// types: Matrix\n// calls: multiply, result\n"
+  },
+  {
+    "chunk_type": "Skeleton",
+    "end_offset": 983,
+    "identifiers": {
+      "defined_symbol": "multiply",
+      "key_strings": [],
+      "parameters": [
+        "const",
+        "Matrix",
+        "other"
+      ],
+      "referenced_functions": [
+        "multiply",
+        "result"
+      ],
+      "referenced_types": [
+        "Matrix"
+      ]
+    },
+    "index": 9,
+    "metadata": {
+      "content_hash": "0eebad759f77dbda",
+      "end_byte": 983,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "widgets",
+        "Matrix"
+      ],
+      "path": "github://acme/widgets/native/matrix.cpp@main",
+      "start_byte": 467,
+      "symbol": "multiply",
+      "visibility": "Private"
+    },
+    "start_offset": 467,
+    "text": "File: github://acme/widgets/native/matrix.cpp@main\npath: github://acme/widgets/native/matrix.cpp@main\nLanguage: cpp\nsymbol: widgets.Matrix.multiply\nSymbol: widgets.Matrix.multiply\nkind: Other\nParent: widgets.Matrix\nparents: widgets.Matrix\nSignature: Matrix multiply(const Matrix& other) const\n [skeleton]\nMatrix multiply(const Matrix& other) const\n\n// Key identifiers:\n// defined: multiply\n// params: const, Matrix, other\n// types: Matrix\n"
+  },
+  {
+    "chunk_type": "Body",
+    "end_offset": 1213,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [
+        "std",
+        "size_t",
+        "size"
+      ],
+      "referenced_functions": [
+        "Shape",
+        "identity_shape"
+      ],
+      "referenced_types": [
+        "Shape",
+        "Shape"
+      ]
+    },
+    "index": 10,
+    "metadata": {
+      "content_hash": "d9c35bc2616c03d3",
+      "end_byte": 1213,
+      "is_generated": false,
+      "is_test": false,
+      "kind": "Other",
+      "module": null,
+      "parents": [
+        "widgets"
+      ],
+      "path": "github://acme/widgets/native/matrix.cpp@main",
+      "start_byte": 1075,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 1075,
+    "text": "struct Shape {\n    std::size_t rows;\n    std::size_t columns;\n}\n\nShape identity_shape(std::size_t size) {\n    return Shape{size, size};\n}"
+  }
+]

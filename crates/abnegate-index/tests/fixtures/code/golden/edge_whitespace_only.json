@@ -1,0 +1,29 @@
+[
+  {
+    "chunk_type": "TopLevel",
+    "end_offset": 13,
+    "identifiers": {
+      "defined_symbol": null,
+      "key_strings": [],
+      "parameters": [],
+      "referenced_functions": [],
+      "referenced_types": []
+    },
+    "index": 0,
+    "metadata": {
+      "content_hash": "3e6910c6fd7b8ffb",
+      "end_byte": 13,
+      "is_generated": false,
+      "is_test": false,
+      "kind": null,
+      "module": null,
+      "parents": [],
+      "path": "github://acme/widgets/src/blank.py@main",
+      "start_byte": 0,
+      "symbol": null,
+      "visibility": "Private"
+    },
+    "start_offset": 0,
+    "text": "File: github://acme/widgets/src/blank.py@main\npath: github://acme/widgets/src/blank.py@main\n   \n\n\t\t\n    \n"
+  }
+]

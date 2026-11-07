@@ -32,6 +32,7 @@ google = []
 ollama = []
 openai = ["dep:base64", "reqwest/multipart", "tokio/fs"]
 openai-compatible = []
+rerank = []
 testing = []
 
 [dependencies]
