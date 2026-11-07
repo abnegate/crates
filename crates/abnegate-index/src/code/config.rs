@@ -14,9 +14,9 @@ const MAXIMUM_IMPORT_TOKENS: usize = 100;
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ChunkConfig {
-    /// The tokens a chunk aims to stay within. A chunk can be over it, up to the
-    /// larger of 6 characters a token and 512 characters, past which it is cut
-    /// into text windows.
+    /// The tokens a chunk aims to stay within. A chunk can be over it. From a
+    /// budget of 2 up, one over the larger of 6 characters a token and 512
+    /// characters is cut into text windows; below that, nothing is cut.
     pub maximum_tokens: usize,
     /// Symbols under this many tokens are merged with their siblings.
     pub minimum_tokens: usize,

@@ -1,7 +1,7 @@
 //! Code-aware chunking with tree-sitter.
 //!
-//! Source is split on symbol boundaries, never at a fixed length. Each symbol
-//! gets one body chunk and, unless it is a container, a skeleton chunk; small
+//! Source is split on symbol boundaries, with text windows only as a fallback.
+//! Each symbol gets one body chunk and, unless it is a container, a skeleton chunk; small
 //! siblings are merged and large symbols are split with header overlap. A file
 //! header chunk carries the imports, an API surface chunk lists the public
 //! signatures, and source no symbol covers becomes top-level chunks. Every
@@ -57,9 +57,9 @@ const OVERLAP_DIVISOR: usize = 10;
 /// Chunk `content` as `language` with the default [`ChunkConfig`] and a budget
 /// of `maximum_tokens` tokens a chunk.
 ///
-/// The budget is a target, not a limit: a chunk can be over it, up to the larger
-/// of 6 characters a token and 512 characters, past which it is cut into text
-/// windows.
+/// The budget is a target, not a limit: a chunk can be over it. From a budget of
+/// 2 up, one over the larger of 6 characters a token and 512 characters is cut
+/// into text windows; below that, nothing is cut.
 pub fn chunk_code(content: &str, language: CodeLanguage, maximum_tokens: usize) -> Vec<CodeChunk> {
     chunk_code_with_config(
         content,

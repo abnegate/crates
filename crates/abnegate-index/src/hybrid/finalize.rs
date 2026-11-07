@@ -47,16 +47,28 @@ pub fn finalize_ranking<Id: Clone + Eq + Hash>(
 ///
 /// A fusion score of exactly 0 first takes the incoming score. Non-definition
 /// chunks near a definition of one of the question's identifiers gain 0.22
-/// in the same directory or 0.12 in the same crate, and the results end in
-/// [`prefer_definition_chunks`] order.
+/// in the same directory or 0.12 in the same crate, and the results end sorted
+/// by the keys [`prefer_definition_chunks`] uses.
 ///
 /// # Panics
 ///
 /// Unlike [`prefer_definition_chunks`], this keeps the standard library's sort
 /// even when a score is NaN, so it can panic if the sort notices the comparison
-/// is not a total order. That needs a NaN score and more than 20 rows. Screen out
-/// NaN scores first to rule it out.
+/// is not a total order. That needs a NaN ranked score and more than 20 rows. A
+/// ranked score comes from `semantic_score`, `keyword_score`, `fusion_score`,
+/// `score` when `fusion_score` is 0, and the ranker's weights, so keeping those
+/// free of NaN and infinity rules it out.
 pub fn apply_local_rerank<Id>(
+    ranker: &LinearRanker,
+    query: &str,
+    results: Vec<HybridSearchResult<Id>>,
+) -> Vec<HybridSearchResult<Id>> {
+    let mut results = rescored(ranker, query, results);
+    sort_ranked_by_definition(query, &mut results);
+    results
+}
+
+fn rescored<Id>(
     ranker: &LinearRanker,
     query: &str,
     mut results: Vec<HybridSearchResult<Id>>,
@@ -81,7 +93,6 @@ pub fn apply_local_rerank<Id>(
     sort_by_score(&mut results);
     boost_implementation_neighbors(query, &mut results);
     sort_by_score(&mut results);
-    sort_ranked_by_definition(query, &mut results);
     results
 }
 
@@ -433,6 +444,76 @@ mod tests {
         let mut ids: Vec<usize> = results.iter().map(|result| result.id).collect();
         ids.sort_unstable();
         assert_eq!(ids, (0..scores.len()).collect::<Vec<_>>());
+    }
+
+    fn next_random(state: &mut u64) -> u64 {
+        *state ^= *state << 13;
+        *state ^= *state >> 7;
+        *state ^= *state << 17;
+        *state
+    }
+
+    fn long_list_with_nan_scores(seed: u64) -> Vec<HybridSearchResult<usize>> {
+        const TEXTS: [&str; 5] = [
+            "pub fn load_widget(id: u32) -> Widget { fetch(id) }",
+            "fn load_widget(id: u32) -> Widget { fetch(id) }",
+            "let widget = load_widget(7);",
+            "#[cfg(test)]\nfn loads() { assert!(load_widget(1).ok()); }",
+            "widgets ship in crates of twelve",
+        ];
+        const ROWS: usize = 90;
+        let mut state = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+        (0..ROWS)
+            .map(|id| {
+                let draw = next_random(&mut state);
+                let text = TEXTS[(draw % TEXTS.len() as u64) as usize];
+                let similarity = ((draw >> 8) % 1000) as f32 / 1000.0;
+                let semantic = if (draw >> 20).is_multiple_of(4) {
+                    f32::NAN
+                } else {
+                    similarity
+                };
+                HybridSearchResult::new(id, text, format!("src/f{}.rs", id % 30), "t", similarity)
+                    .with_fusion_score(similarity + 0.01)
+                    .with_semantic_score(semantic)
+                    .with_semantic_rank(id + 1)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_rerank_path_keeps_the_standard_sort_when_a_score_is_nan() {
+        const QUERY: &str = "What does load_widget do?";
+        let ranker = trained_ranker();
+        let ids = |order: &[usize], rows: &[HybridSearchResult<usize>]| -> Vec<usize> {
+            order.iter().map(|&row| rows[row].id).collect()
+        };
+        let mut lists_where_the_sorts_differ = 0;
+        for seed in 1..=50 {
+            let input = long_list_with_nan_scores(seed);
+            let prepared = rescored(&ranker, QUERY, input.clone());
+            let keys = definition_keys(QUERY, &prepared);
+            let compare =
+                |left: &usize, right: &usize| compare_definitions(&keys, &prepared, *left, *right);
+            let mut standard: Vec<usize> = (0..prepared.len()).collect();
+            standard.sort_by(compare);
+            let mut insertion: Vec<usize> = (0..prepared.len()).collect();
+            insertion_sort_by(&mut insertion, compare);
+            if standard != insertion {
+                lists_where_the_sorts_differ += 1;
+            }
+
+            let reranked: Vec<usize> = apply_local_rerank(&ranker, QUERY, input)
+                .iter()
+                .map(|result| result.id)
+                .collect();
+
+            assert_eq!(reranked, ids(&standard, &prepared), "seed {seed}");
+        }
+        assert!(
+            lists_where_the_sorts_differ > 0,
+            "no list told the two sorts apart, so this test proves nothing"
+        );
     }
 
     #[test]
