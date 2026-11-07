@@ -1,3 +1,11 @@
+use std::io::BufRead;
+use std::io::BufReader;
+use std::io::ErrorKind;
+use std::io::Write;
+use std::net::TcpListener;
+use std::time::Duration;
+
+use base64::engine::general_purpose::STANDARD;
 use chrono::TimeDelta;
 use serde_json::Value;
 use serde_json::json;
@@ -548,6 +556,364 @@ async fn an_explicit_proxy_carries_every_request() {
         UNRESOLVABLE,
         "the proxy was not asked for the token endpoint"
     );
+}
+
+const PROXY_USERNAME: &str = "svc-login";
+/// Written as a URL would escape `@`, which no layer may unescape.
+const PROXY_PASSWORD: &str = "pr0xy%40not-a-real-password";
+const PROXY_AUTHORIZATION: &str = "Basic c3ZjLWxvZ2luOnByMHh5JTQwbm90LWEtcmVhbC1wYXNzd29yZA==";
+
+const LOOPBACK_HTTPS_TOKEN: &str = "https://127.0.0.1:9/v1/oauth/token";
+const NOTHING_LISTENS: &str = "http://127.0.0.1:1";
+const STAND_IN_PATIENCE: Duration = Duration::from_secs(10);
+
+fn proxied(proxy: &str) -> Client {
+    Client::new(unresolvable())
+        .and_then(|client| {
+            client.with_authenticated_proxy(proxy, PROXY_USERNAME, PROXY_PASSWORD.to_string())
+        })
+        .expect("a loopback proxy")
+}
+
+fn holds_no_proxy_secret(text: &str) {
+    assert!(!text.contains(PROXY_PASSWORD), "{text}");
+    assert!(
+        !text.contains(PROXY_AUTHORIZATION.trim_start_matches("Basic ")),
+        "{text}"
+    );
+}
+
+#[tokio::test]
+async fn an_authenticated_proxy_is_signed_in_to_on_every_request() {
+    let proxy = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(header("proxy-authorization", PROXY_AUTHORIZATION))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"access_token": ACCESS, "expires_in": GRANTED})),
+        )
+        .mount(&proxy)
+        .await;
+    let client = proxied(&proxy.uri());
+
+    client
+        .exchange(&code(), &verifier(), Scope::Inference, Redirect::Paste)
+        .await
+        .expect("the proxy accepted the sign-in");
+
+    assert_eq!(
+        client.proxy().map(Url::as_str),
+        Some(format!("{}/", proxy.uri()).as_str()),
+        "the URL it reports carries no credentials"
+    );
+}
+
+#[tokio::test]
+async fn a_proxy_without_credentials_is_sent_none() {
+    let proxy = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"access_token": ACCESS, "expires_in": GRANTED})),
+        )
+        .mount(&proxy)
+        .await;
+    let client = Client::new(unresolvable())
+        .and_then(|client| client.with_proxy(&proxy.uri()))
+        .expect("a loopback proxy");
+
+    client
+        .exchange(&code(), &verifier(), Scope::Inference, Redirect::Paste)
+        .await
+        .expect("an answer");
+
+    let requests = proxy.received_requests().await.expect("recorded requests");
+    assert!(
+        requests
+            .iter()
+            .all(|request| !request.headers.contains_key("proxy-authorization")),
+        "{requests:?}"
+    );
+}
+
+#[test]
+fn an_authenticated_proxys_secrets_stay_out_of_debug() {
+    let client = proxied("http://127.0.0.1:3128");
+
+    let shown = format!("{client:?}");
+
+    holds_no_proxy_secret(&shown);
+    assert!(!shown.contains(PROXY_USERNAME), "{shown}");
+    assert!(shown.contains("127.0.0.1:3128"), "{shown}");
+}
+
+#[tokio::test]
+async fn a_proxy_that_refuses_the_sign_in_is_rejected_without_repeating_it() {
+    let proxy = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(407).insert_header("proxy-authenticate", "Basic realm=\"proxy\""),
+        )
+        .mount(&proxy)
+        .await;
+    let client = proxied(&proxy.uri());
+
+    let error = client
+        .exchange(&code(), &verifier(), Scope::Inference, Redirect::Paste)
+        .await
+        .expect_err("a refused sign-in");
+
+    assert!(
+        matches!(error, LoginError::Rejected { status: 407, .. }),
+        "{error:?}"
+    );
+    holds_no_proxy_secret(&format!("{error} {error:?}"));
+}
+
+#[tokio::test]
+async fn an_unreachable_authenticated_proxy_fails_without_repeating_its_sign_in() {
+    let client = proxied(NOTHING_LISTENS);
+
+    let error = client
+        .exchange(&code(), &verifier(), Scope::Inference, Redirect::Paste)
+        .await
+        .expect_err("no proxy to reach");
+
+    assert!(matches!(error, LoginError::Transport(_)), "{error:?}");
+    holds_no_proxy_secret(&format!("{error} {error:?}"));
+}
+
+#[test]
+fn a_username_escaping_a_colon_is_sent_as_written() {
+    let proxy = TcpListener::bind("127.0.0.1:0").expect("a stand-in proxy");
+    let address = proxy.local_addr().expect("its address");
+    let accepting = std::thread::spawn(move || first_request(&proxy));
+    let client = Client::new(unresolvable())
+        .and_then(|client| {
+            client.with_authenticated_proxy(
+                &format!("http://{address}"),
+                "svc%3Alogin",
+                PROXY_PASSWORD.to_string(),
+            )
+        })
+        .expect("a username with no colon in it");
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime");
+    let _ =
+        runtime.block_on(client.exchange(&code(), &verifier(), Scope::Inference, Redirect::Paste));
+    let request = accepting
+        .join()
+        .expect("the stand-in proxy")
+        .expect("the client reached the proxy");
+
+    assert_eq!(
+        sent_credentials(&request).as_deref(),
+        Some(format!("svc%3Alogin:{PROXY_PASSWORD}").as_str()),
+        "{request}"
+    );
+}
+
+#[test]
+fn a_tunnel_through_an_authenticated_proxy_carries_the_sign_in() {
+    let proxy = TcpListener::bind("127.0.0.1:0").expect("a stand-in proxy");
+    let address = proxy.local_addr().expect("its address");
+    let accepting = std::thread::spawn(move || first_request(&proxy));
+    let endpoints = Endpoints::default()
+        .with_token(LOOPBACK_HTTPS_TOKEN)
+        .expect("a loopback https token endpoint");
+    let client = Client::new(endpoints)
+        .and_then(|client| {
+            client.with_authenticated_proxy(
+                &format!("http://{address}"),
+                PROXY_USERNAME,
+                PROXY_PASSWORD.to_string(),
+            )
+        })
+        .expect("a loopback proxy");
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime");
+    let error = runtime
+        .block_on(client.exchange(&code(), &verifier(), Scope::Inference, Redirect::Paste))
+        .expect_err("a refused tunnel");
+    let request = accepting
+        .join()
+        .expect("the stand-in proxy")
+        .expect("the client reached the proxy");
+
+    assert!(request.starts_with("CONNECT "), "{request}");
+    assert_eq!(
+        sent_credentials(&request).as_deref(),
+        Some(format!("{PROXY_USERNAME}:{PROXY_PASSWORD}").as_str()),
+        "{request}"
+    );
+    assert!(matches!(error, LoginError::Transport(_)), "{error:?}");
+    holds_no_proxy_secret(&format!("{error} {error:?}"));
+}
+
+#[tokio::test]
+async fn a_proxy_given_afterwards_without_credentials_is_sent_none() {
+    let proxy = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"access_token": ACCESS, "expires_in": GRANTED})),
+        )
+        .mount(&proxy)
+        .await;
+    let client = proxied(&proxy.uri())
+        .with_proxy(&proxy.uri())
+        .expect("the same proxy without a sign-in");
+
+    client
+        .exchange(&code(), &verifier(), Scope::Inference, Redirect::Paste)
+        .await
+        .expect("an answer");
+
+    let requests = proxy.received_requests().await.expect("recorded requests");
+    assert!(
+        requests
+            .iter()
+            .all(|request| !request.headers.contains_key("proxy-authorization")),
+        "{requests:?}"
+    );
+}
+
+/// The head of the first request `proxy` is sent, answered with a 407, or
+/// `None` when nothing came within [`STAND_IN_PATIENCE`].
+fn first_request(proxy: &TcpListener) -> Option<String> {
+    proxy.set_nonblocking(true).expect("a pollable listener");
+    let deadline = std::time::Instant::now() + STAND_IN_PATIENCE;
+    let stream = loop {
+        match proxy.accept() {
+            Ok((stream, _)) => break stream,
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                if std::time::Instant::now() >= deadline {
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(_) => return None,
+        }
+    };
+    stream.set_nonblocking(false).expect("a blocking stream");
+    stream
+        .set_read_timeout(Some(STAND_IN_PATIENCE))
+        .expect("a read timeout");
+    let mut reader = BufReader::new(stream.try_clone().expect("the stream"));
+    let mut head = String::new();
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+            break;
+        }
+        head.push_str(&line);
+    }
+    let mut stream = stream;
+    let _ = stream.write_all(
+        b"HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"proxy\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+    );
+    Some(head)
+}
+
+fn sent_credentials(request: &str) -> Option<String> {
+    let encoded = request.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("proxy-authorization")
+            .then(|| value.trim().strip_prefix("Basic ").map(str::to_string))
+            .flatten()
+    })?;
+    let decoded = STANDARD.decode(encoded).ok()?;
+    String::from_utf8(decoded).ok()
+}
+
+#[test]
+fn an_empty_username_and_password_are_sent_as_such() {
+    let proxy = TcpListener::bind("127.0.0.1:0").expect("a stand-in proxy");
+    let address = proxy.local_addr().expect("its address");
+    let accepting = std::thread::spawn(move || first_request(&proxy));
+    let client = Client::new(unresolvable())
+        .and_then(|client| {
+            client.with_authenticated_proxy(&format!("http://{address}"), "", String::new())
+        })
+        .expect("empty credentials");
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime");
+    let _ =
+        runtime.block_on(client.exchange(&code(), &verifier(), Scope::Inference, Redirect::Paste));
+    let request = accepting
+        .join()
+        .expect("the stand-in proxy")
+        .expect("the client reached the proxy");
+
+    assert_eq!(
+        sent_credentials(&request).as_deref(),
+        Some(":"),
+        "{request}"
+    );
+}
+
+#[test]
+fn credentials_holding_a_control_character_are_refused() {
+    for (username, password) in [("svc-login", "pr0xy\n"), ("svc\tlogin", PROXY_PASSWORD)] {
+        let refused = Client::new(unresolvable()).and_then(|client| {
+            client.with_authenticated_proxy("http://127.0.0.1:3128", username, password.to_string())
+        });
+
+        let error = refused.expect_err("a control character");
+        assert!(
+            matches!(error, LoginError::Endpoint { name: "proxy", .. }),
+            "{error:?}"
+        );
+        holds_no_proxy_secret(&format!("{error} {error:?}"));
+    }
+}
+
+#[test]
+fn credentials_written_in_the_url_are_still_refused() {
+    let refused = Client::new(unresolvable()).and_then(|client| {
+        client.with_authenticated_proxy(
+            "http://user:written@127.0.0.1:3128",
+            PROXY_USERNAME,
+            PROXY_PASSWORD.to_string(),
+        )
+    });
+
+    let error = refused.expect_err("credentials in the URL");
+    assert!(
+        matches!(error, LoginError::Endpoint { name: "proxy", .. }),
+        "{error:?}"
+    );
+    assert!(
+        !format!("{error} {error:?}").contains("written"),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn a_username_http_basic_cannot_carry_is_refused() {
+    let refused = Client::new(unresolvable()).and_then(|client| {
+        client.with_authenticated_proxy(
+            "http://127.0.0.1:3128",
+            "svc:login",
+            PROXY_PASSWORD.to_string(),
+        )
+    });
+
+    let error = refused.expect_err("a colon in the username");
+    assert!(
+        matches!(error, LoginError::Endpoint { name: "proxy", .. }),
+        "{error:?}"
+    );
+    holds_no_proxy_secret(&format!("{error} {error:?}"));
 }
 
 #[tokio::test]

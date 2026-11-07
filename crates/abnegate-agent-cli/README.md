@@ -506,8 +506,10 @@ checked as it is set, refusing link-local and cloud metadata targets but not
 loopback or LAN hosts, and the redirect page carries no query or fragment.
 The client follows no redirect, names itself `abnegate-agent-cli/<version>`,
 and goes through no proxy unless one is given with `Client::with_proxy`,
-checked as the endpoints are; it never reads one from the environment. Build
-it once and clone it: clones share its connection pool.
+checked as the endpoints are; it never reads one from the environment. A proxy
+that wants a sign-in takes it from `Client::with_authenticated_proxy`, as HTTP
+Basic, never in its URL, so the password and username stay out of `Debug` and
+every error. Build it once and clone it: clones share its connection pool.
 
 `login::codex` signs Codex in the way `codex login --device-auth` does.
 `DeviceLogin::start` runs codex with exactly the environment it is given, in
