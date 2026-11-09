@@ -82,13 +82,15 @@ const OVERSIZED: &str = "GitLab's answer was larger than this crate reads";
 /// A request is given 30 seconds from when it is sent to the last byte of its
 /// answer, and 10 seconds to connect. It follows a redirect only while it
 /// stays on the origin it was sent to, for at most ten hops, so the token
-/// never travels to another host. It ignores any proxy the environment or the
-/// operating system names unless [`Self::with_system_proxy`] opts in to it.
-/// It never connects to a link-local address or a cloud provider's metadata
-/// service, whatever a name it resolves itself resolves to; loopback, LAN and
-/// private hosts stay reachable. Every JSON answer is read up to 16 MiB
-/// and never parsed in part, so a longer one is [`GitLabError::GitLabApi`],
-/// and one this crate cannot read is too, without quoting it.
+/// never travels to another host, other than to a proxy
+/// [`Self::with_system_proxy`] opts in to. It ignores any proxy the
+/// environment or the operating system names unless `with_system_proxy` opts
+/// in to it. It never connects to a link-local address or a cloud provider's
+/// metadata service, whatever a name resolves to when the client resolves it
+/// itself; loopback, LAN and private hosts stay reachable. Every JSON answer
+/// is read up to 16 MiB and never parsed in part, so a longer one is
+/// [`GitLabError::GitLabApi`], and one this crate cannot read is too, without
+/// quoting it.
 #[derive(Debug, Clone)]
 pub struct GitLabService {
     client: Client,
@@ -140,11 +142,13 @@ impl GitLabService {
     /// Send every request through the proxy the environment names, as the
     /// GitHub client does: `HTTPS_PROXY` for an HTTPS instance, `HTTP_PROXY`
     /// for a plain HTTP one, or `ALL_PROXY` for either, each in upper or
-    /// lower case, unless `NO_PROXY` exempts the instance's host.
-    /// `HTTP_PROXY` is ignored while `REQUEST_METHOD` is set, as it is under
-    /// CGI. Where the environment names no proxy, the operating system's
-    /// proxy settings are honoured on macOS and Windows. All of this is read
-    /// once, when this is called, and never again.
+    /// lower case, unless `NO_PROXY` exempts the instance's host. For each
+    /// scheme the environment names no proxy for, `ALL_PROXY` aside, the
+    /// macOS or Windows setting is used; on Windows its bypass list stands in
+    /// for an unset `NO_PROXY`. While `REQUEST_METHOD` is set, as it is under
+    /// CGI, no proxy is used at all, from the environment or the operating
+    /// system. All of this is read once, when this is called, and never
+    /// again.
     ///
     /// A proxy resolves the instance's name itself, so the guard against
     /// link-local addresses and cloud providers' metadata services then sees
@@ -153,7 +157,9 @@ impl GitLabService {
     /// guarded, but what a proxied instance's name resolves to is not
     /// checked. That is why `abnegate_http`'s `MetadataResolver` advises
     /// switching proxies off, and why this is never the default: opt in only
-    /// for a proxy trusted to resolve names.
+    /// for a proxy trusted to resolve names. A plain HTTP instance's
+    /// requests, its token among them, are forwarded to the proxy in the
+    /// clear; an HTTPS instance's are tunnelled through it.
     ///
     /// Redirects are still followed only within the origin, the timeouts and
     /// the HTTPS requirement are kept, and so are anonymous reads under
@@ -239,10 +245,10 @@ impl GitLabService {
 }
 
 /// A client that gives up on a request that stalls, follows redirects only
-/// within the origin, never connects to a link-local or metadata address a
-/// name it resolves itself resolves to, refuses plain HTTP unless the
-/// operator opted in to it, and ignores proxies unless `proxying` honours the
-/// system's.
+/// within the origin, never connects to a link-local or metadata address,
+/// whatever a name resolves to when the client resolves it itself, refuses
+/// plain HTTP unless the operator opted in to it, and ignores proxies unless
+/// `proxying` honours the system's.
 ///
 /// A redirect it will not follow comes back as the answer itself.
 fn client(https_only: bool, proxying: Proxying) -> GitLabResult<Client> {
