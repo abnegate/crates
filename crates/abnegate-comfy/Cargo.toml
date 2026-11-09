@@ -10,7 +10,7 @@ categories = [
     "multimedia::video",
 ]
 readme = "README.md"
-version = "0.3.0"
+version = "0.3.1"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -28,9 +28,9 @@ default = []
 saliency = ["abnegate-vision/saliency"]
 
 [dependencies]
-abnegate-exec = { path = "../abnegate-exec", version = "0.2.0" }
-abnegate-llm = { path = "../abnegate-llm", version = "0.2.0" }
-abnegate-secret = { path = "../abnegate-secret", version = "0.2.0" }
+abnegate-exec = { path = "../abnegate-exec", version = "0.2.1" }
+abnegate-llm = { path = "../abnegate-llm", version = "0.2.1" }
+abnegate-secret = { path = "../abnegate-secret", version = "0.2.1" }
 abnegate-vision = { path = "../abnegate-vision", version = "0.1.4" }
 base64 = { workspace = true }
 bytes = { workspace = true }

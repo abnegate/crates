@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/abnegate/crates/compare/abnegate-config/v0.2.0...abnegate-config/v0.2.1) - 2026-11-09
+
+### Other
+
+- release ([#79](https://github.com/abnegate/crates/pull/79))
+
 ## [0.2.0](https://github.com/abnegate/crates/compare/abnegate-config/v0.1.8...abnegate-config/v0.2.0) - 2026-11-09
 
 ### Fixed
