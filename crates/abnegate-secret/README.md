@@ -14,9 +14,10 @@ one, `conceal` removes one known key however a provider echoes it back, and
 - `derivation`: `MasterKey::derive`, which stretches a passphrase into a key with Argon2id, and the `KeyDerivation` that names its domain. Implies `encryption`.
 - `sqlx`: `Encode`, `Decode` and `Type` for `SecretValue` over every database that stores a `String`.
 
-The `sqlx` feature chooses no driver, runtime or TLS stack; enable those on
-your own `sqlx` dependency. To only redact and sanitize, turn default features
-off and skip the cipher:
+The `sqlx` feature implements sqlx 0.9's traits and chooses no driver, runtime
+or TLS stack; enable those on your own `sqlx` 0.9 dependency. Another sqlx
+minor is a separate crate and does not see these implementations. To only
+redact and sanitize, turn default features off and skip the cipher:
 
 ```sh
 cargo add abnegate-secret --no-default-features

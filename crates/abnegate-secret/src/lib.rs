@@ -48,9 +48,11 @@
 //!   database that stores a `String`, so it reads and writes as the text column
 //!   it is stored in.
 //!
-//! The `sqlx` feature chooses no driver, runtime or TLS stack. Enable those on
-//! your own `sqlx` dependency (`sqlx/postgres`, `sqlx/runtime-tokio` and so
-//! on); Cargo unifies them with the bare dependency this crate declares.
+//! The `sqlx` feature implements sqlx 0.9's traits and chooses no driver,
+//! runtime or TLS stack. Enable those on your own `sqlx` 0.9 dependency
+//! (`sqlx/postgres`, `sqlx/runtime-tokio` and so on); Cargo unifies them with
+//! the bare dependency this crate declares. Another sqlx minor is a separate
+//! crate and does not see these implementations.
 
 mod conceal;
 mod database;
