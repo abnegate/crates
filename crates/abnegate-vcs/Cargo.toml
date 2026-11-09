@@ -4,7 +4,7 @@ description = "Git operations over the git command line: branches, worktrees, me
 keywords = ["git", "worktree", "merge", "pull-request", "github"]
 categories = ["development-tools"]
 readme = "README.md"
-version = "0.1.13"
+version = "0.2.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -26,7 +26,7 @@ testing = []
 
 [dependencies]
 abnegate-http = { path = "../abnegate-http", version = "0.1.5", optional = true }
-abnegate-secret = { path = "../abnegate-secret", version = "0.1.7" }
+abnegate-secret = { path = "../abnegate-secret", version = "0.2.0" }
 base64 = { workspace = true }
 chrono = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
