@@ -329,6 +329,9 @@ mod tests {
     use crate::redirect::MAXIMUM_REDIRECTS;
     use serde_json::Value;
     use serde_json::json;
+    use tokio::io::AsyncBufReadExt;
+    use tokio::io::BufReader;
+    use tokio::net::TcpListener;
     use tokio::process::Command;
     use wiremock::Mock;
     use wiremock::MockServer;
@@ -347,14 +350,20 @@ mod tests {
     /// The variable a child process finds the instance it reads in.
     const TARGET: &str = "ABNEGATE_VCS_TEST_TARGET";
 
-    /// The variables a child process finds the stand-in proxy in.
-    const PROXIES: [&str; 2] = ["HTTP_PROXY", "http_proxy"];
+    /// The variables that name a plain HTTP instance's proxy.
+    const PLAIN_PROXIES: [&str; 2] = ["HTTP_PROXY", "http_proxy"];
 
-    /// The variables that would name another proxy or exempt the instance
-    /// from it, none of which a child process inherits.
-    const UNSET: [&str; 7] = [
+    /// The variables that name an HTTPS instance's proxy.
+    const SECURE_PROXIES: [&str; 2] = ["HTTPS_PROXY", "https_proxy"];
+
+    /// Every variable that names a proxy or exempts an instance from one,
+    /// none of which a child process inherits but those it is handed the
+    /// stand-in proxy in.
+    const PROXYING: [&str; 9] = [
         "ALL_PROXY",
         "all_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
         "HTTPS_PROXY",
         "https_proxy",
         "NO_PROXY",
@@ -400,21 +409,21 @@ mod tests {
         }
     }
 
-    /// Re-run `test` as a child process whose environment names `proxy` as
-    /// its only proxy and `target` as the instance it reads, and hold it to
-    /// having run and passed exactly that test.
-    async fn proxied(test: &str, proxy: &MockServer, target: &MockServer) {
+    /// Re-run `test` as a child process whose environment names `proxy` in
+    /// `variables` as its only proxy and `target` as the instance it reads,
+    /// and hold it to having run and passed exactly that test.
+    async fn proxied(test: &str, variables: [&str; 2], proxy: &str, target: &str) {
         let name = qualified(test);
         let mut command = Command::new(std::env::current_exe().expect("the test binary"));
         command
             .args(["--exact", &name, "--nocapture"])
             .env(CHILD, &name)
-            .env(TARGET, target.uri());
-        for variable in PROXIES {
-            command.env(variable, proxy.uri());
-        }
-        for variable in UNSET {
-            command.env_remove(variable);
+            .env(TARGET, target);
+        for variable in PROXYING {
+            match variables.contains(&variable) {
+                true => command.env(variable, proxy),
+                false => command.env_remove(variable),
+            };
         }
 
         let output = command.output().await.expect("the child runs");
@@ -823,7 +832,7 @@ mod tests {
         let proxy = MockServer::start().await;
         let target = describing().await;
 
-        proxied(TEST, &proxy, &target).await;
+        proxied(TEST, PLAIN_PROXIES, &proxy.uri(), &target.uri()).await;
 
         assert_eq!(target.received_requests().await.unwrap().len(), 1);
         assert!(proxy.received_requests().await.unwrap().is_empty());
@@ -848,7 +857,7 @@ mod tests {
         let proxy = describing().await;
         let target = MockServer::start().await;
 
-        proxied(TEST, &proxy, &target).await;
+        proxied(TEST, PLAIN_PROXIES, &proxy.uri(), &target.uri()).await;
 
         let received = proxy.received_requests().await.unwrap();
         assert_eq!(received.len(), 1);
@@ -858,11 +867,61 @@ mod tests {
             target.address().to_string().as_str(),
             "the proxy is asked for the instance"
         );
+        assert_eq!(
+            received[0].headers.get("user-agent").unwrap(),
+            USER_AGENT,
+            "the proxy is told who is asking"
+        );
         assert!(
             !received[0].headers.contains_key(PRIVATE_TOKEN),
             "anonymous reads survive opting in"
         );
         assert!(target.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_https_instance_is_tunnelled_through_the_system_proxy() {
+        const TEST: &str = "an_https_instance_is_tunnelled_through_the_system_proxy";
+        if let Some(target) = handed(TEST) {
+            let service = GitLabService::configured(&target)
+                .unwrap()
+                .with_system_proxy()
+                .unwrap();
+            let failure = service
+                .get_default_branch(&project(), &token())
+                .await
+                .unwrap_err();
+            assert!(matches!(failure, GitLabError::Http(_)), "{failure:?}");
+            return;
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy = format!("http://{}", listener.local_addr().unwrap());
+        let instance = TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let tunnel = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut line = String::new();
+            BufReader::new(stream).read_line(&mut line).await.unwrap();
+            line
+        });
+
+        proxied(
+            TEST,
+            SECURE_PROXIES,
+            &proxy,
+            &format!("https://localhost:{instance}"),
+        )
+        .await;
+
+        let line = tokio::time::timeout(Duration::from_secs(5), tunnel)
+            .await
+            .expect("the proxy is asked")
+            .unwrap();
+        assert_eq!(line, format!("CONNECT localhost:{instance} HTTP/1.1\r\n"));
     }
 
     #[tokio::test]
@@ -882,7 +941,7 @@ mod tests {
         let proxy = MockServer::start().await;
         let target = MockServer::start().await;
 
-        proxied(TEST, &proxy, &target).await;
+        proxied(TEST, PLAIN_PROXIES, &proxy.uri(), &target.uri()).await;
 
         assert!(proxy.received_requests().await.unwrap().is_empty());
         assert!(target.received_requests().await.unwrap().is_empty());
@@ -918,7 +977,7 @@ mod tests {
             .mount(&proxy)
             .await;
 
-        proxied(TEST, &proxy, &target).await;
+        proxied(TEST, PLAIN_PROXIES, &proxy.uri(), &target.uri()).await;
 
         assert_eq!(proxy.received_requests().await.unwrap().len(), 1);
         assert!(target.received_requests().await.unwrap().is_empty());
