@@ -143,10 +143,13 @@ impl GitLabService {
     /// lower case, unless `NO_PROXY` exempts the instance's host. For each
     /// scheme the environment names no proxy for, `ALL_PROXY` aside, the
     /// macOS or Windows setting is used; on Windows its bypass list stands in
-    /// for an unset `NO_PROXY`. While `REQUEST_METHOD` is set, as it is under
-    /// CGI, no proxy is used at all, from the environment or the operating
-    /// system. All of this is read once, when this is called, and never
-    /// again.
+    /// for an unset `NO_PROXY`, each entry matched as a `NO_PROXY` rule with
+    /// a leading `*.` dropped, not as a wildcard, so an entry such as
+    /// `192.168.*` exempts no address and a range is better named in
+    /// `NO_PROXY` as a CIDR, such as `192.168.0.0/16`. While `REQUEST_METHOD`
+    /// is set, as it is under CGI, no proxy is used at all, from the
+    /// environment or the operating system. All of this is read once, when
+    /// this is called, and never again.
     ///
     /// A proxy resolves the instance's name itself, so the guard against
     /// link-local addresses and cloud providers' metadata services then sees
@@ -155,9 +158,12 @@ impl GitLabService {
     /// guarded, but what a proxied instance's name resolves to is not
     /// checked. That is why `abnegate_http`'s `MetadataResolver` advises
     /// switching proxies off, and why this is never the default: opt in only
-    /// for a proxy trusted to resolve names. A plain HTTP instance's
-    /// requests, its token among them, are forwarded to the proxy in the
-    /// clear; an HTTPS instance's are tunnelled through it.
+    /// for a proxy trusted to resolve names. The proxy itself is trusted as
+    /// the environment or the operating system names it, and is not held to
+    /// that guard: one named by a link-local or metadata address is connected
+    /// to as given. A plain HTTP instance's requests, its token among them,
+    /// are forwarded to the proxy in the clear; an HTTPS instance's are
+    /// tunnelled through it.
     ///
     /// Redirects are still followed only within the origin, the timeouts and
     /// the HTTPS requirement are kept, and so are anonymous reads under
