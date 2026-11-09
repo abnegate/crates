@@ -52,7 +52,7 @@ ort = { version = ">=2.0.0-rc.13, <2.0.0-rc.14", default-features = false, featu
 rand = "0.10"
 regex = "1"
 reqwest = "0.13"
-rmcp = { version = "3.4", default-features = false }
+rmcp = { version = "3.9", default-features = false }
 # sqlx-sqlite caps libsqlite3-sys below 0.38 and both crates set links =
 # "sqlite3", so rusqlite 0.40 cannot share a lock file with sqlx 0.9.
 rusqlite = { version = "0.39", default-features = false }
