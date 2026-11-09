@@ -2,6 +2,7 @@ use crate::gitlab::GitLabError;
 use crate::gitlab::GitLabResult;
 use crate::gitlab::Project;
 use crate::gitlab::origin::Origin;
+use crate::gitlab::service::proxying::Proxying;
 use crate::redirect::within_origin;
 use abnegate_http::RetryAfter;
 use abnegate_http::metadata::MetadataResolver;
@@ -10,6 +11,7 @@ use reqwest::Client;
 use reqwest::RequestBuilder;
 use reqwest::Response;
 use reqwest::StatusCode;
+use reqwest::dns::Resolve;
 use reqwest::header::HeaderMap;
 use reqwest::header::HeaderValue;
 use reqwest::header::RETRY_AFTER;
@@ -22,6 +24,9 @@ mod blobs;
 #[cfg(test)]
 mod fixtures;
 mod projects;
+mod proxying;
+#[cfg(test)]
+mod recording;
 mod trees;
 
 /// What this crate calls itself to GitLab.
@@ -77,12 +82,15 @@ const OVERSIZED: &str = "GitLab's answer was larger than this crate reads";
 /// A request is given 30 seconds from when it is sent to the last byte of its
 /// answer, and 10 seconds to connect. It follows a redirect only while it
 /// stays on the origin it was sent to, for at most ten hops, so the token
-/// never travels to another host. It ignores any proxy the environment
-/// names, and it never connects to a link-local address or a cloud
-/// provider's metadata service, whatever a name resolves to; loopback, LAN
-/// and private hosts stay reachable. Every JSON answer is read up to 16 MiB
-/// and never parsed in part, so a longer one is [`GitLabError::GitLabApi`],
-/// and one this crate cannot read is too, without quoting it.
+/// never travels to another host, other than to a proxy
+/// [`Self::with_system_proxy`] opts in to. It ignores any proxy the
+/// environment or the operating system names unless `with_system_proxy` opts
+/// in to it. It never connects to a link-local address or a cloud provider's
+/// metadata service, whatever a name resolves to when the client resolves it
+/// itself; loopback, LAN and private hosts stay reachable. Every JSON answer
+/// is read up to 16 MiB and never parsed in part, so a longer one is
+/// [`GitLabError::GitLabApi`], and one this crate cannot read is too, without
+/// quoting it.
 #[derive(Debug, Clone)]
 pub struct GitLabService {
     client: Client,
@@ -120,14 +128,53 @@ impl GitLabService {
         Self::addressing(Origin::configured(url, true)?)
     }
 
-    /// A service that reaches `origin` through a client built for it: one
-    /// that refuses plain HTTP unless `origin` is the plain HTTP an operator
-    /// opted in to.
+    /// A service that reaches `origin` through a client built for it.
     fn addressing(origin: Origin) -> GitLabResult<Self> {
         Ok(Self {
-            client: client(!origin.plain())?,
+            client: client(&origin, Proxying::Never)?,
             origin,
             anonymous: false,
+        })
+    }
+
+    /// Send every request through the proxy the environment names, as the
+    /// GitHub client does: `HTTPS_PROXY` for an HTTPS instance, `HTTP_PROXY`
+    /// for a plain HTTP one, or `ALL_PROXY` for either, each in upper or
+    /// lower case, unless `NO_PROXY` exempts the instance's host. For each
+    /// scheme the environment names no proxy for, `ALL_PROXY` aside, the
+    /// macOS or Windows setting is used; on Windows its bypass list stands in
+    /// for an unset `NO_PROXY`, each entry matched as a `NO_PROXY` rule with
+    /// a leading `*.` dropped, not as a wildcard, so an entry such as
+    /// `192.168.*` exempts no address and a range is better named in
+    /// `NO_PROXY` as a CIDR, such as `192.168.0.0/16`. While `REQUEST_METHOD`
+    /// is set, as it is under CGI, no proxy is used at all, from the
+    /// environment or the operating system. All of this is read once, when
+    /// this is called, and never again.
+    ///
+    /// A proxy resolves the instance's name itself, so the guard against
+    /// link-local addresses and cloud providers' metadata services then sees
+    /// only the proxy's own name. A configured URL that names such a host is
+    /// still refused, and an instance whose host `NO_PROXY` exempts is still
+    /// guarded, but what a proxied instance's name resolves to is not
+    /// checked. That is why `abnegate_http`'s `MetadataResolver` advises
+    /// switching proxies off, and why this is never the default: opt in only
+    /// for a proxy trusted to resolve names. The proxy itself is trusted as
+    /// the environment or the operating system names it, and is not held to
+    /// that guard: one named by a link-local or metadata address is connected
+    /// to as given. A plain HTTP instance's requests, its token among them,
+    /// are forwarded to the proxy in the clear; an HTTPS instance's are
+    /// tunnelled through it.
+    ///
+    /// Redirects are still followed only within the origin, the timeouts and
+    /// the HTTPS requirement are kept, and so are anonymous reads under
+    /// [`Self::with_anonymous_reads`], whichever of the two is called first.
+    /// A client that cannot be built is [`GitLabError::Http`].
+    ///
+    /// Without it, every proxy is ignored.
+    pub fn with_system_proxy(self) -> GitLabResult<Self> {
+        Ok(Self {
+            client: client(&self.origin, Proxying::System)?,
+            ..self
         })
     }
 
@@ -201,22 +248,36 @@ impl GitLabService {
     }
 }
 
-/// A client that gives up on a request that stalls, follows redirects only
-/// within the origin, ignores proxies, never connects to a link-local or
-/// metadata address a name resolves to, and refuses plain HTTP unless the
-/// operator opted in to it.
+/// A client for `origin` that gives up on a request that stalls, follows
+/// redirects only within the origin, never connects to a link-local or
+/// metadata address, whatever a name resolves to when the client resolves it
+/// itself, refuses plain HTTP unless `origin` is the plain HTTP an operator
+/// opted in to, and ignores proxies unless `proxying` honours the system's.
 ///
 /// A redirect it will not follow comes back as the answer itself.
-fn client(https_only: bool) -> GitLabResult<Client> {
-    Ok(Client::builder()
+fn client(origin: &Origin, proxying: Proxying) -> GitLabResult<Client> {
+    resolving(MetadataResolver::new(), origin, proxying)
+}
+
+/// The client [`client`] builds, resolving every name it looks up itself
+/// through `resolver`.
+fn resolving(
+    resolver: impl Resolve + 'static,
+    origin: &Origin,
+    proxying: Proxying,
+) -> GitLabResult<Client> {
+    let builder = Client::builder()
         .user_agent(USER_AGENT)
         .timeout(REQUEST_TIMEOUT)
         .connect_timeout(CONNECT_TIMEOUT)
-        .https_only(https_only)
-        .no_proxy()
-        .dns_resolver(MetadataResolver::new())
-        .redirect(within_origin())
-        .build()?)
+        .https_only(!origin.plain())
+        .dns_resolver(resolver)
+        .redirect(within_origin());
+    let builder = match proxying {
+        Proxying::Never => builder.no_proxy(),
+        Proxying::System => builder,
+    };
+    Ok(builder.build()?)
 }
 
 /// What a status that is not a success means, given the `headers` it came
@@ -274,9 +335,14 @@ mod tests {
     use crate::gitlab::service::fixtures::project;
     use crate::gitlab::service::fixtures::served;
     use crate::gitlab::service::fixtures::token;
+    use crate::gitlab::service::recording::Recording;
     use crate::redirect::MAXIMUM_REDIRECTS;
     use serde_json::Value;
     use serde_json::json;
+    use tokio::io::AsyncBufReadExt;
+    use tokio::io::BufReader;
+    use tokio::net::TcpListener;
+    use tokio::process::Command;
     use wiremock::Mock;
     use wiremock::MockServer;
     use wiremock::ResponseTemplate;
@@ -288,8 +354,96 @@ mod tests {
     /// Where the transport tests ask.
     const ROUTE: &str = "/api/v4/projects/1";
 
+    /// The variable a test re-run as a child process finds its own name in.
+    const CHILD: &str = "ABNEGATE_VCS_TEST_CHILD";
+
+    /// The variable a child process finds the instance it reads in.
+    const TARGET: &str = "ABNEGATE_VCS_TEST_TARGET";
+
+    /// The variables that name a plain HTTP instance's proxy.
+    const PLAIN_PROXIES: [&str; 2] = ["HTTP_PROXY", "http_proxy"];
+
+    /// The variables that name an HTTPS instance's proxy.
+    const SECURE_PROXIES: [&str; 2] = ["HTTPS_PROXY", "https_proxy"];
+
+    /// Every variable that names a proxy or exempts an instance from one,
+    /// none of which a child process inherits but those it is handed the
+    /// stand-in proxy in.
+    const PROXYING: [&str; 9] = [
+        "ALL_PROXY",
+        "all_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "NO_PROXY",
+        "no_proxy",
+        "REQUEST_METHOD",
+    ];
+
     fn address(server: &MockServer, route: &str) -> Url {
         Url::parse(&format!("{}{route}", server.uri())).unwrap()
+    }
+
+    fn described_route() -> String {
+        format!("{API}/projects/acme%2Fproject")
+    }
+
+    async fn describing() -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(described_route()))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({ "default_branch": "main" })),
+            )
+            .mount(&server)
+            .await;
+        server
+    }
+
+    fn qualified(test: &str) -> String {
+        let module = module_path!()
+            .split_once("::")
+            .map_or(module_path!(), |(_, rest)| rest);
+        format!("{module}::{test}")
+    }
+
+    /// The instance the parent named, when this process is the child `test`
+    /// re-ran itself as.
+    fn handed(test: &str) -> Option<String> {
+        match std::env::var(CHILD) {
+            Ok(child) if child == qualified(test) => {
+                Some(std::env::var(TARGET).expect("the parent names the instance"))
+            }
+            _ => None,
+        }
+    }
+
+    /// Re-run `test` as a child process whose environment names `proxy` in
+    /// `variables` as its only proxy and `target` as the instance it reads,
+    /// and hold it to having run and passed exactly that test.
+    async fn proxied(test: &str, variables: [&str; 2], proxy: &str, target: &str) {
+        let name = qualified(test);
+        let mut command = Command::new(std::env::current_exe().expect("the test binary"));
+        command
+            .args(["--exact", &name, "--nocapture"])
+            .env(CHILD, &name)
+            .env(TARGET, target);
+        for variable in PROXYING {
+            match variables.contains(&variable) {
+                true => command.env(variable, proxy),
+                false => command.env_remove(variable),
+            };
+        }
+
+        let output = command.output().await.expect("the child runs");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     async fn answering(answer: ResponseTemplate) -> MockServer {
@@ -671,5 +825,222 @@ mod tests {
             MAXIMUM_REDIRECTS + 1,
             "the first request and ten redirects, and no more"
         );
+    }
+
+    #[tokio::test]
+    async fn an_environment_proxy_is_ignored_by_default() {
+        const TEST: &str = "an_environment_proxy_is_ignored_by_default";
+        if let Some(target) = handed(TEST) {
+            let service = GitLabService::configured_allowing_http(&target).unwrap();
+            let branch = service
+                .get_default_branch(&project(), &token())
+                .await
+                .unwrap();
+            assert_eq!(branch.unwrap().as_str(), "main");
+            return;
+        }
+        let proxy = MockServer::start().await;
+        let target = describing().await;
+
+        proxied(TEST, PLAIN_PROXIES, &proxy.uri(), &target.uri()).await;
+
+        assert_eq!(target.received_requests().await.unwrap().len(), 1);
+        assert!(proxy.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_system_proxy_carries_every_request_once_opted_in() {
+        const TEST: &str = "the_system_proxy_carries_every_request_once_opted_in";
+        if let Some(target) = handed(TEST) {
+            let service = GitLabService::configured_allowing_http(&target)
+                .unwrap()
+                .with_anonymous_reads()
+                .with_system_proxy()
+                .unwrap();
+            let branch = service
+                .get_default_branch(&project(), &empty())
+                .await
+                .unwrap();
+            assert_eq!(branch.unwrap().as_str(), "main");
+            return;
+        }
+        let proxy = describing().await;
+        let target = MockServer::start().await;
+
+        proxied(TEST, PLAIN_PROXIES, &proxy.uri(), &target.uri()).await;
+
+        let received = proxy.received_requests().await.unwrap();
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].url.path(), described_route());
+        assert_eq!(
+            received[0].headers.get("host").unwrap(),
+            target.address().to_string().as_str(),
+            "the proxy is asked for the instance"
+        );
+        assert_eq!(
+            received[0].headers.get("user-agent").unwrap(),
+            USER_AGENT,
+            "the proxy is told who is asking"
+        );
+        assert!(
+            !received[0].headers.contains_key(PRIVATE_TOKEN),
+            "anonymous reads survive opting in"
+        );
+        assert!(target.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_https_instance_is_tunnelled_through_the_system_proxy() {
+        const TEST: &str = "an_https_instance_is_tunnelled_through_the_system_proxy";
+        if let Some(target) = handed(TEST) {
+            let service = GitLabService::configured(&target)
+                .unwrap()
+                .with_system_proxy()
+                .unwrap();
+            let failure = service
+                .get_default_branch(&project(), &token())
+                .await
+                .unwrap_err();
+            assert!(matches!(failure, GitLabError::Http(_)), "{failure:?}");
+            return;
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy = format!("http://{}", listener.local_addr().unwrap());
+        let instance = TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let tunnel = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut line = String::new();
+            BufReader::new(stream).read_line(&mut line).await.unwrap();
+            line
+        });
+
+        proxied(
+            TEST,
+            SECURE_PROXIES,
+            &proxy,
+            &format!("https://localhost:{instance}"),
+        )
+        .await;
+
+        let line = tokio::time::timeout(Duration::from_secs(5), tunnel)
+            .await
+            .expect("the proxy is asked")
+            .unwrap();
+        assert_eq!(line, format!("CONNECT localhost:{instance} HTTP/1.1\r\n"));
+    }
+
+    #[tokio::test]
+    async fn the_system_proxy_keeps_the_https_requirement() {
+        const TEST: &str = "the_system_proxy_keeps_the_https_requirement";
+        if let Some(target) = handed(TEST) {
+            let secure = target.replacen("http://", "https://", 1);
+            let service = GitLabService::configured(&secure)
+                .unwrap()
+                .with_system_proxy()
+                .unwrap();
+            let insecure = Url::parse(&format!("{target}{ROUTE}")).unwrap();
+            let failure = service.get::<Value>(insecure, &token()).await.unwrap_err();
+            assert!(matches!(failure, GitLabError::Http(_)), "{failure:?}");
+            return;
+        }
+        let proxy = MockServer::start().await;
+        let target = MockServer::start().await;
+
+        proxied(TEST, PLAIN_PROXIES, &proxy.uri(), &target.uri()).await;
+
+        assert!(proxy.received_requests().await.unwrap().is_empty());
+        assert!(target.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_system_proxy_keeps_redirects_within_the_origin() {
+        const TEST: &str = "the_system_proxy_keeps_redirects_within_the_origin";
+        if let Some(target) = handed(TEST) {
+            let service = GitLabService::configured_allowing_http(&target)
+                .unwrap()
+                .with_system_proxy()
+                .unwrap();
+            let failure = service
+                .get::<Value>(Url::parse(&format!("{target}{ROUTE}")).unwrap(), &token())
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(failure, GitLabError::Refused { status: 302 }),
+                "{failure:?}"
+            );
+            return;
+        }
+        let proxy = MockServer::start().await;
+        let target = MockServer::start().await;
+        let elsewhere = target.uri().replace("127.0.0.1", "localhost");
+        assert!(elsewhere.contains("localhost"), "{elsewhere}");
+        Mock::given(method("GET"))
+            .and(path(ROUTE))
+            .respond_with(
+                ResponseTemplate::new(302).insert_header("location", format!("{elsewhere}{ROUTE}")),
+            )
+            .mount(&proxy)
+            .await;
+
+        proxied(TEST, PLAIN_PROXIES, &proxy.uri(), &target.uri()).await;
+
+        assert_eq!(proxy.received_requests().await.unwrap().len(), 1);
+        assert!(target.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn every_name_is_resolved_through_the_resolver_the_client_is_given() {
+        let server = describing().await;
+        let named = server.uri().replace("127.0.0.1", "localhost");
+        assert!(named.contains("localhost"), "{named}");
+        let recording = Recording::default();
+        let origin = Origin::configured(&named, true).unwrap();
+        let service = GitLabService {
+            client: resolving(recording.clone(), &origin, Proxying::Never).unwrap(),
+            origin,
+            anonymous: false,
+        };
+
+        let branch = service
+            .get_default_branch(&project(), &token())
+            .await
+            .unwrap();
+
+        assert_eq!(branch.unwrap().as_str(), "main");
+        assert_eq!(recording.names(), ["localhost"]);
+    }
+
+    #[test]
+    fn opting_in_to_the_system_proxy_keeps_the_origin_and_anonymous_reads() {
+        let default = GitLabService::new().unwrap().with_system_proxy().unwrap();
+        assert_eq!(default.origin.as_str(), "https://gitlab.com/api/v4");
+        assert!(!default.origin.plain());
+        assert!(!default.anonymous);
+
+        let secure = GitLabService::configured("https://example.com/gitlab")
+            .unwrap()
+            .with_system_proxy()
+            .unwrap();
+        assert_eq!(secure.origin.as_str(), "https://example.com/gitlab/api/v4");
+        assert!(!secure.origin.plain());
+
+        let plain = GitLabService::configured_allowing_http("http://gitlab.lan").unwrap();
+        for service in [
+            plain
+                .clone()
+                .with_anonymous_reads()
+                .with_system_proxy()
+                .unwrap(),
+            plain.with_system_proxy().unwrap().with_anonymous_reads(),
+        ] {
+            assert_eq!(service.origin.as_str(), "http://gitlab.lan/api/v4");
+            assert!(service.origin.plain());
+            assert!(service.anonymous);
+        }
     }
 }

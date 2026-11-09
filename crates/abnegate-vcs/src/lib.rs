@@ -59,12 +59,12 @@
 //!   installation's token until it nears expiry, and
 //!   `pull_request::ApplicationService`, which registers an App from its
 //!   manifest and lists its installations and their repositories.
-//! - `gitlab`: `gitlab::GitLabService`, which reads a GitLab project's
-//!   default branch, its tree at a branch, tag or commit with
-//!   `fetch_tree_at`, beneath a [`RepositoryPath`] when one is given, and
-//!   its blobs, from
-//!   gitlab.com or a self-hosted instance, anonymously or with a token, and
-//!   never from a link-local or cloud metadata address.
+//! - `gitlab`: `gitlab::GitLabService`, which reads a GitLab project's default
+//!   branch, its tree at a branch, tag or commit with `fetch_tree_at`, beneath
+//!   a [`RepositoryPath`] when one is given, and its blobs, from gitlab.com or
+//!   a self-hosted instance, anonymously or with a token, and never from a
+//!   link-local or cloud metadata address unless `with_system_proxy` hands
+//!   name resolution to a proxy.
 //! - `testing`: `RepositoryUrl::local`,
 //!   `pull_request::PullRequestService::standing_in_for` and, with
 //!   `github-app`, `pull_request::InstallationIssuer::standing_in_for` and

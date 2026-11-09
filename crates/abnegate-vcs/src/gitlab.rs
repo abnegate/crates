@@ -20,10 +20,14 @@
 //! configures, over HTTPS unless plain HTTP was opted in to for a loopback or
 //! LAN host. It never reaches a link-local address or a cloud provider's
 //! metadata service, whether the configured URL names one or a name resolves
-//! to one. It follows a redirect only within the configured origin, and it
-//! takes nothing but the query from a page's link to the next, asking for
-//! that page where it asked for the one before, so the token never travels
-//! anywhere else.
+//! to one, unless [`GitLabService::with_system_proxy`] hands name resolution
+//! to a proxy. It ignores every proxy unless `with_system_proxy` opts in to
+//! the one the environment or the operating system names, which then resolves
+//! the instance's name itself, so only the configured URL is checked. It
+//! follows a redirect only within the configured origin, and it takes nothing
+//! but the query from a page's link to the next, asking for that page where it
+//! asked for the one before, so the token never travels anywhere else, other
+//! than to a proxy `with_system_proxy` opts in to.
 
 mod error;
 mod listed_entry;
