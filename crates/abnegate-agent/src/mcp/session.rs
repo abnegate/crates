@@ -13,6 +13,7 @@ use rmcp::model::ClientConfig;
 use rmcp::model::ProtocolVersion;
 use rmcp::model::Tool as RemoteTool;
 use rmcp::service::RunningService;
+use rmcp::transport::async_rw::AsyncRwTransport;
 use serde_json::json;
 use tokio::io::AsyncReadExt;
 use tokio::process::ChildStderr;
@@ -125,8 +126,10 @@ impl McpSession {
             });
         };
 
+        let transport =
+            AsyncRwTransport::new_client(stdout, stdin).with_max_line_length(usize::MAX);
         let client = Self::configuration()
-            .serve((stdout, stdin))
+            .serve(transport)
             .await
             .map_err(|error| McpError::Handshake {
                 server: name.to_string(),
@@ -445,6 +448,48 @@ done"#;
             .peer_info()
             .map(|info| info.protocol_version.to_string());
         assert_eq!(negotiated.as_deref(), Some("2025-11-25"));
+    }
+
+    /// A stdio server with one tool, `dump`, whose every call is answered by
+    /// a single message of the size `$1` holds, in bytes.
+    fn dumping(path: &Path) -> McpServer {
+        const SCRIPT: &str = r#"while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"dumping","version":"1"}}}\n' "$id" ;;
+    *'"method":"tools/list"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"dump","inputSchema":{"type":"object"}}]}}\n' "$id" ;;
+    *'"method":"tools/call"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"' "$id"
+      head -c "$(cat "$1")" /dev/zero | tr '\0' x
+      printf '"}]}}\n' ;;
+  esac
+done"#;
+        scripted(SCRIPT, path)
+    }
+
+    /// rmcp 3.6 began dropping any stdio message past 16 MiB and leaving the
+    /// call that awaited it to its command timeout, where a server's reply of
+    /// any size used to arrive and be cut down to what a model is shown.
+    #[tokio::test]
+    async fn a_reply_past_sixteen_mebibytes_still_arrives() {
+        const SIZE: usize = 17 * 1024 * 1024;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("size");
+        std::fs::write(&path, SIZE.to_string()).unwrap();
+        let session =
+            McpSession::connect_with_timeout("dumping", &dumping(&path), &Proxy::default(), LIMIT)
+                .await
+                .expect("the handshake completes");
+
+        let result = tokio::time::timeout(LIMIT, session.call(CallToolRequestParams::new("dump")))
+            .await
+            .expect("the reply arrives")
+            .expect("the call succeeds");
+
+        let text = result.content[0].as_text().map(|text| text.text.len());
+        assert_eq!(text, Some(SIZE));
     }
 
     /// The state `ps` gives `pid`, `Z` for a zombie, or `None` once it has
