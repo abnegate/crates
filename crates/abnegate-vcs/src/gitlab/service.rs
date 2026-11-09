@@ -128,12 +128,10 @@ impl GitLabService {
         Self::addressing(Origin::configured(url, true)?)
     }
 
-    /// A service that reaches `origin` through a client built for it: one
-    /// that refuses plain HTTP unless `origin` is the plain HTTP an operator
-    /// opted in to.
+    /// A service that reaches `origin` through a client built for it.
     fn addressing(origin: Origin) -> GitLabResult<Self> {
         Ok(Self {
-            client: client(!origin.plain(), Proxying::Never)?,
+            client: client(&origin, Proxying::Never)?,
             origin,
             anonymous: false,
         })
@@ -169,7 +167,7 @@ impl GitLabService {
     /// Without it, every proxy is ignored.
     pub fn with_system_proxy(self) -> GitLabResult<Self> {
         Ok(Self {
-            client: client(!self.origin.plain(), Proxying::System)?,
+            client: client(&self.origin, Proxying::System)?,
             ..self
         })
     }
@@ -244,29 +242,29 @@ impl GitLabService {
     }
 }
 
-/// A client that gives up on a request that stalls, follows redirects only
-/// within the origin, never connects to a link-local or metadata address,
-/// whatever a name resolves to when the client resolves it itself, refuses
-/// plain HTTP unless the operator opted in to it, and ignores proxies unless
-/// `proxying` honours the system's.
+/// A client for `origin` that gives up on a request that stalls, follows
+/// redirects only within the origin, never connects to a link-local or
+/// metadata address, whatever a name resolves to when the client resolves it
+/// itself, refuses plain HTTP unless `origin` is the plain HTTP an operator
+/// opted in to, and ignores proxies unless `proxying` honours the system's.
 ///
 /// A redirect it will not follow comes back as the answer itself.
-fn client(https_only: bool, proxying: Proxying) -> GitLabResult<Client> {
-    resolving(MetadataResolver::new(), https_only, proxying)
+fn client(origin: &Origin, proxying: Proxying) -> GitLabResult<Client> {
+    resolving(MetadataResolver::new(), origin, proxying)
 }
 
 /// The client [`client`] builds, resolving every name it looks up itself
 /// through `resolver`.
 fn resolving(
     resolver: impl Resolve + 'static,
-    https_only: bool,
+    origin: &Origin,
     proxying: Proxying,
 ) -> GitLabResult<Client> {
     let builder = Client::builder()
         .user_agent(USER_AGENT)
         .timeout(REQUEST_TIMEOUT)
         .connect_timeout(CONNECT_TIMEOUT)
-        .https_only(https_only)
+        .https_only(!origin.plain())
         .dns_resolver(resolver)
         .redirect(within_origin());
     let builder = match proxying {
@@ -995,9 +993,10 @@ mod tests {
         let named = server.uri().replace("127.0.0.1", "localhost");
         assert!(named.contains("localhost"), "{named}");
         let recording = Recording::default();
+        let origin = Origin::configured(&named, true).unwrap();
         let service = GitLabService {
-            client: resolving(recording.clone(), false, Proxying::Never).unwrap(),
-            origin: Origin::configured(&named, true).unwrap(),
+            client: resolving(recording.clone(), &origin, Proxying::Never).unwrap(),
+            origin,
             anonymous: false,
         };
 
