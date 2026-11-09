@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.13](https://github.com/abnegate/crates/compare/abnegate-vcs/v0.1.12...abnegate-vcs/v0.1.13) - 2026-11-09
+
+### Added
+
+- *(vcs)* let a gitlab client honour the system proxy when asked ([#76](https://github.com/abnegate/crates/pull/76))
+
 ## [0.1.12](https://github.com/abnegate/crates/compare/abnegate-vcs/v0.1.11...abnegate-vcs/v0.1.12) - 2026-11-07
 
 ### Added
