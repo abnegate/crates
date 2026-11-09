@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/abnegate/crates/compare/abnegate-comfy/v0.2.4...abnegate-comfy/v0.3.0) - 2026-11-09
+
+### Fixed
+
+- *(deps)* [**breaking**] move rmcp past its advisories and drop the rusqlite feature ([#78](https://github.com/abnegate/crates/pull/78))
+
 ## [0.2.4](https://github.com/abnegate/crates/compare/abnegate-comfy/v0.2.3...abnegate-comfy/v0.2.4) - 2026-11-07
 
 ### Added

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/abnegate/crates/compare/abnegate-vcs/v0.1.13...abnegate-vcs/v0.2.0) - 2026-11-09
+
+### Fixed
+
+- *(deps)* [**breaking**] move rmcp past its advisories and drop the rusqlite feature ([#78](https://github.com/abnegate/crates/pull/78))
+
 ## [0.1.13](https://github.com/abnegate/crates/compare/abnegate-vcs/v0.1.12...abnegate-vcs/v0.1.13) - 2026-11-09
 
 ### Added
