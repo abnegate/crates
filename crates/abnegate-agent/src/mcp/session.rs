@@ -9,8 +9,11 @@ use rmcp::RoleClient;
 use rmcp::ServiceExt;
 use rmcp::model::CallToolRequestParams;
 use rmcp::model::CallToolResult;
+use rmcp::model::ClientConfig;
+use rmcp::model::ProtocolVersion;
 use rmcp::model::Tool as RemoteTool;
 use rmcp::service::RunningService;
+use rmcp::transport::async_rw::AsyncRwTransport;
 use serde_json::json;
 use tokio::io::AsyncReadExt;
 use tokio::process::ChildStderr;
@@ -30,6 +33,9 @@ const MAXIMUM_LOGGED_STDERR_BYTES: usize = 64 * 1024;
 
 const STDERR_BUFFER_BYTES: usize = 4 * 1024;
 
+/// A client running this crate's [`McpSession::configuration`].
+pub(super) type Client = RunningService<RoleClient, ClientConfig>;
+
 /// One live stdio MCP session.
 ///
 /// The server leads a process group of its own, and dropping the session
@@ -40,22 +46,24 @@ const STDERR_BUFFER_BYTES: usize = 4 * 1024;
 pub(super) struct McpSession {
     pub(super) name: String,
     pub(super) remote_tools: Vec<RemoteTool>,
-    client: Mutex<RunningService<RoleClient, ()>>,
+    client: Mutex<Client>,
     process: Option<ServerProcess>,
 }
 
 impl McpSession {
-    pub(super) fn new(
-        name: String,
-        remote_tools: Vec<RemoteTool>,
-        client: RunningService<RoleClient, ()>,
-    ) -> Self {
+    pub(super) fn new(name: String, remote_tools: Vec<RemoteTool>, client: Client) -> Self {
         Self {
             name,
             remote_tools,
             client: Mutex::new(client),
             process: None,
         }
+    }
+
+    /// What this client tells every server it speaks: rmcp's own client,
+    /// at the newest revision a server can still agree to over `initialize`.
+    pub(super) fn configuration() -> ClientConfig {
+        ClientConfig::default().with_protocol_version(ProtocolVersion::LATEST_WITH_INITIALIZE)
     }
 
     /// Start the command server `server` under `name`, routed through
@@ -118,13 +126,15 @@ impl McpSession {
             });
         };
 
-        let client =
-            ().serve((stdout, stdin))
-                .await
-                .map_err(|error| McpError::Handshake {
-                    server: name.to_string(),
-                    message: error.to_string(),
-                })?;
+        let transport =
+            AsyncRwTransport::new_client(stdout, stdin).with_max_line_length(usize::MAX);
+        let client = Self::configuration()
+            .serve(transport)
+            .await
+            .map_err(|error| McpError::Handshake {
+                server: name.to_string(),
+                message: error.to_string(),
+            })?;
 
         Self::listed(name, &server, client, Some(process)).await
     }
@@ -135,7 +145,7 @@ impl McpSession {
     pub(super) async fn listed(
         name: &str,
         server: &McpServer,
-        client: RunningService<RoleClient, ()>,
+        client: Client,
         process: Option<ServerProcess>,
     ) -> Result<Self, McpError> {
         let remote_tools = client
@@ -367,6 +377,19 @@ mod tests {
         assert!(gone, "the helper {pid} outlived its server");
     }
 
+    /// A server that runs `script` in `sh`, given `path` as `$1`.
+    fn scripted(script: &str, path: &Path) -> McpServer {
+        McpServer::command(
+            "sh",
+            [
+                "-c".to_string(),
+                script.to_string(),
+                "sh".to_string(),
+                path.to_string_lossy().into_owned(),
+            ],
+        )
+    }
+
     /// A stdio server that answers the handshake and an empty tool listing,
     /// then leaves a helper in its group and exits, having written its own
     /// pid and the helper's to the path it is given.
@@ -383,15 +406,90 @@ mod tests {
       exit 0 ;;
   esac
 done"#;
-        McpServer::command(
-            "sh",
-            [
-                "-c".to_string(),
-                SCRIPT.to_string(),
-                "sh".to_string(),
-                path.to_string_lossy().into_owned(),
-            ],
-        )
+        scripted(SCRIPT, path)
+    }
+
+    /// A stdio server that agrees to whatever revision its `initialize`
+    /// offers, as many servers do, having written that revision to the path
+    /// it is given, and then lists no tools.
+    fn echoing(path: &Path) -> McpServer {
+        const SCRIPT: &str = r#"while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      version=$(printf '%s' "$line" | sed -n 's/.*"protocolVersion":"\([^"]*\)".*/\1/p')
+      printf '%s' "$version" > "$1.partial" && mv "$1.partial" "$1"
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"%s","capabilities":{"tools":{}},"serverInfo":{"name":"echoing","version":"1"}}}\n' "$id" "$version" ;;
+    *'"method":"tools/list"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[]}}\n' "$id" ;;
+  esac
+done"#;
+        scripted(SCRIPT, path)
+    }
+
+    /// rmcp's default revision became one with no `initialize` handshake, so
+    /// a server that agreed to what it was offered left the session speaking
+    /// per-request metadata to a server that knows only the handshake.
+    #[tokio::test]
+    async fn a_server_is_offered_a_revision_that_has_a_handshake() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("version");
+
+        let session =
+            McpSession::connect_with_timeout("echoing", &echoing(&path), &Proxy::default(), LIMIT)
+                .await
+                .expect("the handshake completes");
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "2025-11-25");
+        let negotiated = session
+            .client
+            .lock()
+            .await
+            .peer_info()
+            .map(|info| info.protocol_version.to_string());
+        assert_eq!(negotiated.as_deref(), Some("2025-11-25"));
+    }
+
+    /// A stdio server with one tool, `dump`, whose every call is answered by
+    /// a single message of the size `$1` holds, in bytes.
+    fn dumping(path: &Path) -> McpServer {
+        const SCRIPT: &str = r#"while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"dumping","version":"1"}}}\n' "$id" ;;
+    *'"method":"tools/list"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"dump","inputSchema":{"type":"object"}}]}}\n' "$id" ;;
+    *'"method":"tools/call"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"' "$id"
+      head -c "$(cat "$1")" /dev/zero | tr '\0' x
+      printf '"}]}}\n' ;;
+  esac
+done"#;
+        scripted(SCRIPT, path)
+    }
+
+    /// rmcp 3.6 began dropping any stdio message past 16 MiB and leaving the
+    /// call that awaited it to its command timeout, where a server's reply of
+    /// any size used to arrive and be cut down to what a model is shown.
+    #[tokio::test]
+    async fn a_reply_past_sixteen_mebibytes_still_arrives() {
+        const SIZE: usize = 17 * 1024 * 1024;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("size");
+        std::fs::write(&path, SIZE.to_string()).unwrap();
+        let session =
+            McpSession::connect_with_timeout("dumping", &dumping(&path), &Proxy::default(), LIMIT)
+                .await
+                .expect("the handshake completes");
+
+        let result = tokio::time::timeout(LIMIT, session.call(CallToolRequestParams::new("dump")))
+            .await
+            .expect("the reply arrives")
+            .expect("the call succeeds");
+
+        let text = result.content[0].as_text().map(|text| text.text.len());
+        assert_eq!(text, Some(SIZE));
     }
 
     /// The state `ps` gives `pid`, `Z` for a zombie, or `None` once it has

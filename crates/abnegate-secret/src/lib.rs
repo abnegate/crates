@@ -47,12 +47,12 @@
 //! - `sqlx`: `Encode`, `Decode` and `Type` for [`SecretValue`] over every
 //!   database that stores a `String`, so it reads and writes as the text column
 //!   it is stored in.
-//! - `rusqlite`: `ToSql` and `FromSql` for [`SecretValue`], the same for SQLite.
 //!
-//! Neither database feature chooses a driver, runtime, TLS stack or SQLite
-//! build. Enable those on your own `sqlx` or `rusqlite` dependency
-//! (`sqlx/postgres` and `sqlx/runtime-tokio`, `rusqlite/bundled`, and so on);
-//! Cargo unifies them with the bare dependency this crate declares.
+//! The `sqlx` feature implements sqlx 0.9's traits and chooses no driver,
+//! runtime or TLS stack. Enable those on your own `sqlx` 0.9 dependency
+//! (`sqlx/postgres`, `sqlx/runtime-tokio` and so on); Cargo unifies them with
+//! the bare dependency this crate declares. Another sqlx minor is a separate
+//! crate and does not see these implementations.
 
 mod conceal;
 mod database;

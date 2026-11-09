@@ -209,6 +209,7 @@ mod tests {
     use rmcp::model::InitializeResult;
     use rmcp::model::JsonObject;
     use rmcp::model::ListToolsResult;
+    use rmcp::model::ProtocolVersion;
     use rmcp::model::ServerJsonRpcMessage;
     use rmcp::model::Tool as RemoteTool;
     use rmcp::schemars;
@@ -268,7 +269,10 @@ mod tests {
             let _ = server.waiting().await;
         });
 
-        let client = ().serve((client_from_server, client_to_server)).await.expect("client serve");
+        let client = McpSession::configuration()
+            .serve((client_from_server, client_to_server))
+            .await
+            .expect("client serve");
 
         let remote_tools = client.list_all_tools().await.expect("list tools");
         assert!(
@@ -335,7 +339,9 @@ mod tests {
                 let called = matches!(request.request, ClientRequest::CallToolRequest(_));
                 let reply = match request.request {
                     ClientRequest::InitializeRequest(_) => ServerJsonRpcMessage::response(
-                        InitializeResult::default().into(),
+                        InitializeResult::default()
+                            .with_protocol_version(ProtocolVersion::LATEST_WITH_INITIALIZE)
+                            .into(),
                         request.id,
                     ),
                     ClientRequest::ListToolsRequest(_) => ServerJsonRpcMessage::response(
@@ -363,7 +369,10 @@ mod tests {
             }
         });
 
-        let client = ().serve(client_stream).await.expect("client serve");
+        let client = McpSession::configuration()
+            .serve(client_stream)
+            .await
+            .expect("client serve");
         let remote_tools = client.list_all_tools().await.expect("list tools");
         let hub = McpHub {
             sessions: vec![Arc::new(McpSession::new(
@@ -426,7 +435,10 @@ mod tests {
             let _ = server.waiting().await;
         });
 
-        let client = ().serve((client_from_server, client_to_server)).await.expect("client serve");
+        let client = McpSession::configuration()
+            .serve((client_from_server, client_to_server))
+            .await
+            .expect("client serve");
         let remote_tools = client.list_all_tools().await.expect("list tools");
         let hub = McpHub {
             sessions: vec![Arc::new(McpSession::new(
@@ -508,7 +520,10 @@ mod tests {
             let _ = server.waiting().await;
         });
 
-        let client = ().serve((client_from_server, client_to_server)).await.expect("client serve");
+        let client = McpSession::configuration()
+            .serve((client_from_server, client_to_server))
+            .await
+            .expect("client serve");
         let remote_tools = client.list_all_tools().await.expect("list tools");
         assert!(
             remote_tools.iter().any(|tool| tool.name == "write_file"),
@@ -606,7 +621,10 @@ mod tests {
                 .expect("server serve");
             let _ = server.waiting().await;
         });
-        let client = ().serve((client_from_server, client_to_server)).await.expect("client serve");
+        let client = McpSession::configuration()
+            .serve((client_from_server, client_to_server))
+            .await
+            .expect("client serve");
         let hub = McpHub {
             sessions: vec![Arc::new(McpSession::new(
                 "quiet".to_string(),
@@ -662,7 +680,10 @@ mod tests {
                 .expect("server serve");
             let _ = server.waiting().await;
         });
-        let client = ().serve((client_from_server, client_to_server)).await.expect("client serve");
+        let client = McpSession::configuration()
+            .serve((client_from_server, client_to_server))
+            .await
+            .expect("client serve");
         let session = McpSession::listed("pair", server, client, None)
             .await
             .expect("listed");
