@@ -1,6 +1,7 @@
 //! Optional proxy routing for HTTP clients launched by tools.
 
 use std::env;
+use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::fmt;
 
@@ -59,6 +60,19 @@ impl Proxy {
     {
         self.bypass = hosts.into_iter().map(Into::into).collect();
         self
+    }
+
+    /// The URL commands are routed through, or `None` when nothing is routed.
+    /// It may carry the proxy's credentials, which is why `Debug` never
+    /// prints it.
+    pub fn url(&self) -> Option<&OsStr> {
+        self.url.as_deref()
+    }
+
+    /// The hosts reached directly rather than through the proxy, each in
+    /// `NO_PROXY` form.
+    pub fn bypass(&self) -> &[String] {
+        &self.bypass
     }
 
     /// Read [`PROXY_URL_VARIABLE`] and [`PROXY_BYPASS_VARIABLE`]. An absent or
@@ -335,7 +349,49 @@ mod tests {
             let proxy = Proxy::from_settings(url, Some("ollama".to_string()));
 
             assert!(proxy.url.is_none());
+            assert!(
+                proxy.url().is_none(),
+                "an absent or empty URL must read back as none"
+            );
         }
+    }
+
+    #[test]
+    fn the_url_and_bypass_read_back_as_configured() {
+        let proxy = Proxy::new("http://proxy:3128").with_bypass(["ollama", ".svc"]);
+
+        assert_eq!(
+            proxy.url(),
+            Some(OsStr::new("http://proxy:3128")),
+            "the URL must read back as configured"
+        );
+        assert_eq!(
+            proxy.bypass(),
+            ["ollama", ".svc"],
+            "the bypass must read back as configured"
+        );
+    }
+
+    #[test]
+    fn a_new_proxy_bypasses_only_the_default() {
+        let proxy = Proxy::new("http://proxy:3128");
+
+        assert_eq!(
+            proxy.bypass(),
+            DEFAULT_BYPASS,
+            "a new proxy must bypass only the default hosts"
+        );
+    }
+
+    #[test]
+    fn a_default_proxy_has_no_url_and_no_bypass() {
+        let proxy = Proxy::default();
+
+        assert!(proxy.url().is_none(), "a default proxy must have no URL");
+        assert!(
+            proxy.bypass().is_empty(),
+            "a default proxy must bypass nothing"
+        );
     }
 
     #[tokio::test]
