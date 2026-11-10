@@ -8,10 +8,11 @@
 //! answer for another's tools or for a built-in. That is the name a CLI gives
 //! it, `mcp__server__tool`, without the `mcp__`, so one `tools` list scopes
 //! both alike (see [`qualified_tool_name`]). A server that fails to start or
-//! to answer in time is logged and skipped, and so is a
-//! [disabled](McpServer::disabled) one, one that is not
+//! to answer in time is logged and recorded as an [`McpOutcome`], and so is
+//! a [disabled](McpServer::disabled) one, one that is not
 //! [valid](McpServer::valid), or one reached by URL, which only a CLI can
-//! attach. One a CLI would refuse because it is not
+//! attach. [`McpHub::reconnect`] and [`McpHub::remove`] then change one
+//! server without touching the others. One a CLI would refuse because it is not
 //! [nameable](McpServer::nameable) still starts, with a warning, its name
 //! and the tools it names sanitized as a CLI names them.
 //!
@@ -83,6 +84,7 @@ mod format;
 mod guidance;
 mod hub;
 mod name;
+mod outcome;
 #[cfg(test)]
 mod recorder;
 mod register;
@@ -107,6 +109,7 @@ pub use name::SEPARATOR;
 pub use name::qualified_tool_name;
 pub(crate) use name::server_prefix;
 pub use name::unique_qualified_tool_name;
+pub use outcome::McpOutcome;
 pub use register::register;
 pub use register::with_defaults_and_mcp;
 pub use register::with_defaults_and_mcp_through;
