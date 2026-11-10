@@ -86,7 +86,8 @@ pub struct McpServer {
     /// Where an HTTP or SSE server listens.
     ///
     /// Each `${VAR}` or `${VAR:-default}` reference in it is resolved when a
-    /// run attaches the server, against the server's own
+    /// run, or the MCP hub in `abnegate-agent`, attaches the server, as
+    /// [`McpServer::endpoint`] resolves it, against the server's own
     /// [`secrets`](McpServer::secrets) and never against an environment:
     /// a variable handed to the child under its own name, as
     /// [`CliSettings::with_environment`](crate::CliSettings::with_environment),
@@ -407,10 +408,11 @@ impl McpServer {
     /// [`CliProvider`](crate::CliProvider) reads the agent's sign-in
     /// variables as set but empty, and Claude Code its own OAuth tokens.
     ///
-    /// The URL and headers are left alone, since only a CLI's run attaches a
-    /// remote server, resolving both against its
-    /// [`secrets`](McpServer::secrets), and so is the working directory,
-    /// which neither CLI expands.
+    /// The URL and headers are left alone, since a remote server resolves
+    /// both against its [`secrets`](McpServer::secrets) alone, through
+    /// [`McpServer::endpoint`], whether a CLI's run or the MCP hub in
+    /// `abnegate-agent` attaches it, and so is the working directory, which
+    /// neither CLI expands.
     pub fn expanded(&self, lookup: &dyn Fn(&str) -> Option<String>) -> Self {
         let lookup = |variable: &str| {
             self.secrets
@@ -550,8 +552,8 @@ impl McpServer {
         if !nameable {
             return Some(Refusal::Unnameable);
         }
-        self.url.as_ref()?;
-        self.reached(&|_| None).err()
+        let url = self.url.as_deref()?;
+        self.reached(url, &|_| None).err()
     }
 
     /// Where this server is reached, with every reference in its URL and
@@ -573,14 +575,15 @@ impl McpServer {
     /// `${`: a server a CLI would refuse to attach for the same reason. Its
     /// name is not checked, and an `sse` server has an endpoint too.
     pub fn endpoint_with(&self, lookup: &dyn Fn(&str) -> Option<String>) -> Option<McpEndpoint> {
-        if !self.valid() || self.url.is_none() {
-            return None;
-        }
-        self.reached(lookup).ok()
+        let url = self.url.as_deref().filter(|_| self.valid())?;
+        self.reached(url, lookup).ok()
     }
 
-    fn reached(&self, lookup: &dyn Fn(&str) -> Option<String>) -> Result<McpEndpoint, Refusal> {
-        let url = self.url.as_deref().unwrap_or_default();
+    fn reached(
+        &self,
+        url: &str,
+        lookup: &dyn Fn(&str) -> Option<String>,
+    ) -> Result<McpEndpoint, Refusal> {
         if self.headers.keys().any(|header| header.contains(OPENING)) {
             return Err(Refusal::HeaderName);
         }
@@ -2083,19 +2086,24 @@ mod tests {
 
     #[test]
     fn an_endpoints_debug_never_prints_a_header_secret() {
-        let endpoint = McpServer::remote("https://${USER}@example.com/mcp?key=${KEY}")
-            .with_header("Authorization", "Bearer ${TOKEN}")
-            .with_secret("TOKEN", "header-secret-7f3a")
-            .with_secret("KEY", "abc123")
-            .with_secret("USER", "admin:hunter2")
-            .endpoint()
-            .expect("every reference is bound");
-        let debug = format!("{endpoint:?}");
-        for secret in ["header-secret-7f3a", "abc123", "admin", "hunter2"] {
-            assert!(!debug.contains(secret), "{secret} leaked in {debug}");
+        for url in [
+            "https://${USER}@example.com/mcp?key=${KEY}",
+            "https://example.com/${KEY}/mcp",
+        ] {
+            let endpoint = McpServer::remote(url)
+                .with_header("Authorization", "Bearer ${TOKEN}")
+                .with_secret("TOKEN", "header-secret-7f3a")
+                .with_secret("KEY", "abc123")
+                .with_secret("USER", "admin:hunter2")
+                .endpoint()
+                .expect("every reference is bound");
+            let debug = format!("{endpoint:?}");
+            for secret in ["header-secret-7f3a", "abc123", "admin", "hunter2"] {
+                assert!(!debug.contains(secret), "{secret} leaked in {debug}");
+            }
+            assert!(debug.contains("Authorization"), "{debug}");
+            assert!(debug.contains("example.com/[REDACTED]"), "{debug}");
         }
-        assert!(debug.contains("Authorization"), "{debug}");
-        assert!(debug.contains("example.com/mcp"), "{debug}");
     }
 
     /// A server that could not attach is never rendered, and one rendered

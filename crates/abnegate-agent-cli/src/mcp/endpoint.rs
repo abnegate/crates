@@ -8,19 +8,23 @@ use abnegate_secret::redact;
 const SCHEME_SEPARATOR: &str = "://";
 const USERINFO_SEPARATOR: char = '@';
 const AUTHORITY_END: [char; 4] = ['/', '\\', '?', '#'];
-const PATH_END: [char; 2] = ['?', '#'];
 
 /// Where a remote [`McpServer`](crate::McpServer) is reached, with every
 /// reference in its URL and headers resolved: what
 /// [`McpServer::endpoint`](crate::McpServer::endpoint) and
 /// [`McpServer::endpoint_with`](crate::McpServer::endpoint_with) give.
 ///
-/// `Debug` never prints a header value, nor the URL's user-info, query or
-/// fragment, any of which may carry a credential.
+/// `Debug` never prints a header value, nor anything of the URL but its
+/// scheme, host and port, since its user-info, path, query and fragment may
+/// each carry a credential.
 #[derive(Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct McpEndpoint {
     /// The resolved URL the server is reached at.
+    ///
+    /// It holds every secret its references resolved to, so it must never be
+    /// logged or shown: print the endpoint's `Debug`, which redacts it,
+    /// instead.
     pub url: String,
     /// Each header the server is sent, by name, with its resolved value.
     pub headers: BTreeMap<String, SecretValue>,
@@ -36,8 +40,9 @@ impl fmt::Debug for McpEndpoint {
     }
 }
 
-/// `url` with its user-info, query and fragment each replaced by
-/// [`REDACTED`], and anything credential-shaped left in it redacted too.
+/// `url`'s scheme, host and port, with its user-info replaced by
+/// [`REDACTED`], and everything after its authority by one [`REDACTED`]
+/// behind the delimiter that starts it.
 fn shown(url: &str) -> String {
     let (scheme, rest) = url.split_once(SCHEME_SEPARATOR).unwrap_or(("", url));
     let authority_length = rest.find(AUTHORITY_END).unwrap_or(rest.len());
@@ -46,16 +51,13 @@ fn shown(url: &str) -> String {
         || authority.to_string(),
         |(_, host)| format!("{REDACTED}{USERINFO_SEPARATOR}{host}"),
     );
-    let path_length = rest.find(PATH_END).unwrap_or(rest.len());
-    let (path, tail) = rest.split_at(path_length);
     let mut shown = String::with_capacity(url.len());
     if url.contains(SCHEME_SEPARATOR) {
         shown.push_str(scheme);
         shown.push_str(SCHEME_SEPARATOR);
     }
     shown.push_str(&host);
-    shown.push_str(path);
-    if let Some(delimiter) = tail.chars().next() {
+    if let Some(delimiter) = rest.chars().next() {
         shown.push(delimiter);
         shown.push_str(REDACTED);
     }
@@ -67,27 +69,32 @@ mod tests {
     use super::shown;
 
     #[test]
-    fn a_url_is_shown_without_its_userinfo_query_or_fragment() {
+    fn a_url_is_shown_as_its_scheme_host_and_port_alone() {
         for (url, expected) in [
-            ("https://example.com/mcp", "https://example.com/mcp"),
+            ("https://example.com", "https://example.com"),
+            ("https://example.com/mcp", "https://example.com/[REDACTED]"),
+            (
+                "https://example.com:8443/abc123/mcp",
+                "https://example.com:8443/[REDACTED]",
+            ),
             (
                 "https://user:pass@example.com/mcp",
-                "https://[REDACTED]@example.com/mcp",
+                "https://[REDACTED]@example.com/[REDACTED]",
             ),
             (
                 "https://example.com/mcp?key=abc123",
-                "https://example.com/mcp?[REDACTED]",
+                "https://example.com/[REDACTED]",
             ),
             (
-                "https://example.com/mcp#abc123",
-                "https://example.com/mcp#[REDACTED]",
+                "https://example.com#abc123",
+                "https://example.com#[REDACTED]",
             ),
             ("https://a@b@example.com", "https://[REDACTED]@example.com"),
             (
                 "https://example.com?key=x",
                 "https://example.com?[REDACTED]",
             ),
-            ("example.com/mcp", "example.com/mcp"),
+            ("example.com/mcp", "example.com/[REDACTED]"),
         ] {
             assert_eq!(shown(url), expected, "{url}");
         }
