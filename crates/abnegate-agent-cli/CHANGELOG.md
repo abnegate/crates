@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/abnegate/crates/compare/abnegate-agent-cli/v0.2.0...abnegate-agent-cli/v0.2.1) - 2026-11-10
+
+### Added
+
+- *(agent)* connect streamable-http mcp servers and report each server's outcome ([#81](https://github.com/abnegate/crates/pull/81))
+
 ## [0.2.0](https://github.com/abnegate/crates/compare/abnegate-agent-cli/v0.1.14...abnegate-agent-cli/v0.2.0) - 2026-11-09
 
 ### Fixed
