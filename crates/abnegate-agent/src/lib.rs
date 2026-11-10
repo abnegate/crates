@@ -81,9 +81,9 @@
 //!
 //! # Features
 //!
-//! - `mcp`: an MCP client that launches stdio servers and adds their tools to
-//!   a [`ToolRegistry`], configured from the environment under an
-//!   application's own prefix.
+//! - `mcp`: an MCP client that launches stdio servers and connects to
+//!   streamable HTTP ones, and adds their tools to a [`ToolRegistry`],
+//!   configured from the environment under an application's own prefix.
 
 pub mod chat;
 pub mod context;

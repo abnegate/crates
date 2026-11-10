@@ -13,6 +13,7 @@ use futures::future::join_all;
 use super::McpConfig;
 use super::McpOutcome;
 use super::McpServer;
+use super::McpTransport;
 use super::name::cli_name;
 use super::session::McpSession;
 use crate::tool::Tool;
@@ -23,7 +24,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 const INVALID: &str = "set exactly one of `command` and `url`, and a `type`, if any, of `stdio`, `http` or `sse` that matches it";
 
-const REMOTE_UNSUPPORTED: &str = "only stdio servers are launched here";
+const SSE_UNSUPPORTED: &str = "SSE servers are not supported; use streamable HTTP";
 
 /// Connected MCP servers, the tools they exported, and what became of every
 /// server the hub was asked to connect.
@@ -45,31 +46,37 @@ impl McpHub {
         }
     }
 
-    /// Launch every enabled command server in `config` and connect to it,
-    /// keeping only the tools each server [allows](McpServer::allows).
+    /// Launch every enabled command server in `config`, connect to every
+    /// enabled `url` server over streamable HTTP, and keep only the tools
+    /// each server [allows](McpServer::allows).
     ///
     /// Every server in `config` is recorded as an [`McpOutcome`], read back
     /// with [`outcomes`](Self::outcomes). A [disabled](McpServer::disabled)
     /// server is recorded as [`Disabled`](McpOutcome::Disabled) and not
-    /// started. One reached by URL, which only a CLI attaches, and one that is
-    /// not [valid](McpServer::valid) are recorded as
-    /// [`Failed`](McpOutcome::Failed), each with a warning. One a CLI would
+    /// started. An [`sse`](McpTransport::Sse) server and one that is not
+    /// [valid](McpServer::valid) are recorded as
+    /// [`Failed`](McpOutcome::Failed), each with a warning. A `url` server's
+    /// headers are those [`McpServer::endpoint`] resolves, from the secrets
+    /// bound to it alone. One a CLI would
     /// refuse because it is not [nameable](McpServer::nameable) still starts,
     /// with a warning, its name and the tools it names sanitized as a CLI
     /// names them. A server that fails to start or to answer in time is logged
     /// and recorded as [`Failed`](McpOutcome::Failed).
     ///
     /// Each server is routed through the proxy [`Proxy::from_environment`]
-    /// reads.
+    /// reads: a command server is given it in its environment, and a `url`
+    /// server is reached through it.
     pub async fn connect(config: &McpConfig) -> Self {
         Self::launch(config, &Proxy::from_environment(), CONNECT_TIMEOUT).await
     }
 
-    /// [`connect`](Self::connect), routing every server through `proxy`, laid
-    /// over its environment before its handshake, in place of the one this
-    /// process's environment names. With [`Proxy::default`], no proxy is laid
-    /// over a server, which then routes only as its own environment says.
-    /// Every server in `config` is recorded as an [`McpOutcome`].
+    /// [`connect`](Self::connect), routing every server through `proxy` in
+    /// place of the one this process's environment names: laid over a
+    /// command server's environment before its handshake, and the proxy a
+    /// `url` server is reached through. With [`Proxy::default`], no proxy is
+    /// laid over a command server, which then routes only as its own
+    /// environment says, and a `url` server is reached directly. Every server
+    /// in `config` is recorded as an [`McpOutcome`].
     ///
     /// ```no_run
     /// use abnegate_agent::McpConfig;
@@ -249,8 +256,8 @@ impl Default for McpHub {
     }
 }
 
-/// `Ok` when `server` is one this hub starts itself, an enabled, valid
-/// command server, and otherwise the outcome it is recorded as.
+/// `Ok` when `server` is one this hub connects, an enabled, valid command
+/// or streamable HTTP server, and otherwise the outcome it is recorded as.
 fn launchable(name: &str, server: &McpServer) -> Result<(), McpOutcome> {
     if server.disabled {
         tracing::debug!(server = %name, "skipping a disabled MCP server");
@@ -262,14 +269,10 @@ fn launchable(name: &str, server: &McpServer) -> Result<(), McpOutcome> {
             error: INVALID.to_string(),
         });
     }
-    if server.command.is_none() {
-        tracing::warn!(
-            server = %name,
-            "skipping a remote MCP server: {}",
-            REMOTE_UNSUPPORTED
-        );
+    if matches!(server.transport, Some(McpTransport::Sse)) {
+        tracing::warn!(server = %name, "skipping an MCP server: {}", SSE_UNSUPPORTED);
         return Err(McpOutcome::Failed {
-            error: REMOTE_UNSUPPORTED.to_string(),
+            error: SSE_UNSUPPORTED.to_string(),
         });
     }
     Ok(())
@@ -285,14 +288,16 @@ async fn start(
 ) -> Result<McpSession, McpOutcome> {
     launchable(name, server)?;
     let server = named(name, server);
-    McpSession::connect_with_timeout(name, &server, proxy, limit)
-        .await
-        .map_err(|error| {
-            tracing::warn!(error = %error, "MCP server unavailable");
-            McpOutcome::Failed {
-                error: error.to_string(),
-            }
-        })
+    let connected = match server.command {
+        Some(_) => McpSession::connect_with_timeout(name, &server, proxy, limit).await,
+        None => McpSession::connect_remote(name, &server, proxy, limit).await,
+    };
+    connected.map_err(|error| {
+        tracing::warn!(error = %error, "MCP server unavailable");
+        McpOutcome::Failed {
+            error: error.to_string(),
+        }
+    })
 }
 
 /// `server` with every tool it names sanitized as a CLI names a tool, so it
@@ -336,6 +341,15 @@ mod tests {
     use rmcp::transport::Transport;
     use serde::Deserialize;
     use tokio::process::Command;
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::Request;
+    use wiremock::Respond;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::any;
+    use wiremock::matchers::header;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
 
     use super::*;
     use crate::mcp::McpTransport;
@@ -866,7 +880,13 @@ mod tests {
             "a server that exits before its handshake failed: {outcomes:?}"
         );
         assert_eq!(outcomes["off"], McpOutcome::Disabled);
-        assert_eq!(outcomes["remote"], failed(REMOTE_UNSUPPORTED));
+        assert!(
+            matches!(
+                &outcomes["remote"],
+                McpOutcome::Failed { error } if error.starts_with("MCP handshake failed for 'remote'")
+            ),
+            "a remote server that refuses its connection failed: {outcomes:?}"
+        );
         assert_eq!(outcomes["ambiguous"], failed(INVALID));
         assert!(hub.is_empty());
     }
@@ -1035,17 +1055,17 @@ mod tests {
     }
 
     /// One `mcp.json` drives this hub and a CLI alike, so it holds servers
-    /// the hub must leave alone: a disabled one must not start, and one
-    /// reached by URL is the CLI's to attach.
+    /// the hub must leave alone: a disabled one must not start. One reached
+    /// by URL is connected, and recorded as failed when it cannot be.
     #[tokio::test]
-    async fn connect_launches_only_enabled_command_servers() {
+    async fn connect_launches_only_enabled_servers() {
         let directory = tempfile::tempdir().unwrap();
         let launched = directory.path().join("launched");
         let disabled = directory.path().join("disabled");
         let config = McpConfig::default()
             .with_server("launched", recorder(":", &launched))
             .with_server("off", recorder(":", &disabled).disable())
-            .with_server("remote", McpServer::remote("https://example.com/mcp"));
+            .with_server("remote", McpServer::remote("http://127.0.0.1:1/mcp"));
 
         let (hub, logs) =
             crate::test_support::captured_logs(McpHub::connect_with_timeout(&config, LIMIT)).await;
@@ -1054,7 +1074,11 @@ mod tests {
         assert!(launched.exists(), "the enabled server never started");
         assert!(!disabled.exists(), "a disabled server started");
         assert!(logs.contains("skipping a disabled MCP server"), "{logs}");
-        assert!(logs.contains("skipping a remote MCP server"), "{logs}");
+        assert!(
+            matches!(hub.outcome("remote"), Some(McpOutcome::Failed { .. })),
+            "{:?}",
+            hub.outcomes()
+        );
     }
 
     /// An entry written for another client, or one this crate cannot read,
@@ -1071,7 +1095,7 @@ mod tests {
                 },
                 "docs": {
                     "type": "streamable-http",
-                    "url": "https://docs.example.com/mcp",
+                    "url": "http://127.0.0.1:1/mcp",
                     "tools": [{"name": "search", "description": "Search the docs"}]
                 },
                 "broken": {"command": "sh", "args": "not a list"}
@@ -1377,5 +1401,370 @@ mod tests {
             elapsed >= limit && elapsed < limit * 2,
             "silent servers should share one budget, took {elapsed:?}"
         );
+    }
+
+    const MCP_PATH: &str = "/mcp";
+
+    /// Long and distinctive, so finding it in a failure's text cannot be
+    /// chance.
+    const SECRET: &str = "a3f1c0de-secret-that-must-never-be-printed-77b2";
+
+    /// A streamable HTTP MCP server answering each JSON-RPC message with JSON
+    /// under the id it was sent: the handshake, one tool, `echo`, and
+    /// `echoed` for every call. A request whose method is `refusing` is
+    /// answered with a 400 that echoes its `Authorization` header back.
+    #[derive(Clone, Copy, Default)]
+    struct Streamable {
+        refusing: Option<&'static str>,
+    }
+
+    impl Respond for Streamable {
+        fn respond(&self, request: &Request) -> ResponseTemplate {
+            let message: serde_json::Value = request.body_json().unwrap_or_default();
+            let called = message["method"].as_str();
+            if called.is_some() && called == self.refusing {
+                let echoed = request
+                    .headers
+                    .get("authorization")
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or_default()
+                    .to_string();
+                return ResponseTemplate::new(400).set_body_string(format!("refused {echoed}"));
+            }
+            let result = match called {
+                Some("initialize") => serde_json::json!({
+                    "protocolVersion": message["params"]["protocolVersion"],
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "streamable", "version": "1"}
+                }),
+                Some("tools/list") => serde_json::json!({"tools": [{
+                    "name": "echo",
+                    "description": "Echoes.",
+                    "inputSchema": {"type": "object", "properties": {}}
+                }]}),
+                Some("tools/call") => {
+                    serde_json::json!({"content": [{"type": "text", "text": "echoed"}]})
+                }
+                _ => return ResponseTemplate::new(202),
+            };
+            ResponseTemplate::new(200)
+                .insert_header("Mcp-Session-Id", "session")
+                .set_body_json(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": message["id"],
+                    "result": result
+                }))
+        }
+    }
+
+    /// Mount [`Streamable`] on `server` at [`MCP_PATH`], requiring
+    /// `Authorization: Bearer {token}` when there is a `token`, and answering
+    /// 401 to anything without it.
+    async fn streamable(server: &MockServer, token: Option<&str>) {
+        serve(server, MCP_PATH, Streamable::default(), token).await;
+    }
+
+    async fn serve(server: &MockServer, at: &str, responder: Streamable, token: Option<&str>) {
+        let mut post = Mock::given(method("POST")).and(path(at));
+        if let Some(token) = token {
+            post = post.and(header("authorization", format!("Bearer {token}")));
+            Mock::given(any())
+                .respond_with(ResponseTemplate::new(401))
+                .with_priority(10)
+                .mount(server)
+                .await;
+        }
+        post.respond_with(responder).mount(server).await;
+        for refused in ["GET", "DELETE"] {
+            Mock::given(method(refused))
+                .respond_with(ResponseTemplate::new(405))
+                .mount(server)
+                .await;
+        }
+    }
+
+    fn reached(server: &MockServer) -> McpServer {
+        McpServer::remote(format!("{}{MCP_PATH}", server.uri()))
+    }
+
+    fn authorized(server: &MockServer) -> McpServer {
+        reached(server)
+            .with_header("Authorization", "Bearer ${TOKEN}")
+            .with_secret("TOKEN", SECRET)
+    }
+
+    async fn requests(server: &MockServer) -> Vec<Request> {
+        server.received_requests().await.unwrap_or_default()
+    }
+
+    async fn reconnected(server: &McpServer) -> (McpHub, McpOutcome) {
+        let hub = McpHub::new();
+        let outcome = hub
+            .reconnect_within("docs", server, &Proxy::default(), LIMIT)
+            .await;
+        (hub, outcome)
+    }
+
+    fn failure(outcome: &McpOutcome) -> &str {
+        match outcome {
+            McpOutcome::Failed { error } => error,
+            other => panic!("expected a failure, got {other:?}"),
+        }
+    }
+
+    async fn called(registry: &ToolRegistry, name: &str) -> crate::tool::ToolResult {
+        registry
+            .execute(
+                name,
+                serde_json::json!({}),
+                &ToolContext {
+                    command_timeout: Duration::from_secs(5),
+                    ..ToolContext::default()
+                },
+            )
+            .await
+            .expect("the tool runs")
+    }
+
+    #[tokio::test]
+    async fn a_streamable_http_server_connects_and_a_call_round_trips() {
+        let server = MockServer::start().await;
+        streamable(&server, Some(SECRET)).await;
+
+        let (hub, outcome) = reconnected(&authorized(&server)).await;
+
+        assert_eq!(outcome, connected(&["echo"]));
+        let mut registry = ToolRegistry::new();
+        assert_eq!(register(&mut registry, &hub), 1);
+        let result = called(&registry, "docs__echo").await;
+        assert!(
+            result.success
+                && result
+                    .output
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("echoed"),
+            "{result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_request_without_the_expected_authorization_is_failed() {
+        let server = MockServer::start().await;
+        streamable(&server, Some(SECRET)).await;
+
+        let (hub, outcome) = reconnected(&reached(&server)).await;
+
+        assert!(failure(&outcome).contains("401"), "{outcome:?}");
+        assert!(hub.is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_unbound_reference_is_failed_without_a_request() {
+        let server = MockServer::start().await;
+        streamable(&server, None).await;
+
+        let (_, outcome) =
+            reconnected(&reached(&server).with_header("Authorization", "Bearer ${TOKEN}")).await;
+
+        assert!(
+            failure(&outcome).contains("no secret bound to the server"),
+            "{outcome:?}"
+        );
+        assert!(requests(&server).await.is_empty(), "a request was sent");
+    }
+
+    #[tokio::test]
+    async fn a_metadata_address_is_failed_without_a_request() {
+        let (_, outcome) = tokio::time::timeout(
+            Duration::from_secs(5),
+            reconnected(&McpServer::remote("http://169.254.169.254/mcp")),
+        )
+        .await
+        .expect("refused before any request");
+
+        assert!(
+            failure(&outcome).contains("refusing a link-local or cloud metadata address"),
+            "{outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_sse_server_is_failed_without_a_request() {
+        let server = MockServer::start().await;
+        streamable(&server, None).await;
+
+        let (_, outcome) = reconnected(&reached(&server).with_transport(McpTransport::Sse)).await;
+
+        assert_eq!(outcome, failed(SSE_UNSUPPORTED));
+        assert!(requests(&server).await.is_empty(), "a request was sent");
+    }
+
+    #[tokio::test]
+    async fn a_same_origin_temporary_redirect_is_followed() {
+        let server = MockServer::start().await;
+        Mock::given(path(MCP_PATH))
+            .respond_with(ResponseTemplate::new(307).insert_header("Location", "/mcp/"))
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        serve(&server, "/mcp/", Streamable::default(), None).await;
+
+        let (_, outcome) = reconnected(&reached(&server)).await;
+
+        assert_eq!(outcome, connected(&["echo"]));
+    }
+
+    #[tokio::test]
+    async fn a_cross_origin_redirect_is_refused() {
+        let first = MockServer::start().await;
+        let second = MockServer::start().await;
+        streamable(&second, None).await;
+        let location = format!("{}{MCP_PATH}", second.uri());
+        Mock::given(any())
+            .respond_with(
+                ResponseTemplate::new(307).insert_header("Location", format!("{location}?key=x")),
+            )
+            .mount(&first)
+            .await;
+
+        let (_, outcome) = reconnected(&reached(&first)).await;
+
+        let error = failure(&outcome);
+        assert!(
+            error.contains(&format!("refused a redirect to {location}")),
+            "{outcome:?}"
+        );
+        assert!(!error.contains("key=x"), "the query was printed: {error}");
+        assert!(
+            requests(&second).await.is_empty(),
+            "the redirect was followed"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_redirect_that_changes_the_method_is_refused() {
+        let server = MockServer::start().await;
+        Mock::given(path(MCP_PATH))
+            .respond_with(ResponseTemplate::new(302).insert_header("Location", "/mcp/"))
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        serve(&server, "/mcp/", Streamable::default(), None).await;
+
+        let (_, outcome) = reconnected(&reached(&server)).await;
+
+        assert!(
+            failure(&outcome).contains("refused a redirect to"),
+            "{outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_remote_server_is_reached_through_the_hub_proxy() {
+        let proxy = MockServer::start().await;
+        streamable(&proxy, None).await;
+        let hub = McpHub::new();
+
+        let outcome = hub
+            .reconnect_within(
+                "docs",
+                &McpServer::remote("http://mcp.invalid/mcp"),
+                &Proxy::new(proxy.uri()).with_bypass(Vec::<String>::new()),
+                LIMIT,
+            )
+            .await;
+
+        assert_eq!(outcome, connected(&["echo"]));
+        let seen = requests(&proxy).await;
+        assert!(
+            !seen.is_empty()
+                && seen
+                    .iter()
+                    .all(|request| request.url.host_str() == Some("mcp.invalid")),
+            "{:?}",
+            seen.iter()
+                .map(|request| request.url.to_string())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_bound_secret_never_reaches_a_failure_text() {
+        for refusing in ["initialize", "tools/list"] {
+            let server = MockServer::start().await;
+            serve(
+                &server,
+                MCP_PATH,
+                Streamable {
+                    refusing: Some(refusing),
+                },
+                Some(SECRET),
+            )
+            .await;
+
+            let (_, outcome) = reconnected(&authorized(&server)).await;
+
+            let error = failure(&outcome);
+            assert!(
+                error.contains("refused") && error.contains(abnegate_secret::REDACTED),
+                "the server's echo should be in the failure, scrubbed: {error}"
+            );
+            assert!(
+                !error.contains(SECRET),
+                "a {refusing} failure printed the secret: {error}"
+            );
+        }
+
+        let server = MockServer::start().await;
+        serve(
+            &server,
+            MCP_PATH,
+            Streamable {
+                refusing: Some("tools/call"),
+            },
+            Some(SECRET),
+        )
+        .await;
+        let (hub, outcome) = reconnected(&authorized(&server)).await;
+        assert_eq!(outcome, connected(&["echo"]));
+        let mut registry = ToolRegistry::new();
+        register(&mut registry, &hub);
+        let result = called(&registry, "docs__echo").await;
+        let text = format!("{result:?}");
+        assert!(
+            !result.success && text.contains(abnegate_secret::REDACTED),
+            "the server's echo should be in the failure, scrubbed: {text}"
+        );
+        assert!(
+            !text.contains(SECRET),
+            "a call failure printed the secret: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn reconnect_connects_an_http_server() {
+        let server = MockServer::start().await;
+        streamable(&server, Some(SECRET)).await;
+        let hub = McpHub::new();
+
+        let unbound = hub
+            .reconnect_within(
+                "docs",
+                &reached(&server).with_header("Authorization", "Bearer ${TOKEN}"),
+                &Proxy::default(),
+                LIMIT,
+            )
+            .await;
+        assert!(matches!(unbound, McpOutcome::Failed { .. }), "{unbound:?}");
+        assert!(hub.is_empty());
+
+        let outcome = hub
+            .reconnect_within("docs", &authorized(&server), &Proxy::default(), LIMIT)
+            .await;
+
+        assert_eq!(outcome, connected(&["echo"]));
+        assert_eq!(hub.outcome("docs"), Some(connected(&["echo"])));
+        assert_eq!(hub.server_names(), ["docs"]);
     }
 }

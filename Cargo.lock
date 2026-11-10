@@ -9,6 +9,7 @@ dependencies = [
  "abnegate-agent-cli",
  "abnegate-config",
  "abnegate-exec",
+ "abnegate-http",
  "abnegate-llm",
  "abnegate-secret",
  "async-trait",
@@ -3736,17 +3737,22 @@ version = "3.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d24a7e92f4bcaa36b97fa93c4fa7ca8f3e669eced949345b3462dba333c7f909"
 dependencies = [
+ "base64 0.23.1",
+ "bytes",
  "chrono",
  "futures",
+ "http",
  "indexmap",
  "libc",
  "pastey",
  "pin-project-lite",
+ "reqwest 0.13.5",
  "rmcp-macros",
  "schemars",
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "sse-stream",
  "thiserror",
  "tokio",
  "tokio-stream",
@@ -4428,6 +4434,19 @@ dependencies = [
  "thiserror",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "sse-stream"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c25ac7aff0abd1dbc474536e40416e1102c7dd9bfba0b9861c6d357f835dcfb4"
+dependencies = [
+ "bytes",
+ "futures-util",
+ "http-body",
+ "http-body-util",
+ "pin-project-lite",
 ]
 
 [[package]]

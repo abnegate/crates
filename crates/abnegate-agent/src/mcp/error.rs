@@ -40,6 +40,17 @@ pub enum McpError {
         /// What went wrong, in the client's words.
         message: String,
     },
+    /// A server reached by URL could not be reached as configured: its URL
+    /// or headers do not resolve or are refused, or it redirected somewhere
+    /// this client does not follow.
+    #[error("MCP transport failed for '{server}': {message}")]
+    #[non_exhaustive]
+    Transport {
+        /// The server's name in the configuration.
+        server: String,
+        /// What was wrong, never holding a header's value.
+        message: String,
+    },
     /// A call to one of a connected server's tools failed.
     #[error("MCP tool call failed: {0}")]
     Call(String),

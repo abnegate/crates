@@ -1,10 +1,24 @@
+use std::cmp::Reverse;
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::PoisonError;
 use std::time::Duration;
 
 use abnegate_exec::Proxy;
+use abnegate_http::metadata::MetadataResolver;
+use abnegate_http::metadata::is_url;
+use abnegate_secret::REDACTED;
+use abnegate_secret::SecretValue;
+use abnegate_secret::redact;
+use reqwest::NoProxy;
+use reqwest::StatusCode;
+use reqwest::Url;
+use reqwest::header::HeaderName;
+use reqwest::header::HeaderValue;
+use reqwest::redirect::Policy;
 use rmcp::RoleClient;
 use rmcp::ServiceExt;
 use rmcp::model::CallToolRequestParams;
@@ -13,13 +27,16 @@ use rmcp::model::ClientConfig;
 use rmcp::model::ProtocolVersion;
 use rmcp::model::Tool as RemoteTool;
 use rmcp::service::RunningService;
+use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::async_rw::AsyncRwTransport;
+use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use serde_json::json;
 use tokio::io::AsyncReadExt;
 use tokio::process::ChildStderr;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
+use super::McpEndpoint;
 use super::McpError;
 use super::McpServer;
 use super::name::unique_qualified_tool_name;
@@ -33,12 +50,46 @@ const MAXIMUM_LOGGED_STDERR_BYTES: usize = 64 * 1024;
 
 const STDERR_BUFFER_BYTES: usize = 4 * 1024;
 
+/// Same-origin redirects a remote server's request follows before the next
+/// is refused.
+const MAXIMUM_REDIRECTS: usize = 10;
+
+/// Headers the streamable HTTP transport sets itself, which a server's
+/// configuration may not.
+const RESERVED_HEADERS: [&str; 4] = [
+    "accept",
+    "mcp-session-id",
+    "mcp-protocol-version",
+    "last-event-id",
+];
+
+const UNRESOLVED: &str = "a reference in its URL or headers has no secret bound to the server and no default, or still holds `${` once resolved";
+
+const TIMED_OUT: &str = "handshake timed out";
+
+/// The schemes a remote server may be reached over.
+const SCHEMES: [&str; 2] = ["http", "https"];
+
+const INVALID_URL: &str = "invalid URL";
+
+const METADATA_URL: &str = "refusing a link-local or cloud metadata address";
+
+const INVALID_PROXY: &str = "invalid proxy URL";
+
+const UNBUILT_CLIENT: &str = "could not build an HTTP client";
+
+const REFUSED_REDIRECT: &str = "refused a redirect";
+
+/// Where a refused redirect pointed, written by the redirect policy and read
+/// once a connection fails.
+type Refused = Arc<std::sync::Mutex<Option<String>>>;
+
 /// A client running this crate's [`McpSession::configuration`].
 pub(super) type Client = RunningService<RoleClient, ClientConfig>;
 
-/// One live stdio MCP session.
+/// One live MCP session, over stdio or streamable HTTP.
 ///
-/// The server leads a process group of its own, and dropping the session
+/// A stdio server leads a process group of its own, and dropping the session
 /// kills the whole group, so a server that starts helpers of its own leaves
 /// none of them behind. The session holds the server itself, not only its
 /// group, and never lets it be reaped before that kill: the server's pid
@@ -48,6 +99,7 @@ pub(super) struct McpSession {
     pub(super) remote_tools: Vec<RemoteTool>,
     client: Mutex<Client>,
     process: Option<ServerProcess>,
+    secrets: Vec<SecretValue>,
 }
 
 impl McpSession {
@@ -57,6 +109,7 @@ impl McpSession {
             remote_tools,
             client: Mutex::new(client),
             process: None,
+            secrets: Vec::new(),
         }
     }
 
@@ -78,8 +131,84 @@ impl McpSession {
             Ok(result) => result,
             Err(_) => Err(McpError::Handshake {
                 server: name.to_string(),
-                message: "handshake timed out".to_string(),
+                message: TIMED_OUT.to_string(),
             }),
+        }
+    }
+
+    /// Connect to the remote server `server` under `name` over streamable
+    /// HTTP, routed through `proxy`, and complete its handshake and tool
+    /// listing within `limit`.
+    ///
+    /// Its URL and headers resolve against the secrets bound to it alone. A
+    /// link-local or metadata address is refused before any request, and so
+    /// is every address a name resolves to. Only a same-origin 307 or 308 is
+    /// followed, for at most [`MAXIMUM_REDIRECTS`] hops. No failure's text
+    /// holds a bound secret or a header's value.
+    pub(super) async fn connect_remote(
+        name: &str,
+        server: &McpServer,
+        proxy: &Proxy,
+        limit: Duration,
+    ) -> Result<Self, McpError> {
+        let failed = |message: &str| McpError::Transport {
+            server: name.to_string(),
+            message: message.to_string(),
+        };
+        let endpoint = server.endpoint().ok_or_else(|| failed(UNRESOLVED))?;
+        let url = Url::parse(&endpoint.url)
+            .ok()
+            .filter(|url| SCHEMES.contains(&url.scheme()))
+            .ok_or_else(|| failed(INVALID_URL))?;
+        if is_url(&url) {
+            return Err(failed(METADATA_URL));
+        }
+        let headers =
+            headers(&endpoint).map_err(|header| failed(&format!("invalid header `{header}`")))?;
+        let refused = Refused::default();
+        let client = client(proxy, Arc::clone(&refused)).map_err(failed)?;
+        let secrets = secrets(server, &endpoint);
+        let transport = StreamableHttpClientTransport::with_client(
+            client,
+            StreamableHttpClientTransportConfig::with_uri(String::from(url))
+                .custom_headers(headers),
+        );
+        let connected = async {
+            let client = Self::configuration()
+                .serve(transport)
+                .await
+                .map_err(|error| McpError::Handshake {
+                    server: name.to_string(),
+                    message: error.to_string(),
+                })?;
+            Self::listed(name, server, client, None).await
+        };
+        let result = tokio::time::timeout(limit, connected)
+            .await
+            .unwrap_or_else(|_| {
+                Err(McpError::Handshake {
+                    server: name.to_string(),
+                    message: TIMED_OUT.to_string(),
+                })
+            });
+        match result {
+            Ok(mut session) => {
+                session.secrets = secrets;
+                Ok(session)
+            }
+            Err(error) => {
+                let location = refused
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take();
+                Err(match location {
+                    Some(location) => failed(&scrubbed(
+                        &format!("{REFUSED_REDIRECT} to {location}"),
+                        &secrets,
+                    )),
+                    None => scrubbed_error(error, &secrets),
+                })
+            }
         }
     }
 
@@ -172,7 +301,7 @@ impl McpSession {
         client
             .call_tool(request)
             .await
-            .map_err(|error| McpError::Call(error.to_string()))
+            .map_err(|error| McpError::Call(scrubbed(&error.to_string(), &self.secrets)))
     }
 
     /// A tool for every remote tool, named clear of everything in `used`.
@@ -202,6 +331,119 @@ impl McpSession {
                 )) as Arc<dyn Tool>
             })
             .collect()
+    }
+}
+
+/// Each of `endpoint`'s headers as the transport sends it, marked sensitive,
+/// or the name of the first one that is not a valid header or is one the
+/// transport sets itself.
+fn headers(endpoint: &McpEndpoint) -> Result<HashMap<HeaderName, HeaderValue>, String> {
+    endpoint
+        .headers
+        .iter()
+        .map(|(name, value)| {
+            let header = HeaderName::from_bytes(name.as_bytes())
+                .ok()
+                .filter(|header| !RESERVED_HEADERS.contains(&header.as_str()))
+                .ok_or_else(|| name.clone())?;
+            let mut value = HeaderValue::from_str(value.expose()).map_err(|_| name.clone())?;
+            value.set_sensitive(true);
+            Ok((header, value))
+        })
+        .collect()
+}
+
+/// A client for one remote server: it resolves names past link-local and
+/// metadata addresses, keeps no idle connection, follows only the redirects
+/// [`redirects`] allows, writing where a refused one pointed to `refused`,
+/// and routes through `proxy` alone, never a proxy the environment or the
+/// system names.
+fn client(proxy: &Proxy, refused: Refused) -> Result<reqwest::Client, &'static str> {
+    let builder = reqwest::Client::builder()
+        .pool_max_idle_per_host(0)
+        .dns_resolver(MetadataResolver::new())
+        .redirect(redirects(refused));
+    let builder = match proxy.url() {
+        Some(url) => {
+            let url = url.to_str().ok_or(INVALID_PROXY)?;
+            let route = reqwest::Proxy::all(url)
+                .map_err(|_| INVALID_PROXY)?
+                .no_proxy(NoProxy::from_string(&proxy.bypass().join(",")));
+            builder.proxy(route)
+        }
+        None => builder.no_proxy(),
+    };
+    builder.build().map_err(|_| UNBUILT_CLIENT)
+}
+
+/// Follow a 307 or 308, which keep the method and body, while it stays on
+/// the origin first requested, for at most [`MAXIMUM_REDIRECTS`] hops, and
+/// refuse any other, writing its origin and path to `refused`.
+fn redirects(refused: Refused) -> Policy {
+    Policy::custom(move |attempt| {
+        let previous = attempt.previous();
+        let preserving = matches!(
+            attempt.status(),
+            StatusCode::TEMPORARY_REDIRECT | StatusCode::PERMANENT_REDIRECT
+        );
+        let within = previous
+            .first()
+            .is_some_and(|sent| sent.origin() == attempt.url().origin());
+        if preserving && within && previous.len() <= MAXIMUM_REDIRECTS {
+            tracing::debug!(
+                status = %attempt.status(),
+                from = previous.last().map(Url::path).unwrap_or_default(),
+                to = attempt.url().path(),
+                "following a same-origin MCP redirect"
+            );
+            return attempt.follow();
+        }
+        let location = format!(
+            "{}{}",
+            attempt.url().origin().ascii_serialization(),
+            attempt.url().path()
+        );
+        *refused.lock().unwrap_or_else(PoisonError::into_inner) = Some(location);
+        attempt.error(REFUSED_REDIRECT)
+    })
+}
+
+/// Every non-empty secret bound to `server` and header value of `endpoint`,
+/// longest first, so a value holding another is replaced whole.
+fn secrets(server: &McpServer, endpoint: &McpEndpoint) -> Vec<SecretValue> {
+    let mut secrets: Vec<SecretValue> = server
+        .secrets
+        .values()
+        .chain(endpoint.headers.values())
+        .filter(|secret| !secret.is_empty())
+        .cloned()
+        .collect();
+    secrets.sort_by_key(|secret| Reverse(secret.expose().len()));
+    secrets
+}
+
+/// `text` with each of `secrets` replaced by [`REDACTED`], and anything
+/// else credential-shaped redacted too.
+fn scrubbed(text: &str, secrets: &[SecretValue]) -> String {
+    let replaced = secrets.iter().fold(text.to_string(), |text, secret| {
+        text.replace(secret.expose(), REDACTED)
+    });
+    redact(&replaced).into_owned()
+}
+
+/// `error` with its message [scrubbed] of `secrets`.
+fn scrubbed_error(error: McpError, secrets: &[SecretValue]) -> McpError {
+    match error {
+        McpError::Handshake { server, message } => McpError::Handshake {
+            server,
+            message: scrubbed(&message, secrets),
+        },
+        McpError::Transport { server, message } => McpError::Transport {
+            server,
+            message: scrubbed(&message, secrets),
+        },
+        McpError::Call(message) => McpError::Call(scrubbed(&message, secrets)),
+        error => error,
     }
 }
 

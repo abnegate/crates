@@ -33,9 +33,9 @@ pub fn register(registry: &mut ToolRegistry, hub: &McpHub) -> usize {
 }
 
 /// The default file and command tools plus the tools of every server in
-/// `config` that [`McpHub::connect`] launches.
+/// `config` that [`McpHub::connect`] connects.
 ///
-/// A server that fails to start is logged and skipped.
+/// A server that fails to start or to connect is logged and skipped.
 pub async fn with_defaults_and_mcp(config: &McpConfig) -> ToolRegistry {
     with_defaults_and_mcp_through(config, &Proxy::from_environment()).await
 }
