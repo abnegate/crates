@@ -110,6 +110,7 @@ mod recorder;
 mod redirect;
 mod register;
 mod remote;
+mod scrubber;
 mod server_process;
 mod session;
 mod tool;

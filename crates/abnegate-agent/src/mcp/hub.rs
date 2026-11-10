@@ -1927,6 +1927,71 @@ mod tests {
         assert!(!error.contains("refused a redirect"), "{error}");
     }
 
+    /// Held in a URL's path, where it is percent-encoded, so only scrubbing
+    /// its encoded form as well as its raw one keeps it out.
+    const PATHED: &str = "open sesame 7d4b";
+
+    /// The transport logs a refused redirect itself, and the location it
+    /// names went out unscrubbed, holding a secret from the path, encoded.
+    #[tokio::test]
+    async fn a_secret_in_a_refused_location_never_reaches_a_log_or_the_failure() {
+        let server = MockServer::start().await;
+        let encoded = PATHED.replace(' ', "%20");
+        Mock::given(any())
+            .respond_with(
+                ResponseTemplate::new(301).insert_header("Location", format!("/{encoded}/mcp/")),
+            )
+            .mount(&server)
+            .await;
+        let pathed = McpServer::remote(format!("{}/${{KEY}}{MCP_PATH}", server.uri()))
+            .with_secret("KEY", PATHED);
+
+        let ((_, outcome), logs) = crate::test_support::captured_logs_until(
+            reconnected(&pathed),
+            "worker quit with fatal",
+        )
+        .await;
+
+        let error = failure(&outcome);
+        assert!(error.contains("refused a redirect to"), "{error}");
+        for text in [error, logs.as_str()] {
+            assert!(
+                !text.contains("sesame"),
+                "the secret, raw or encoded, reached {text}"
+            );
+        }
+    }
+
+    /// A server's own reply is logged by the transport before the failure is
+    /// scrubbed, and one may echo a secret it was sent.
+    #[tokio::test]
+    async fn a_secret_a_server_echoes_never_reaches_a_log() {
+        let server = MockServer::start().await;
+        serve(
+            &server,
+            MCP_PATH,
+            Streamable {
+                refusing: Some("initialize"),
+            },
+            None,
+        )
+        .await;
+
+        let ((_, outcome), logs) = crate::test_support::captured_logs_until(
+            reconnected(&keyed(&server)),
+            "worker quit with fatal",
+        )
+        .await;
+
+        let scrubbed = format!("refused {}", abnegate_secret::REDACTED);
+        assert!(failure(&outcome).contains(&scrubbed), "{outcome:?}");
+        assert!(logs.contains(&scrubbed), "{logs}");
+        assert!(
+            !logs.contains(SECRET) && !failure(&outcome).contains(SECRET),
+            "the echo reached a log or the failure unscrubbed: {logs}"
+        );
+    }
+
     /// A followed redirect's paths were logged, and a path can hold a secret.
     #[tokio::test]
     async fn a_followed_redirect_never_logs_its_path() {

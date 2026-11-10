@@ -18,6 +18,7 @@ use rmcp::transport::streamable_http_client::StreamableHttpPostResponse;
 
 use super::redirect::MAXIMUM_REDIRECTS;
 use super::redirect::Redirect;
+use super::scrubber::Scrubber;
 
 const INVALID_PROXY: &str = "invalid proxy URL";
 
@@ -31,14 +32,20 @@ type Failure = StreamableHttpError<reqwest::Error>;
 /// proxy the environment or the system names.
 ///
 /// Every error it gives the transport is stripped of the URL it was sent
-/// to, which may hold a resolved secret in its path or query, percent-encoded
-/// or not, since the transport logs some of them itself.
+/// to, which may hold a resolved secret in its path or query, and has its
+/// text scrubbed of the server's secrets, a redirect's location and a
+/// server's own words included, since the transport logs some of them
+/// itself before any caller sees them.
 #[derive(Clone)]
-pub(super) struct Remote(reqwest::Client);
+pub(super) struct Remote {
+    client: reqwest::Client,
+    scrubber: Scrubber,
+}
 
 impl Remote {
-    /// A client routed through `proxy`, or why none could be built.
-    pub(super) fn new(proxy: &Proxy) -> Result<Self, String> {
+    /// A client routed through `proxy` whose errors `scrubber` scrubs, or
+    /// why none could be built.
+    pub(super) fn new(proxy: &Proxy, scrubber: Scrubber) -> Result<Self, String> {
         let builder = reqwest::Client::builder()
             .dns_resolver(MetadataResolver::new())
             .redirect(redirects());
@@ -54,8 +61,41 @@ impl Remote {
         };
         builder
             .build()
-            .map(Self)
+            .map(|client| Self { client, scrubber })
             .map_err(|error| format!("{CLIENT_FAILED}: {}", error.without_url()))
+    }
+}
+
+impl Remote {
+    /// `error` with no URL or secret in it: a refused redirect becomes the
+    /// [`Redirect`] that refused it, any other client error drops the URL it
+    /// names, and an error whose text holds a secret becomes that text
+    /// scrubbed. One that holds none is passed on as it is, so the transport
+    /// still tells its kinds apart.
+    fn unlocated(&self, error: Failure) -> Failure {
+        let error = match error {
+            StreamableHttpError::Client(error) => {
+                match Error::source(&error).and_then(|source| source.downcast_ref::<Redirect>()) {
+                    Some(redirect) => {
+                        StreamableHttpError::UnexpectedServerResponse(redirect.to_string().into())
+                    }
+                    None => StreamableHttpError::Client(error.without_url()),
+                }
+            }
+            error => error,
+        };
+        if let StreamableHttpError::UnexpectedServerResponse(text) = &error {
+            return StreamableHttpError::UnexpectedServerResponse(Cow::Owned(
+                self.scrubber.scrubbed(text),
+            ));
+        }
+        let text = error.to_string();
+        let scrubbed = self.scrubber.scrubbed(&text);
+        if scrubbed == text {
+            error
+        } else {
+            StreamableHttpError::UnexpectedServerResponse(Cow::Owned(scrubbed))
+        }
     }
 }
 
@@ -70,10 +110,10 @@ impl StreamableHttpClient for Remote {
         auth_header: Option<String>,
         custom_headers: HashMap<HeaderName, HeaderValue>,
     ) -> Result<StreamableHttpPostResponse, Failure> {
-        self.0
+        self.client
             .post_message(uri, message, session_id, auth_header, custom_headers)
             .await
-            .map_err(unlocated)
+            .map_err(|error| self.unlocated(error))
     }
 
     async fn post_message_with_max_sse_event_size(
@@ -85,7 +125,7 @@ impl StreamableHttpClient for Remote {
         custom_headers: HashMap<HeaderName, HeaderValue>,
         max_sse_event_size: usize,
     ) -> Result<StreamableHttpPostResponse, Failure> {
-        self.0
+        self.client
             .post_message_with_max_sse_event_size(
                 uri,
                 message,
@@ -95,7 +135,7 @@ impl StreamableHttpClient for Remote {
                 max_sse_event_size,
             )
             .await
-            .map_err(unlocated)
+            .map_err(|error| self.unlocated(error))
     }
 
     async fn delete_session(
@@ -105,10 +145,10 @@ impl StreamableHttpClient for Remote {
         auth_header: Option<String>,
         custom_headers: HashMap<HeaderName, HeaderValue>,
     ) -> Result<(), Failure> {
-        self.0
+        self.client
             .delete_session(uri, session_id, auth_header, custom_headers)
             .await
-            .map_err(unlocated)
+            .map_err(|error| self.unlocated(error))
     }
 
     async fn get_stream(
@@ -119,10 +159,10 @@ impl StreamableHttpClient for Remote {
         auth_header: Option<String>,
         custom_headers: HashMap<HeaderName, HeaderValue>,
     ) -> Result<BoxedSseResponse, Failure> {
-        self.0
+        self.client
             .get_stream(uri, session_id, last_event_id, auth_header, custom_headers)
             .await
-            .map_err(unlocated)
+            .map_err(|error| self.unlocated(error))
     }
 
     async fn get_stream_with_max_sse_event_size(
@@ -134,7 +174,7 @@ impl StreamableHttpClient for Remote {
         custom_headers: HashMap<HeaderName, HeaderValue>,
         max_sse_event_size: usize,
     ) -> Result<BoxedSseResponse, Failure> {
-        self.0
+        self.client
             .get_stream_with_max_sse_event_size(
                 uri,
                 session_id,
@@ -144,21 +184,7 @@ impl StreamableHttpClient for Remote {
                 max_sse_event_size,
             )
             .await
-            .map_err(unlocated)
-    }
-}
-
-/// `error` with no URL in it: a refused redirect becomes the [`Redirect`]
-/// that refused it, and any other client error drops the URL it names.
-fn unlocated(error: Failure) -> Failure {
-    let StreamableHttpError::Client(error) = error else {
-        return error;
-    };
-    match Error::source(&error).and_then(|source| source.downcast_ref::<Redirect>()) {
-        Some(redirect) => {
-            StreamableHttpError::UnexpectedServerResponse(Cow::Owned(redirect.to_string()))
-        }
-        None => StreamableHttpError::Client(error.without_url()),
+            .map_err(|error| self.unlocated(error))
     }
 }
 

@@ -1,4 +1,3 @@
-use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io;
@@ -8,9 +7,6 @@ use std::time::Duration;
 
 use abnegate_exec::Proxy;
 use abnegate_http::metadata::is_url;
-use abnegate_secret::REDACTED;
-use abnegate_secret::SecretValue;
-use abnegate_secret::redact;
 use reqwest::Url;
 use reqwest::header::HeaderName;
 use reqwest::header::HeaderValue;
@@ -36,6 +32,7 @@ use super::McpError;
 use super::McpServer;
 use super::name::unique_qualified_tool_name;
 use super::remote::Remote;
+use super::scrubber::Scrubber;
 use super::server_process::ServerProcess;
 use super::tool::McpTool;
 use crate::tool::Tool;
@@ -66,13 +63,6 @@ const INVALID_URL: &str = "invalid URL";
 
 const METADATA_URL: &str = "refusing a link-local or cloud metadata address";
 
-/// The shortest value scrubbed from a failure's text: one shorter would
-/// replace digits and words it merely shares, such as a status code.
-const MINIMUM_SCRUBBED_LENGTH: usize = 6;
-
-/// What marks a configured value as one a bound secret may expand into.
-const REFERENCE: &str = "${";
-
 /// A client running this crate's [`McpSession::configuration`].
 pub(super) type Client = RunningService<RoleClient, ClientConfig>;
 
@@ -88,7 +78,7 @@ pub(super) struct McpSession {
     pub(super) remote_tools: Vec<RemoteTool>,
     client: Mutex<Client>,
     process: Option<ServerProcess>,
-    secrets: Vec<SecretValue>,
+    scrubber: Scrubber,
 }
 
 impl McpSession {
@@ -98,7 +88,7 @@ impl McpSession {
             remote_tools,
             client: Mutex::new(client),
             process: None,
-            secrets: Vec::new(),
+            scrubber: Scrubber::default(),
         }
     }
 
@@ -134,8 +124,9 @@ impl McpSession {
     /// is every address a name resolves to when the server is reached
     /// directly; behind a proxy, which resolves names itself, only a literal
     /// metadata address is. Only a same-origin 307 or 308 is followed, for at
-    /// most [`MAXIMUM_REDIRECTS`](super::redirect::MAXIMUM_REDIRECTS) hops. No failure's text holds a URL, a
-    /// bound secret or a value one expanded into.
+    /// most [`MAXIMUM_REDIRECTS`](super::redirect::MAXIMUM_REDIRECTS) hops. No failure's text, nor any error
+    /// the transport logs itself, holds a URL, a bound secret or a value one
+    /// expanded into, as written or percent-encoded.
     pub(super) async fn connect_remote(
         name: &str,
         server: &McpServer,
@@ -156,8 +147,8 @@ impl McpSession {
         }
         let headers =
             headers(&endpoint).map_err(|header| failed(&format!("invalid header `{header}`")))?;
-        let client = Remote::new(proxy).map_err(|message| failed(&message))?;
-        let secrets = secrets(server, &endpoint);
+        let scrubber = Scrubber::new(server, &endpoint);
+        let client = Remote::new(proxy, scrubber.clone()).map_err(|message| failed(&message))?;
         let transport = StreamableHttpClientTransport::with_client(
             client,
             StreamableHttpClientTransportConfig::with_uri(String::from(url))
@@ -183,10 +174,10 @@ impl McpSession {
             });
         match result {
             Ok(mut session) => {
-                session.secrets = secrets;
+                session.scrubber = scrubber;
                 Ok(session)
             }
-            Err(error) => Err(scrubbed_error(error, &secrets)),
+            Err(error) => Err(scrubbed_error(error, &scrubber)),
         }
     }
 
@@ -279,7 +270,7 @@ impl McpSession {
         client
             .call_tool(request)
             .await
-            .map_err(|error| McpError::Call(scrubbed(&error.to_string(), &self.secrets)))
+            .map_err(|error| McpError::Call(self.scrubber.scrubbed(&error.to_string())))
     }
 
     /// A tool for every remote tool, named clear of everything in `used`.
@@ -331,51 +322,18 @@ fn headers(endpoint: &McpEndpoint) -> Result<HashMap<HeaderName, HeaderValue>, S
     Ok(headers)
 }
 
-/// What a failure's text is scrubbed of: every secret bound to `server`,
-/// and each value of `endpoint` its configuration builds from a reference,
-/// a header's or the URL, that is at least [`MINIMUM_SCRUBBED_LENGTH`] long,
-/// longest first, so a value holding another is replaced whole.
-fn secrets(server: &McpServer, endpoint: &McpEndpoint) -> Vec<SecretValue> {
-    let referring = |raw: Option<&str>| raw.is_some_and(|raw| raw.contains(REFERENCE));
-    let expanded = endpoint
-        .headers
-        .iter()
-        .filter(|(name, _)| referring(server.headers.get(*name).map(SecretValue::expose)))
-        .map(|(_, value)| value.clone());
-    let url = referring(server.url.as_deref()).then(|| SecretValue::new(endpoint.url.clone()));
-    let mut secrets: Vec<SecretValue> = server
-        .secrets
-        .values()
-        .cloned()
-        .chain(expanded)
-        .chain(url)
-        .filter(|secret| secret.expose().len() >= MINIMUM_SCRUBBED_LENGTH)
-        .collect();
-    secrets.sort_by_key(|secret| Reverse(secret.expose().len()));
-    secrets
-}
-
-/// `text` with each of `secrets` replaced by [`REDACTED`], and anything
-/// else credential-shaped redacted too.
-fn scrubbed(text: &str, secrets: &[SecretValue]) -> String {
-    let replaced = secrets.iter().fold(text.to_string(), |text, secret| {
-        text.replace(secret.expose(), REDACTED)
-    });
-    redact(&replaced).into_owned()
-}
-
-/// `error` with its message [scrubbed] of `secrets`.
-fn scrubbed_error(error: McpError, secrets: &[SecretValue]) -> McpError {
+/// `error` with its message scrubbed by `scrubber`.
+fn scrubbed_error(error: McpError, scrubber: &Scrubber) -> McpError {
     match error {
         McpError::Handshake { server, message } => McpError::Handshake {
             server,
-            message: scrubbed(&message, secrets),
+            message: scrubber.scrubbed(&message),
         },
         McpError::Transport { server, message } => McpError::Transport {
             server,
-            message: scrubbed(&message, secrets),
+            message: scrubber.scrubbed(&message),
         },
-        McpError::Call(message) => McpError::Call(scrubbed(&message, secrets)),
+        McpError::Call(message) => McpError::Call(scrubber.scrubbed(&message)),
         error => error,
     }
 }
