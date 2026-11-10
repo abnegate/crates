@@ -5,3 +5,26 @@ git_tag_enable = true
 git_tag_name = "{{ package }}/v{{ version }}"
 git_release_enable = true
 git_release_name = "{{ package }}/v{{ version }}"
+# Publishing on every push releases a hand-bumped version before the release
+# pull request has written its changelog, and that later changelog commit then
+# counts as an unreleased change to every crate it touched.
+release_always = false
+# Every type but `chore` prepares a release, as do any type marked breaking and
+# the commit release-plz invents when a crate with nothing pending has changed
+# dependencies. A release commit must never match. Each further type held back
+# here would also hold back that invented commit for the crates it touches.
+release_commits = '^((feat|fix|perf|refactor|docs|test|style|ci|build|revert)(\([^()]+\))?!?:|[a-z]+(\([^()]+\))?!:|chore: update Cargo\.(toml|lock) dependencies)'
+
+[changelog]
+# Naming any parser replaces release-plz's defaults, so every entry after the
+# first, which keeps release commits out of changelogs, repeats one of them.
+commit_parsers = [
+    { message = '^chore(\([^()]+\))?: release( v[0-9][^ \n]*)?( \([^ \n]+\))?(\n|$)', skip = true },
+    { message = '^feat', group = "added" },
+    { message = '^changed', group = "changed" },
+    { message = '^deprecated', group = "deprecated" },
+    { message = '^removed', group = "removed" },
+    { message = '^fix', group = "fixed" },
+    { message = '^security', group = "security" },
+    { message = '.*', group = "other" },
+]

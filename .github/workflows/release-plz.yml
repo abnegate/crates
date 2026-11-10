@@ -10,7 +10,8 @@ permissions: {}
 jobs:
   release:
     name: Release
-    if: github.repository_owner == 'abnegate'
+    # A manual run on a release pull request's branch would publish it unmerged.
+    if: github.repository_owner == 'abnegate' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write

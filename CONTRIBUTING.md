@@ -203,6 +203,23 @@ Conventional commits: `type(scope): subject`, where type is one of `feat`,
 why, not what — the diff already says what. release-plz reads these to decide
 each crate's next version.
 
+Not every commit cuts a release. `release_commits` in `release-plz.toml` has
+release-plz prepare one for a crate only when a commit that touches it has a
+type other than `chore`, or is marked breaking with `!` whatever its type. A
+`chore` commit, the release commit among them, and a merge commit wait for the
+crate's next release. Two more things release a crate. When nothing is pending
+on it and its dependencies differ from those of the published crate,
+release-plz adds a `chore: update Cargo.toml dependencies` commit of its own.
+And when a workspace crate it depends on releases, it gets a patch bump.
+
+A `chore` commit pending on a crate also holds back that dependency-update
+commit, so a workspace dependency change stays unpublished for the crate until
+a releasing commit touches it. A dependency change consumers need therefore
+lands as a releasing type, such as `fix(deps):`, in a commit that touches each
+affected crate. The 0.2.0 changelog commit left abnegate-secret, abnegate-llm,
+abnegate-config, abnegate-notify, abnegate-payments, abnegate-search and
+abnegate-vcs in that state until each one's next release.
+
 ## Releases
 
 `.github/workflows/release-plz.yml` runs release-plz on every push to `main`.
@@ -213,15 +230,41 @@ change, and updates each crate's `CHANGELOG.md`. Nothing is published until
 that pull request is merged.
 
 Merging the release pull request publishes every crate whose new version is not
-yet on crates.io. The release job authenticates through crates.io Trusted
-Publishing: release-plz exchanges the job's GitHub OIDC token for a short-lived
-publish token scoped to this repository and `release-plz.yml`, and revokes it
-once the job has published. No crates.io token is stored anywhere. Each crate's
-Trusted Publishing settings on crates.io name GitHub, owner `abnegate`,
-repository `crates`, workflow `release-plz.yml` and no environment. Trusted
-Publishing cannot create a crate, so a new crate's first version is published
-by hand and its Trusted Publishing entry added before release-plz can publish
-it.
+yet on crates.io. Publishing happens only from `main`, and only on the merge
+commit of a pull request whose branch name starts with `release-plz-`:
+`release_always = false` in `release-plz.toml` has the release job skip every
+other push, so a crate is published and tagged on the commit that carries its
+changelog entry. Published any earlier, the crate would lack its changelog, and
+the commit that added it would count as an unreleased change to every crate it
+touched. release-plz asks GitHub which pull request a commit came from, and an
+empty answer skips the release without failing the job, so after merging a
+release pull request, confirm that the Release job logged `published <crate>
+<version>` for each crate. `scripts/audit_release.py`, which needs Python 3.11
+or later, holds these settings in CI.
+
+A version bumped by hand in a feature pull request is not published by that
+merge. The release pull request that follows writes its changelog, and merging
+that one publishes it. For it to open, the commit that bumps the version must
+be a releasing type or carry `!`, and must not write that version's changelog
+entry itself: with the entry already there no release pull request opens, and
+nothing publishes the version. The way out is a pull request from a branch
+named `release-plz-<anything>`, whose merge commit the release job publishes
+from.
+
+If the release job fails part-way, re-run the failed Release job, not every job
+in the run: a later push is no longer on the release commit and publishes
+nothing. The re-run passes over a crate that already reached crates.io, so one
+that was published before its tag was created is not tagged, and its
+`abnegate-<name>/v<version>` tag has to be pushed by hand.
+
+The release job authenticates through crates.io Trusted Publishing: release-plz
+exchanges the job's GitHub OIDC token for a short-lived publish token scoped to
+this repository and `release-plz.yml`, and revokes it once the job has
+published. No crates.io token is stored anywhere. Each crate's Trusted
+Publishing settings on crates.io name GitHub, owner `abnegate`, repository
+`crates`, workflow `release-plz.yml` and no environment. Trusted Publishing
+cannot create a crate, so a new crate's first version is published by hand and
+its Trusted Publishing entry added before release-plz can publish it.
 
 Every release is tagged `abnegate-<name>/v<version>`, such as
 `abnegate-http/v0.2.0`, and gets a GitHub release of the same name from its
