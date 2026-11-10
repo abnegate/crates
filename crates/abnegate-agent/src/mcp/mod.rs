@@ -1,19 +1,37 @@
-//! An MCP client: stdio servers whose tools join a [`ToolRegistry`].
+//! An MCP client: stdio and streamable HTTP servers whose tools join a
+//! [`ToolRegistry`].
 //!
 //! [`McpHub::connect`] launches every enabled command server in an
-//! [`McpConfig`], completes the handshake with each, and lists what it
-//! advertises, keeping only the tools the server
-//! [allows](McpServer::allows), as a CLI allows them. [`register`] then adds
-//! each remote tool to a registry as `server__tool`, so one server cannot
-//! answer for another's tools or for a built-in. That is the name a CLI gives
-//! it, `mcp__server__tool`, without the `mcp__`, so one `tools` list scopes
-//! both alike (see [`qualified_tool_name`]). A server that fails to start or
-//! to answer in time is logged and skipped, and so is a
+//! [`McpConfig`], connects to every enabled `url` server over streamable
+//! HTTP, completes the handshake with each, and lists what it advertises,
+//! keeping only the tools the server [allows](McpServer::allows), as a CLI
+//! allows them. [`register`] then adds each remote tool to a registry as
+//! `server__tool`, so one server cannot answer for another's tools or for a
+//! built-in. That is the name a CLI gives it, `mcp__server__tool`, without
+//! the `mcp__`, so one `tools` list scopes both alike (see
+//! [`qualified_tool_name`]). A server that fails to start, to connect or to
+//! answer in time is logged and recorded as an [`McpOutcome`], and so is a
 //! [disabled](McpServer::disabled) one, one that is not
-//! [valid](McpServer::valid), or one reached by URL, which only a CLI can
-//! attach. One a CLI would refuse because it is not
-//! [nameable](McpServer::nameable) still starts, with a warning, its name
-//! and the tools it names sanitized as a CLI names them.
+//! [valid](McpServer::valid), or an [`sse`](McpTransport::Sse) one, which
+//! this client does not speak. [`McpHub::reconnect`] and [`McpHub::remove`]
+//! then change one server without touching the others. One a CLI would
+//! refuse because it is not [nameable](McpServer::nameable) still starts,
+//! with a warning, its name and the tools it names sanitized as a CLI names
+//! them.
+//!
+//! A `url` server is sent the headers [`McpServer::endpoint`] resolves, as
+//! an [`McpEndpoint`]: each `${VAR}` in its URL and headers resolves only to
+//! a [secret](McpServer::secrets) bound to it, or to its default, never to
+//! this process's environment. A link-local or cloud metadata address is
+//! refused, including one a name resolves to when the server is reached
+//! directly; behind a proxy, which resolves names itself, only a literal
+//! metadata address is refused. Only a same-origin 307 or 308 redirect is
+//! followed, and no failure's text holds the server's URL or a bound secret.
+//!
+//! [`McpHub::connect`] and [`with_defaults_and_mcp`] contact every enabled
+//! `url` server, where releases before this one skipped them: a server that
+//! must not be contacted is [disabled](McpServer::disabled), with
+//! [`McpServer::disable`] or `"disabled": true`.
 //!
 //! The configuration is `abnegate-agent-cli`'s, re-exported here, so one
 //! `mcp.json` drives both this client and a coding agent CLI.
@@ -32,8 +50,8 @@
 //!
 //! The same configuration attaches its servers to a coding agent CLI run by
 //! `abnegate-agent-cli`'s `CliProvider`, which writes the file its CLI reads.
-//! A remote server attaches only there, and each `${VAR}` in its URL and
-//! headers resolves only to a [secret](McpServer::secrets) bound to it with
+//! There too, each `${VAR}` in a remote server's URL and headers resolves
+//! only to a [secret](McpServer::secrets) bound to it with
 //! [`McpConfig::with_secret`] or [`McpServer::with_secret`], or to its
 //! default, and never against the environment the CLI is given. Which
 //! servers attach, and the tools each allows there, depend on the
@@ -75,6 +93,9 @@
 //! is set, the proxy variables it implies are then applied on top, so a
 //! server cannot route around it; [`McpHub::connect_through`] applies a proxy
 //! the caller hands it there instead. Configure only trusted executables.
+//! A `url` server is reached through that same proxy, and never one the
+//! environment's `HTTP_PROXY` or the system names, with its `NO_PROXY` hosts
+//! reached directly.
 //!
 //! [`ToolRegistry`]: crate::tool::ToolRegistry
 
@@ -83,9 +104,13 @@ mod format;
 mod guidance;
 mod hub;
 mod name;
+mod outcome;
 #[cfg(test)]
 mod recorder;
+mod redirect;
 mod register;
+mod remote;
+mod scrubber;
 mod server_process;
 mod session;
 mod tool;
@@ -94,6 +119,7 @@ pub use abnegate_agent_cli::AgentKind;
 pub use abnegate_agent_cli::mcp::DEFAULT_PREFIX;
 pub use abnegate_agent_cli::mcp::McpConfig;
 pub use abnegate_agent_cli::mcp::McpConfigError;
+pub use abnegate_agent_cli::mcp::McpEndpoint;
 pub use abnegate_agent_cli::mcp::McpServer;
 pub use abnegate_agent_cli::mcp::McpTransport;
 pub use error::McpError;
@@ -107,6 +133,7 @@ pub use name::SEPARATOR;
 pub use name::qualified_tool_name;
 pub(crate) use name::server_prefix;
 pub use name::unique_qualified_tool_name;
+pub use outcome::McpOutcome;
 pub use register::register;
 pub use register::with_defaults_and_mcp;
 pub use register::with_defaults_and_mcp_through;

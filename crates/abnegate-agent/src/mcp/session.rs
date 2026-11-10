@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io;
 use std::process::Stdio;
@@ -5,6 +6,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use abnegate_exec::Proxy;
+use abnegate_http::metadata::is_url;
+use reqwest::Url;
+use reqwest::header::HeaderName;
+use reqwest::header::HeaderValue;
 use rmcp::RoleClient;
 use rmcp::ServiceExt;
 use rmcp::model::CallToolRequestParams;
@@ -13,16 +18,21 @@ use rmcp::model::ClientConfig;
 use rmcp::model::ProtocolVersion;
 use rmcp::model::Tool as RemoteTool;
 use rmcp::service::RunningService;
+use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::async_rw::AsyncRwTransport;
+use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use serde_json::json;
 use tokio::io::AsyncReadExt;
 use tokio::process::ChildStderr;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
+use super::McpEndpoint;
 use super::McpError;
 use super::McpServer;
 use super::name::unique_qualified_tool_name;
+use super::remote::Remote;
+use super::scrubber::Scrubber;
 use super::server_process::ServerProcess;
 use super::tool::McpTool;
 use crate::tool::Tool;
@@ -33,12 +43,32 @@ const MAXIMUM_LOGGED_STDERR_BYTES: usize = 64 * 1024;
 
 const STDERR_BUFFER_BYTES: usize = 4 * 1024;
 
+/// Headers the streamable HTTP transport sets itself, which a server's
+/// configuration may not.
+const RESERVED_HEADERS: [&str; 4] = [
+    "accept",
+    "mcp-session-id",
+    "mcp-protocol-version",
+    "last-event-id",
+];
+
+const UNRESOLVED: &str = "its URL or headers do not resolve against the server's bound secrets";
+
+const TIMED_OUT: &str = "handshake timed out";
+
+/// The schemes a remote server may be reached over.
+const SCHEMES: [&str; 2] = ["http", "https"];
+
+const INVALID_URL: &str = "invalid URL";
+
+const METADATA_URL: &str = "refusing a link-local or cloud metadata address";
+
 /// A client running this crate's [`McpSession::configuration`].
 pub(super) type Client = RunningService<RoleClient, ClientConfig>;
 
-/// One live stdio MCP session.
+/// One live MCP session, over stdio or streamable HTTP.
 ///
-/// The server leads a process group of its own, and dropping the session
+/// A stdio server leads a process group of its own, and dropping the session
 /// kills the whole group, so a server that starts helpers of its own leaves
 /// none of them behind. The session holds the server itself, not only its
 /// group, and never lets it be reaped before that kill: the server's pid
@@ -48,6 +78,7 @@ pub(super) struct McpSession {
     pub(super) remote_tools: Vec<RemoteTool>,
     client: Mutex<Client>,
     process: Option<ServerProcess>,
+    scrubber: Scrubber,
 }
 
 impl McpSession {
@@ -57,6 +88,7 @@ impl McpSession {
             remote_tools,
             client: Mutex::new(client),
             process: None,
+            scrubber: Scrubber::default(),
         }
     }
 
@@ -78,8 +110,74 @@ impl McpSession {
             Ok(result) => result,
             Err(_) => Err(McpError::Handshake {
                 server: name.to_string(),
-                message: "handshake timed out".to_string(),
+                message: TIMED_OUT.to_string(),
             }),
+        }
+    }
+
+    /// Connect to the remote server `server` under `name` over streamable
+    /// HTTP, routed through `proxy`, and complete its handshake and tool
+    /// listing within `limit`.
+    ///
+    /// Its URL and headers resolve against the secrets bound to it alone. A
+    /// link-local or metadata address is refused before any request, and so
+    /// is every address a name resolves to when the server is reached
+    /// directly; behind a proxy, which resolves names itself, only a literal
+    /// metadata address is. Only a same-origin 307 or 308 is followed, for at
+    /// most [`MAXIMUM_REDIRECTS`](super::redirect::MAXIMUM_REDIRECTS) hops. No failure's text, nor any error
+    /// the transport logs itself, holds a URL, a bound secret or a value one
+    /// expanded into, as written or percent-encoded.
+    pub(super) async fn connect_remote(
+        name: &str,
+        server: &McpServer,
+        proxy: &Proxy,
+        limit: Duration,
+    ) -> Result<Self, McpError> {
+        let failed = |message: &str| McpError::Transport {
+            server: name.to_string(),
+            message: message.to_string(),
+        };
+        let endpoint = server.endpoint().ok_or_else(|| failed(UNRESOLVED))?;
+        let url = Url::parse(&endpoint.url)
+            .ok()
+            .filter(|url| SCHEMES.contains(&url.scheme()))
+            .ok_or_else(|| failed(INVALID_URL))?;
+        if is_url(&url) {
+            return Err(failed(METADATA_URL));
+        }
+        let headers =
+            headers(&endpoint).map_err(|header| failed(&format!("invalid header `{header}`")))?;
+        let scrubber = Scrubber::new(server, &endpoint);
+        let client = Remote::new(proxy, scrubber.clone()).map_err(|message| failed(&message))?;
+        let transport = StreamableHttpClientTransport::with_client(
+            client,
+            StreamableHttpClientTransportConfig::with_uri(String::from(url))
+                .custom_headers(headers),
+        );
+        let connected = async {
+            let client = Self::configuration()
+                .serve(transport)
+                .await
+                .map_err(|error| McpError::Handshake {
+                    server: name.to_string(),
+                    message: error.to_string(),
+                })?;
+            Self::listed(name, server, client, None).await
+        };
+        let result = tokio::time::timeout(limit, connected)
+            .await
+            .unwrap_or_else(|_| {
+                Err(McpError::Handshake {
+                    server: name.to_string(),
+                    message: TIMED_OUT.to_string(),
+                })
+            });
+        match result {
+            Ok(mut session) => {
+                session.scrubber = scrubber;
+                Ok(session)
+            }
+            Err(error) => Err(scrubbed_error(error, &scrubber)),
         }
     }
 
@@ -172,7 +270,7 @@ impl McpSession {
         client
             .call_tool(request)
             .await
-            .map_err(|error| McpError::Call(error.to_string()))
+            .map_err(|error| McpError::Call(self.scrubber.scrubbed(&error.to_string())))
     }
 
     /// A tool for every remote tool, named clear of everything in `used`.
@@ -202,6 +300,41 @@ impl McpSession {
                 )) as Arc<dyn Tool>
             })
             .collect()
+    }
+}
+
+/// Each of `endpoint`'s headers as the transport sends it, marked sensitive,
+/// or the name of the first one that is not a valid header, is one the
+/// transport sets itself, or repeats another's name in any case.
+fn headers(endpoint: &McpEndpoint) -> Result<HashMap<HeaderName, HeaderValue>, String> {
+    let mut headers = HashMap::with_capacity(endpoint.headers.len());
+    for (name, value) in &endpoint.headers {
+        let header = HeaderName::from_bytes(name.as_bytes())
+            .ok()
+            .filter(|header| !RESERVED_HEADERS.contains(&header.as_str()))
+            .ok_or_else(|| name.clone())?;
+        let mut value = HeaderValue::from_str(value.expose()).map_err(|_| name.clone())?;
+        value.set_sensitive(true);
+        if headers.insert(header, value).is_some() {
+            return Err(name.clone());
+        }
+    }
+    Ok(headers)
+}
+
+/// `error` with its message scrubbed by `scrubber`.
+fn scrubbed_error(error: McpError, scrubber: &Scrubber) -> McpError {
+    match error {
+        McpError::Handshake { server, message } => McpError::Handshake {
+            server,
+            message: scrubber.scrubbed(&message),
+        },
+        McpError::Transport { server, message } => McpError::Transport {
+            server,
+            message: scrubber.scrubbed(&message),
+        },
+        McpError::Call(message) => McpError::Call(scrubber.scrubbed(&message)),
+        error => error,
     }
 }
 

@@ -16,6 +16,7 @@ use serde_json::Map;
 use serde_json::Value;
 use serde_json::json;
 
+use crate::mcp::endpoint::McpEndpoint;
 use crate::mcp::entry::Entry;
 use crate::mcp::mismatch::Mismatch;
 use crate::mcp::placeholders::Placeholders;
@@ -85,7 +86,8 @@ pub struct McpServer {
     /// Where an HTTP or SSE server listens.
     ///
     /// Each `${VAR}` or `${VAR:-default}` reference in it is resolved when a
-    /// run attaches the server, against the server's own
+    /// run, or the MCP hub in `abnegate-agent`, attaches the server, as
+    /// [`McpServer::endpoint`] resolves it, against the server's own
     /// [`secrets`](McpServer::secrets) and never against an environment:
     /// a variable handed to the child under its own name, as
     /// [`CliSettings::with_environment`](crate::CliSettings::with_environment),
@@ -406,10 +408,11 @@ impl McpServer {
     /// [`CliProvider`](crate::CliProvider) reads the agent's sign-in
     /// variables as set but empty, and Claude Code its own OAuth tokens.
     ///
-    /// The URL and headers are left alone, since only a CLI's run attaches a
-    /// remote server, resolving both against its
-    /// [`secrets`](McpServer::secrets), and so is the working directory,
-    /// which neither CLI expands.
+    /// The URL and headers are left alone, since a remote server resolves
+    /// both against its [`secrets`](McpServer::secrets) alone, through
+    /// [`McpServer::endpoint`], whether a CLI's run or the MCP hub in
+    /// `abnegate-agent` attaches it, and so is the working directory, which
+    /// neither CLI expands.
     pub fn expanded(&self, lookup: &dyn Fn(&str) -> Option<String>) -> Self {
         let lookup = |variable: &str| {
             self.secrets
@@ -549,27 +552,68 @@ impl McpServer {
         if !nameable {
             return Some(Refusal::Unnameable);
         }
-        let Some(url) = &self.url else {
-            return None;
-        };
+        let url = self.url.as_deref()?;
+        self.reached(url, &|_| None).err()
+    }
+
+    /// Where this server is reached, with every reference in its URL and
+    /// headers resolved against its own [`secrets`](McpServer::secrets)
+    /// alone, never this process's environment: as
+    /// [`endpoint_with`](Self::endpoint_with) with a lookup that gives
+    /// nothing.
+    pub fn endpoint(&self) -> Option<McpEndpoint> {
+        self.endpoint_with(&|_| None)
+    }
+
+    /// Where this server is reached, with every reference in its URL and
+    /// headers resolved against its own [`secrets`](McpServer::secrets)
+    /// first, then what `lookup` gives, and then its default.
+    ///
+    /// None for a stdio or [invalid](McpServer::valid) server, and for one
+    /// whose URL or headers refer to a variable neither binds and that has
+    /// no default, still hold `${` once resolved, or name a header with
+    /// `${`: a server a CLI would refuse to attach for the same reason. Its
+    /// name is not checked, and an `sse` server has an endpoint too.
+    pub fn endpoint_with(&self, lookup: &dyn Fn(&str) -> Option<String>) -> Option<McpEndpoint> {
+        let url = self.url.as_deref().filter(|_| self.valid())?;
+        self.reached(url, lookup).ok()
+    }
+
+    fn reached(
+        &self,
+        url: &str,
+        lookup: &dyn Fn(&str) -> Option<String>,
+    ) -> Result<McpEndpoint, Refusal> {
         if self.headers.keys().any(|header| header.contains(OPENING)) {
-            return Some(Refusal::HeaderName);
+            return Err(Refusal::HeaderName);
         }
-        let headers: Option<Vec<String>> = self
+        let headers: Option<BTreeMap<String, String>> = self
             .headers
-            .values()
-            .map(|value| self.resolved(value.expose()))
+            .iter()
+            .map(|(name, value)| {
+                self.resolved_with(value.expose(), lookup)
+                    .map(|resolved| (name.clone(), resolved))
+            })
             .collect();
-        let (Some(url), Some(headers)) = (self.resolved(url), headers) else {
-            return Some(Refusal::Unbound);
+        let (Some(url), Some(headers)) = (self.resolved_with(url, lookup), headers) else {
+            return Err(Refusal::Unbound);
         };
         if iter::once(&url)
-            .chain(&headers)
+            .chain(headers.values())
             .any(|value| value.contains(OPENING))
         {
-            return Some(Refusal::Expandable);
+            return Err(Refusal::Expandable);
         }
-        url.trim().is_empty().then_some(Refusal::Invalid)
+        if url.trim().is_empty() {
+            return Err(Refusal::Invalid);
+        }
+        Ok(McpEndpoint {
+            url,
+            headers: headers
+                .into_iter()
+                .map(|(name, value)| (name, SecretValue::new(value)))
+                .collect(),
+        })
     }
 
     /// `value`, from this server's URL or headers, with every reference
@@ -577,11 +621,26 @@ impl McpServer {
     /// with no secret taking its default, or none when such a reference has
     /// no default.
     fn resolved(&self, value: &str) -> Option<String> {
-        resolvable(value, &|name| self.secrets.contains_key(name)).then(|| {
+        self.resolved_with(value, &|_| None)
+    }
+
+    /// `value` resolved as [`resolved`](Self::resolved) resolves it, with
+    /// what `lookup` gives taking the place of a variable the server has no
+    /// secret for.
+    fn resolved_with(
+        &self,
+        value: &str,
+        lookup: &dyn Fn(&str) -> Option<String>,
+    ) -> Option<String> {
+        resolvable(value, &|name| {
+            self.secrets.contains_key(name) || lookup(name).is_some()
+        })
+        .then(|| {
             expand(value, &|name| {
                 self.secrets
                     .get(name)
                     .map(|secret| secret.expose().to_string())
+                    .or_else(|| lookup(name))
             })
         })
     }
@@ -800,6 +859,7 @@ mod tests {
     use super::mcp_rule;
     use super::qualified;
     use super::serving;
+    use crate::mcp::endpoint::McpEndpoint;
     use crate::mcp::placeholders::Placeholders;
     use crate::mcp::placeholders::expand;
     use crate::mcp::refusal::Refusal;
@@ -1897,6 +1957,153 @@ mod tests {
                 .refusal("remote"),
             Some(Refusal::HeaderName)
         );
+    }
+
+    fn header(endpoint: &McpEndpoint, name: &str) -> String {
+        endpoint.headers[name].expose().to_string()
+    }
+
+    #[test]
+    fn an_endpoint_resolves_its_url_and_headers_against_bound_secrets() {
+        let endpoint = McpServer::remote("https://${HOST}/mcp")
+            .with_header("Authorization", "Bearer ${TOKEN}")
+            .with_header("X-Literal", "plain")
+            .with_secret("HOST", "mcp.example.com")
+            .with_secret("TOKEN", "bound")
+            .endpoint()
+            .expect("a remote server with bound references has an endpoint");
+        assert_eq!(endpoint.url, "https://mcp.example.com/mcp");
+        assert_eq!(header(&endpoint, "Authorization"), "Bearer bound");
+        assert_eq!(header(&endpoint, "X-Literal"), "plain");
+        assert_eq!(endpoint.headers.len(), 2, "{endpoint:?}");
+    }
+
+    #[test]
+    fn an_endpoint_reference_with_no_secret_takes_its_default() {
+        let endpoint = McpServer::remote("https://${HOST:-fallback.example}/mcp")
+            .with_header("X-Team", "${TEAM:-core}")
+            .endpoint()
+            .expect("references with defaults resolve");
+        assert_eq!(endpoint.url, "https://fallback.example/mcp");
+        assert_eq!(header(&endpoint, "X-Team"), "core");
+    }
+
+    #[test]
+    fn an_endpoint_with_an_unbound_reference_is_none() {
+        for server in [
+            McpServer::remote("https://${HOST}/mcp"),
+            http().with_header("Authorization", "Bearer ${TOKEN}"),
+            http()
+                .with_header("Authorization", "Bearer ${TOKEN}")
+                .with_secret("OTHER", "bound"),
+        ] {
+            assert_eq!(server.endpoint(), None, "{server:?}");
+        }
+    }
+
+    #[test]
+    fn a_stdio_or_invalid_server_has_no_endpoint() {
+        let both = McpServer {
+            url: Some("https://example.com/mcp".to_string()),
+            ..stdio()
+        };
+        for server in [
+            stdio(),
+            both,
+            McpServer::remote("  "),
+            McpServer::remote("${HOST:-}"),
+            McpServer::remote("${HOST}").with_secret("HOST", " "),
+            http().with_transport(McpTransport::Stdio),
+        ] {
+            assert_eq!(server.endpoint(), None, "{server:?}");
+        }
+    }
+
+    #[test]
+    fn an_endpoint_still_holding_a_reference_or_naming_one_in_a_header_is_none() {
+        for server in [
+            http()
+                .with_header("Authorization", "Bearer ${TOKEN}")
+                .with_secret("TOKEN", "${GITHUB_TOKEN}"),
+            http().with_header("X-Key", "${KEY:-${GITHUB_TOKEN}}"),
+            McpServer::remote("https://example.com/${1BAD}"),
+            http()
+                .with_header("X-${TOKEN}", "value")
+                .with_secret("TOKEN", "bound"),
+        ] {
+            assert_eq!(server.endpoint(), None, "{server:?}");
+        }
+    }
+
+    #[test]
+    fn an_endpoint_ignores_the_name_and_is_given_over_sse_too() {
+        let endpoint = http()
+            .with_transport(McpTransport::Sse)
+            .endpoint()
+            .expect("an sse server is remote");
+        assert_eq!(endpoint.url, "https://example.com/mcp");
+        assert!(endpoint.headers.is_empty(), "{endpoint:?}");
+    }
+
+    #[test]
+    fn endpoint_never_reads_the_process_environment() {
+        assert!(
+            std::env::var_os("PATH").is_some(),
+            "the test relies on PATH being set"
+        );
+        assert_eq!(http().with_header("X", "${PATH}").endpoint(), None);
+    }
+
+    #[test]
+    fn endpoint_with_reads_secrets_then_the_lookup_then_the_default() {
+        let lookup = |name: &str| match name {
+            "BOTH" | "LOOKUP" => Some(format!("looked-up-{name}")),
+            _ => None,
+        };
+        let endpoint = http()
+            .with_header("X-Both", "${BOTH}")
+            .with_header("X-Lookup", "${LOOKUP}")
+            .with_header("X-Default", "${NEITHER:-fallback}")
+            .with_secret("BOTH", "secret")
+            .endpoint_with(&lookup)
+            .expect("every reference resolves");
+        assert_eq!(header(&endpoint, "X-Both"), "secret");
+        assert_eq!(header(&endpoint, "X-Lookup"), "looked-up-LOOKUP");
+        assert_eq!(header(&endpoint, "X-Default"), "fallback");
+        assert_eq!(
+            http()
+                .with_header("X-Unbound", "${NEITHER}")
+                .endpoint_with(&lookup),
+            None
+        );
+        assert_eq!(
+            McpServer::remote("https://${LOOKUP}/mcp")
+                .endpoint_with(&lookup)
+                .map(|endpoint| endpoint.url),
+            Some("https://looked-up-LOOKUP/mcp".to_string())
+        );
+    }
+
+    #[test]
+    fn an_endpoints_debug_never_prints_a_header_secret() {
+        for url in [
+            "https://${USER}@example.com/mcp?key=${KEY}",
+            "https://example.com/${KEY}/mcp",
+        ] {
+            let endpoint = McpServer::remote(url)
+                .with_header("Authorization", "Bearer ${TOKEN}")
+                .with_secret("TOKEN", "header-secret-7f3a")
+                .with_secret("KEY", "abc123")
+                .with_secret("USER", "admin:hunter2")
+                .endpoint()
+                .expect("every reference is bound");
+            let debug = format!("{endpoint:?}");
+            for secret in ["header-secret-7f3a", "abc123", "admin", "hunter2"] {
+                assert!(!debug.contains(secret), "{secret} leaked in {debug}");
+            }
+            assert!(debug.contains("Authorization"), "{debug}");
+            assert!(debug.contains("example.com/[REDACTED]"), "{debug}");
+        }
     }
 
     /// A server that could not attach is never rendered, and one rendered

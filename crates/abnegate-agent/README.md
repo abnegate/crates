@@ -17,7 +17,7 @@ and reloads agent runs, and `template` renders `{{key}}` prompt templates.
 
 ## Features
 
-- `mcp`: an MCP client that launches stdio servers and adds their tools to a `ToolRegistry`. Its configuration is `abnegate-agent-cli`'s `McpConfig`, re-exported here, so one `mcp.json` drives this client and a coding agent CLI alike.
+- `mcp`: an MCP client that launches stdio servers and connects to streamable HTTP ones, and adds their tools to a `ToolRegistry`. Its configuration is `abnegate-agent-cli`'s `McpConfig`, re-exported here, so one `mcp.json` drives this client and a coding agent CLI alike.
 
 ## Usage
 
@@ -112,15 +112,23 @@ With the `mcp` feature, `McpConfig::from_environment` reads the servers an
 application configured under its own prefix: `ACME_MCP_SERVERS` inline,
 `ACME_MCP_CONFIG` naming a file, or `~/.acme/mcp.json`, each in the
 `mcpServers` shape. `mcp::with_defaults_and_mcp` launches every enabled command
-server and adds its tools to the default registry as `server__tool`: only the
-tools its `tools` list names, by the names a CLI gives them, when it has one. A
-server marked `"disabled": true`, one reached by `url`, which only a CLI
-attaches, or one that is not valid is skipped, and an entry that cannot be read
-is skipped with a warning while the rest load. `abnegate-agent-cli`'s
-`CliProvider` resolves each `${VAR}` in a server reached by `url` against the
-secrets bound to that server in code with `McpServer::with_secret` or
-`McpConfig::with_secret`, which a document never holds, or else its default,
-and never against the environment its CLI is given. Each `${VAR}` or
+server, connects to every enabled server reached by `url` over streamable HTTP,
+and adds its tools to the default registry as `server__tool`: only the tools its
+`tools` list names, by the names a CLI gives them, when it has one. A server
+marked `"disabled": true`, one of `"type": "sse"`, which this client does not
+speak, or one that is not valid is skipped, and an entry that cannot be read is
+skipped with a warning while the rest load; `McpHub::outcomes` says what became
+of each. Each `${VAR}` in a server reached by `url` resolves, here and in
+`abnegate-agent-cli`'s `CliProvider` alike, against the secrets bound to that
+server in code with `McpServer::with_secret` or `McpConfig::with_secret`, which
+a document never holds, or else its default, and never against this process's
+environment or the one a CLI is given. Such a server is never sent to a
+link-local or cloud metadata address (behind a proxy, which resolves names
+itself, only a literal one is refused), follows only a same-origin 307 or 308
+redirect, and is reached through the hub's proxy alone. Releases before this
+one skipped every server reached by `url`; `with_defaults_and_mcp` and
+`McpHub::connect` now contact each enabled one, so mark a server that must not
+be contacted `"disabled": true`, or call `McpServer::disable` on it. Each `${VAR}` or
 `${VAR:-default}` in a server's command, arguments and `env` is expanded before
 it starts, as Claude Code expands it: from the secrets bound to the server with
 `McpServer::with_secret` or `McpConfig::with_secret` first, and then from this
