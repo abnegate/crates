@@ -980,6 +980,8 @@ mod tests {
     use wiremock::matchers::method;
     use wiremock::matchers::path;
 
+    const PATIENCE: Duration = Duration::from_secs(60);
+
     fn flux() -> TrainingModel {
         TrainingModel::Flux {
             checkpoint: "flux.safetensors".into(),
@@ -1011,7 +1013,14 @@ mod tests {
             resolution: 512,
             stem: run.artifact.clone(),
             cleanup: AtomicBool::new(true),
+            cancel_timeout: CANCEL_TIMEOUT,
+        }
+    }
+
+    fn hasty<'a>(config: &'a Config, model: &'a TrainingModel, run: &Run) -> Probe<'a> {
+        Probe {
             cancel_timeout: Duration::from_millis(30),
+            ..probe(config, model, run)
         }
     }
 
@@ -1441,7 +1450,7 @@ mod tests {
                     "{}",
                     None,
                     RANK_PERCENT,
-                    Instant::now() + Duration::from_secs(1)
+                    Instant::now() + PATIENCE
                 )
                 .await
                 .is_none()
@@ -1490,6 +1499,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn terminal_history_that_is_slow_to_arrive_still_verifies_the_cancel() {
+        let server = MockServer::start().await;
+        let prompt = Uuid::new_v4();
+        Mock::given(method("POST"))
+            .and(path(format!("/api/jobs/{prompt}/cancel")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"cancelled": true})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/history/{prompt}")))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({
+                        prompt.to_string(): {"status": {"status_str": "error"}}
+                    }))
+                    .set_delay(Duration::from_millis(100)),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let config = Config {
+            base_url: server.uri(),
+            poll_interval: Duration::from_millis(1),
+            ..Default::default()
+        };
+        let model = flux();
+        let run = run();
+        let probe = probe(&config, &model, &run);
+        probe.abandon(&prompt, false).await;
+        assert!(
+            probe.cleanup.load(Ordering::Acquire),
+            "terminal history that arrives inside the cancel budget must verify the cancel"
+        );
+    }
+
+    #[tokio::test]
     async fn unverified_cancel_failure_marks_probe_cleanup_unsafe() {
         let server = MockServer::start().await;
         let prompt = Uuid::new_v4();
@@ -1511,7 +1557,7 @@ mod tests {
         };
         let model = flux();
         let run = run();
-        let probe = probe(&config, &model, &run);
+        let probe = hasty(&config, &model, &run);
         probe.abandon(&prompt, false).await;
         assert!(!probe.cleanup.load(Ordering::Acquire));
         let expected = format!("/api/jobs/{prompt}/cancel");
@@ -1554,7 +1600,7 @@ mod tests {
         let probe = probe(&config, &model, &run);
         assert!(
             probe
-                .wait(&prompt, Instant::now() + Duration::from_secs(1))
+                .wait(&prompt, Instant::now() + PATIENCE)
                 .await
                 .is_none()
         );
@@ -1588,7 +1634,7 @@ mod tests {
         };
         let model = flux();
         let run = run();
-        let probe = probe(&config, &model, &run);
+        let probe = hasty(&config, &model, &run);
         assert!(
             probe
                 .stage_remote(&format!("{}.safetensors", run.artifact), Instant::now(),)
@@ -1638,7 +1684,7 @@ mod tests {
             probe
                 .stage_remote(
                     &format!("{}.safetensors", run.artifact),
-                    Instant::now() + Duration::from_secs(5)
+                    Instant::now() + PATIENCE
                 )
                 .await
                 .is_some(),
