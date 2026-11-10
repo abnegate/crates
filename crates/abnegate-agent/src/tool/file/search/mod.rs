@@ -1208,18 +1208,18 @@ mod tests {
     /// `rg` printed it before the search next looked.
     #[tokio::test]
     async fn a_match_is_read_only_while_time_remains() {
-        const RECORD: &str = concat!("a.rs", "\0", "3:first\n");
+        const MATCH: &str = concat!("a.rs", "\0", "3:first\n");
         let (mut name, mut found) = (Vec::new(), Vec::new());
 
-        let mut waiting = RECORD.as_bytes();
+        let mut waiting = MATCH.as_bytes();
         let late = next_match_before(Instant::now(), &mut waiting, &mut name, &mut found).await;
         assert!(
             late.is_none(),
             "a match was read after its search's time ran out: {late:?}"
         );
-        assert_eq!(waiting, RECORD.as_bytes(), "the late match was consumed");
+        assert_eq!(waiting, MATCH.as_bytes(), "the late match was consumed");
 
-        let mut waiting = RECORD.as_bytes();
+        let mut waiting = MATCH.as_bytes();
         let timely = next_match_before(patient_deadline(), &mut waiting, &mut name, &mut found)
             .await
             .expect("a match within its search's time is read")
