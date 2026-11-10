@@ -59,8 +59,8 @@ pub async fn with_defaults_and_mcp_through(config: &McpConfig, proxy: &Proxy) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::McpServer;
     use crate::mcp::guidance;
+    use crate::mcp::recorder::echoing;
     use crate::mcp::recorder::recorder;
     use crate::test_support::CONFIGURED_PROXY;
     use crate::test_support::assert_routed;
@@ -82,33 +82,6 @@ mod tests {
             ToolRegistry::with_defaults().names().len()
         );
         assert!(!registry.has_mcp());
-    }
-
-    /// A stdio server that records its environment to the path it is given,
-    /// then answers the handshake, lists one tool, `echo`, and answers every
-    /// call to it with `echoed`.
-    fn echoing(path: &std::path::Path) -> McpServer {
-        const SCRIPT: &str = r#"env > "$1"
-while IFS= read -r line; do
-  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
-  case "$line" in
-    *'"method":"initialize"'*)
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"echoing","version":"1"}}}\n' "$id" ;;
-    *'"method":"tools/list"'*)
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"echo","description":"Echoes.","inputSchema":{"type":"object","properties":{}}}]}}\n' "$id" ;;
-    *'"method":"tools/call"'*)
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"echoed"}]}}\n' "$id" ;;
-  esac
-done"#;
-        McpServer::command(
-            "sh",
-            [
-                "-c".to_string(),
-                SCRIPT.to_string(),
-                "sh".to_string(),
-                path.to_string_lossy().into_owned(),
-            ],
-        )
     }
 
     #[tokio::test]

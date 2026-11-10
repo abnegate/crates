@@ -1,12 +1,17 @@
+use std::collections::BTreeMap;
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::sync::PoisonError;
+use std::sync::RwLock;
+use std::sync::RwLockReadGuard;
+use std::sync::RwLockWriteGuard;
 use std::time::Duration;
 
 use abnegate_exec::Proxy;
 use futures::future::join_all;
 
 use super::McpConfig;
-use super::McpError;
+use super::McpOutcome;
 use super::McpServer;
 use super::name::cli_name;
 use super::session::McpSession;
@@ -16,29 +21,43 @@ use crate::tool::Tool;
 /// agent startup. `kill_on_drop` then tears the process down.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Connected MCP servers and the tools they exported.
+const INVALID: &str = "set exactly one of `command` and `url`, and a `type`, if any, of `stdio`, `http` or `sse` that matches it";
+
+const REMOTE_UNSUPPORTED: &str = "only stdio servers are launched here";
+
+/// Connected MCP servers, the tools they exported, and what became of every
+/// server the hub was asked to connect.
 pub struct McpHub {
-    sessions: Vec<Arc<McpSession>>,
+    servers: RwLock<Servers>,
+}
+
+#[derive(Default)]
+struct Servers {
+    sessions: BTreeMap<String, Arc<McpSession>>,
+    outcomes: BTreeMap<String, McpOutcome>,
 }
 
 impl McpHub {
     /// A hub with no server connected.
     pub fn new() -> Self {
         Self {
-            sessions: Vec::new(),
+            servers: RwLock::new(Servers::default()),
         }
     }
 
     /// Launch every enabled command server in `config` and connect to it,
     /// keeping only the tools each server [allows](McpServer::allows).
     ///
-    /// A [disabled](McpServer::disabled) server is skipped. So is one reached
-    /// by URL, which only a CLI attaches, and one that is not
-    /// [valid](McpServer::valid), each with a warning. One a CLI would refuse
-    /// because it is not [nameable](McpServer::nameable) still starts, with a
-    /// warning, its name and the tools it names sanitized as a CLI names them.
-    /// A server that fails to start or to answer in time is logged and
-    /// skipped.
+    /// Every server in `config` is recorded as an [`McpOutcome`], read back
+    /// with [`outcomes`](Self::outcomes). A [disabled](McpServer::disabled)
+    /// server is recorded as [`Disabled`](McpOutcome::Disabled) and not
+    /// started. One reached by URL, which only a CLI attaches, and one that is
+    /// not [valid](McpServer::valid) are recorded as
+    /// [`Failed`](McpOutcome::Failed), each with a warning. One a CLI would
+    /// refuse because it is not [nameable](McpServer::nameable) still starts,
+    /// with a warning, its name and the tools it names sanitized as a CLI
+    /// names them. A server that fails to start or to answer in time is logged
+    /// and recorded as [`Failed`](McpOutcome::Failed).
     ///
     /// Each server is routed through the proxy [`Proxy::from_environment`]
     /// reads.
@@ -50,6 +69,7 @@ impl McpHub {
     /// over its environment before its handshake, in place of the one this
     /// process's environment names. With [`Proxy::default`], no proxy is laid
     /// over a server, which then routes only as its own environment says.
+    /// Every server in `config` is recorded as an [`McpOutcome`].
     ///
     /// ```no_run
     /// use abnegate_agent::McpConfig;
@@ -60,6 +80,7 @@ impl McpHub {
     /// let proxy = Proxy::new("http://proxy:3128").with_bypass(["localhost", ".svc"]);
     /// let hub = McpHub::connect_through(&McpConfig::from_environment("ACME"), &proxy).await;
     /// println!("{:?}", hub.server_names());
+    /// println!("{:?}", hub.outcomes());
     /// # }
     /// ```
     pub async fn connect_through(config: &McpConfig, proxy: &Proxy) -> Self {
@@ -71,53 +92,97 @@ impl McpHub {
         Self::launch(config, &Proxy::from_environment(), limit).await
     }
 
-    async fn launch(config: &McpConfig, proxy: &Proxy, limit: Duration) -> Self {
-        let results = join_all(
-            config
-                .servers
-                .iter()
-                .filter(|(name, server)| launchable(name, server))
-                .map(|(name, server)| start(name, server, proxy, limit)),
-        )
-        .await;
-
-        let mut hub = Self::new();
-        for result in results {
-            match result {
-                Ok(session) => {
-                    tracing::info!(
-                        server = %session.name,
-                        tools = session.remote_tools.len(),
-                        "Connected MCP server"
-                    );
-                    hub.sessions.push(Arc::new(session));
-                }
-                Err(error) => {
-                    tracing::warn!(error = %error, "MCP server unavailable");
-                }
-            }
+    #[cfg(test)]
+    fn with_sessions(sessions: impl IntoIterator<Item = McpSession>) -> Self {
+        let hub = Self::new();
+        for session in sessions {
+            let name = session.name.clone();
+            hub.record(&name, Ok(session));
         }
         hub
     }
 
-    /// Whether no server is connected.
-    pub fn is_empty(&self) -> bool {
-        self.sessions.is_empty()
+    async fn launch(config: &McpConfig, proxy: &Proxy, limit: Duration) -> Self {
+        let results =
+            join_all(config.servers.iter().map(|(name, server)| async move {
+                (name, start(name, server, proxy, limit).await)
+            }))
+            .await;
+
+        let hub = Self::new();
+        for (name, started) in results {
+            hub.record(name, started);
+        }
+        hub
     }
 
-    pub(super) fn sessions(&self) -> &[Arc<McpSession>] {
-        &self.sessions
+    /// Connect `server` under `name` again, routed through `proxy`, in place
+    /// of the session the hub holds for it, and record what became of it.
+    ///
+    /// The old session is dropped whatever the outcome, so a server that is
+    /// now disabled, invalid or unreachable leaves the hub. A name the hub
+    /// does not hold yet is added. No other server is touched, and no lock is
+    /// held while the server connects. Tools a
+    /// [`ToolRegistry`](crate::tool::ToolRegistry) already holds keep the old
+    /// session alive until that registry drops them.
+    pub async fn reconnect(&self, name: &str, server: &McpServer, proxy: &Proxy) -> McpOutcome {
+        self.reconnect_within(name, server, proxy, CONNECT_TIMEOUT)
+            .await
+    }
+
+    async fn reconnect_within(
+        &self,
+        name: &str,
+        server: &McpServer,
+        proxy: &Proxy,
+        limit: Duration,
+    ) -> McpOutcome {
+        let started = start(name, server, proxy, limit).await;
+        self.record(name, started)
+    }
+
+    /// Drop the server named `name` and its outcome, and return whether the
+    /// hub held it. Tools a [`ToolRegistry`](crate::tool::ToolRegistry)
+    /// already holds keep its session alive until that registry drops them.
+    pub fn remove(&self, name: &str) -> bool {
+        let (session, outcome) = {
+            let mut servers = self.write();
+            (servers.sessions.remove(name), servers.outcomes.remove(name))
+        };
+        drop(session);
+        outcome.is_some()
+    }
+
+    /// What became of every server the hub was asked to connect, by name.
+    pub fn outcomes(&self) -> BTreeMap<String, McpOutcome> {
+        self.read().outcomes.clone()
+    }
+
+    /// What became of the server named `name`, or `None` when the hub was
+    /// never asked to connect it.
+    pub fn outcome(&self, name: &str) -> Option<McpOutcome> {
+        self.read().outcomes.get(name).cloned()
+    }
+
+    /// Whether no server is connected.
+    pub fn is_empty(&self) -> bool {
+        self.read().sessions.is_empty()
+    }
+
+    pub(super) fn sessions(&self) -> Vec<Arc<McpSession>> {
+        self.read().sessions.values().cloned().collect()
     }
 
     /// How many servers are connected.
     pub fn server_count(&self) -> usize {
-        self.sessions.len()
+        self.read().sessions.len()
     }
 
     /// The name of every connected server.
     pub fn server_names(&self) -> Vec<String> {
-        self.sessions
-            .iter()
+        self.read()
+            .sessions
+            .values()
             .map(|session| session.name.clone())
             .collect()
     }
@@ -130,10 +195,51 @@ impl McpHub {
 
     /// Same as [`Self::tools`], naming each clear of everything in `used`.
     pub fn tools_avoiding(&self, used: &mut HashSet<String>) -> Vec<Arc<dyn Tool>> {
-        self.sessions
+        self.sessions()
             .iter()
             .flat_map(|session| session.tools(used))
             .collect()
+    }
+
+    /// Record what became of the server named `name`, holding its session
+    /// when it connected and dropping any it held before.
+    fn record(&self, name: &str, started: Result<McpSession, McpOutcome>) -> McpOutcome {
+        let (session, outcome) = match started {
+            Ok(session) => {
+                tracing::info!(
+                    server = %session.name,
+                    tools = session.remote_tools.len(),
+                    "Connected MCP server"
+                );
+                let outcome = McpOutcome::Connected {
+                    tools: session
+                        .remote_tools
+                        .iter()
+                        .map(|tool| tool.name.to_string())
+                        .collect(),
+                };
+                (Some(Arc::new(session)), outcome)
+            }
+            Err(outcome) => (None, outcome),
+        };
+        let replaced = {
+            let mut servers = self.write();
+            servers.outcomes.insert(name.to_string(), outcome.clone());
+            match session {
+                Some(session) => servers.sessions.insert(name.to_string(), session),
+                None => servers.sessions.remove(name),
+            }
+        };
+        drop(replaced);
+        outcome
+    }
+
+    fn read(&self) -> RwLockReadGuard<'_, Servers> {
+        self.servers.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn write(&self) -> RwLockWriteGuard<'_, Servers> {
+        self.servers.write().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -143,40 +249,50 @@ impl Default for McpHub {
     }
 }
 
-/// Whether `server` is one this hub starts itself: an enabled, valid
-/// command server.
-fn launchable(name: &str, server: &McpServer) -> bool {
+/// `Ok` when `server` is one this hub starts itself, an enabled, valid
+/// command server, and otherwise the outcome it is recorded as.
+fn launchable(name: &str, server: &McpServer) -> Result<(), McpOutcome> {
     if server.disabled {
         tracing::debug!(server = %name, "skipping a disabled MCP server");
-        return false;
+        return Err(McpOutcome::Disabled);
     }
     if !server.valid() {
-        tracing::warn!(
-            server = %name,
-            "skipping an MCP server: set exactly one of `command` and `url`, and a `type`, if any, of `stdio`, `http` or `sse` that matches it"
-        );
-        return false;
+        tracing::warn!(server = %name, "skipping an MCP server: {}", INVALID);
+        return Err(McpOutcome::Failed {
+            error: INVALID.to_string(),
+        });
     }
     if server.command.is_none() {
         tracing::warn!(
             server = %name,
-            "skipping a remote MCP server: only stdio servers are launched here"
+            "skipping a remote MCP server: {}",
+            REMOTE_UNSUPPORTED
         );
-        return false;
+        return Err(McpOutcome::Failed {
+            error: REMOTE_UNSUPPORTED.to_string(),
+        });
     }
-    true
+    Ok(())
 }
 
 /// Start `server` under `name`, routed through `proxy`, and complete its
-/// handshake within `limit`.
+/// handshake within `limit`, or the outcome it is recorded as instead.
 async fn start(
     name: &str,
     server: &McpServer,
     proxy: &Proxy,
     limit: Duration,
-) -> Result<McpSession, McpError> {
+) -> Result<McpSession, McpOutcome> {
+    launchable(name, server)?;
     let server = named(name, server);
-    McpSession::connect_with_timeout(name, &server, proxy, limit).await
+    McpSession::connect_with_timeout(name, &server, proxy, limit)
+        .await
+        .map_err(|error| {
+            tracing::warn!(error = %error, "MCP server unavailable");
+            McpOutcome::Failed {
+                error: error.to_string(),
+            }
+        })
 }
 
 /// `server` with every tool it names sanitized as a CLI names a tool, so it
@@ -224,6 +340,7 @@ mod tests {
     use super::*;
     use crate::mcp::McpTransport;
     use crate::mcp::recorder::LIMIT;
+    use crate::mcp::recorder::echoing;
     use crate::mcp::recorder::recorder;
     use crate::mcp::register;
     use crate::test_support::CHILD_TEST;
@@ -284,13 +401,8 @@ mod tests {
                 .collect::<Vec<_>>()
         );
 
-        let hub = McpHub {
-            sessions: vec![Arc::new(McpSession::new(
-                "echo".to_string(),
-                remote_tools,
-                client,
-            ))],
-        };
+        let hub =
+            McpHub::with_sessions([McpSession::new("echo".to_string(), remote_tools, client)]);
 
         let mut registry = ToolRegistry::new();
         assert_eq!(register(&mut registry, &hub), 1);
@@ -374,13 +486,8 @@ mod tests {
             .await
             .expect("client serve");
         let remote_tools = client.list_all_tools().await.expect("list tools");
-        let hub = McpHub {
-            sessions: vec![Arc::new(McpSession::new(
-                "silent".to_string(),
-                remote_tools,
-                client,
-            ))],
-        };
+        let hub =
+            McpHub::with_sessions([McpSession::new("silent".to_string(), remote_tools, client)]);
         let mut registry = ToolRegistry::new();
         assert_eq!(register(&mut registry, &hub), 1);
 
@@ -440,13 +547,8 @@ mod tests {
             .await
             .expect("client serve");
         let remote_tools = client.list_all_tools().await.expect("list tools");
-        let hub = McpHub {
-            sessions: vec![Arc::new(McpSession::new(
-                "echo".to_string(),
-                remote_tools,
-                client,
-            ))],
-        };
+        let hub =
+            McpHub::with_sessions([McpSession::new("echo".to_string(), remote_tools, client)]);
 
         let mut registry = ToolRegistry::new();
         assert_eq!(register(&mut registry, &hub), 1);
@@ -530,13 +632,8 @@ mod tests {
             "the impostor must advertise the built-in's name, or this proves nothing: {remote_tools:?}"
         );
 
-        let hub = McpHub {
-            sessions: vec![Arc::new(McpSession::new(
-                "write".to_string(),
-                remote_tools,
-                client,
-            ))],
-        };
+        let hub =
+            McpHub::with_sessions([McpSession::new("write".to_string(), remote_tools, client)]);
 
         let mut registry = ToolRegistry::with_defaults();
         let taken = crate::mcp::qualified_tool_name("write", "write_file");
@@ -625,13 +722,7 @@ mod tests {
             .serve((client_from_server, client_to_server))
             .await
             .expect("client serve");
-        let hub = McpHub {
-            sessions: vec![Arc::new(McpSession::new(
-                "quiet".to_string(),
-                Vec::new(),
-                client,
-            ))],
-        };
+        let hub = McpHub::with_sessions([McpSession::new("quiet".to_string(), Vec::new(), client)]);
 
         let mut registry = ToolRegistry::new();
         assert_eq!(register(&mut registry, &hub), 0);
@@ -687,9 +778,7 @@ mod tests {
         let session = McpSession::listed("pair", server, client, None)
             .await
             .expect("listed");
-        let hub = McpHub {
-            sessions: vec![Arc::new(session)],
-        };
+        let hub = McpHub::with_sessions([session]);
 
         let mut registry = ToolRegistry::new();
         register(&mut registry, &hub);
@@ -728,6 +817,211 @@ mod tests {
         );
         let hub = McpHub::connect(&config).await;
         assert!(hub.is_empty());
+        assert!(
+            matches!(
+                hub.outcome("missing"),
+                Some(McpOutcome::Failed { ref error })
+                    if error.contains("failed to start MCP server 'missing'")
+            ),
+            "{:?}",
+            hub.outcomes()
+        );
+    }
+
+    fn failed(error: &str) -> McpOutcome {
+        McpOutcome::Failed {
+            error: error.to_string(),
+        }
+    }
+
+    fn connected(tools: &[&str]) -> McpOutcome {
+        McpOutcome::Connected {
+            tools: tools.iter().map(|tool| tool.to_string()).collect(),
+        }
+    }
+
+    #[tokio::test]
+    async fn connect_records_an_outcome_for_every_configured_server() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut ambiguous = recorder(":", &directory.path().join("ambiguous"));
+        ambiguous.url = Some("https://example.com/mcp".to_string());
+        let config = McpConfig::default()
+            .with_server("exits", recorder(":", &directory.path().join("exits")))
+            .with_server(
+                "off",
+                recorder(":", &directory.path().join("off")).disable(),
+            )
+            .with_server("remote", McpServer::remote("http://127.0.0.1:1/mcp"))
+            .with_server("ambiguous", ambiguous);
+
+        let hub = McpHub::connect_with_timeout(&config, LIMIT).await;
+        let outcomes = hub.outcomes();
+
+        assert!(
+            outcomes.keys().eq(config.servers.keys()),
+            "every configured server has an outcome: {outcomes:?}"
+        );
+        assert!(
+            matches!(outcomes["exits"], McpOutcome::Failed { .. }),
+            "a server that exits before its handshake failed: {outcomes:?}"
+        );
+        assert_eq!(outcomes["off"], McpOutcome::Disabled);
+        assert_eq!(outcomes["remote"], failed(REMOTE_UNSUPPORTED));
+        assert_eq!(outcomes["ambiguous"], failed(INVALID));
+        assert!(hub.is_empty());
+    }
+
+    #[tokio::test]
+    async fn reconnect_swaps_a_servers_tools() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("environment");
+        let hub = McpHub::new();
+
+        let outcome = hub
+            .reconnect_within(
+                "notes",
+                &echoing(&path).with_tools(["echo"]),
+                &Proxy::default(),
+                LIMIT,
+            )
+            .await;
+        assert_eq!(outcome, connected(&["echo"]));
+        assert_eq!(hub.outcome("notes"), Some(connected(&["echo"])));
+        assert_eq!(hub.server_count(), 1);
+        assert_eq!(hub.tools().len(), 1);
+
+        let outcome = hub
+            .reconnect_within(
+                "notes",
+                &echoing(&path).with_tools(["absent"]),
+                &Proxy::default(),
+                LIMIT,
+            )
+            .await;
+        assert_eq!(outcome, connected(&[]));
+        assert!(hub.tools().is_empty(), "the old session's tools are gone");
+        assert_eq!(hub.server_count(), 1);
+
+        let outcome = hub
+            .reconnect_within(
+                "notes",
+                &McpServer::command(
+                    "/definitely/not/a/real/mcp-server-xyz",
+                    Vec::<String>::new(),
+                ),
+                &Proxy::default(),
+                LIMIT,
+            )
+            .await;
+        assert!(matches!(outcome, McpOutcome::Failed { .. }), "{outcome:?}");
+        assert_eq!(hub.outcome("notes"), Some(outcome));
+        assert_eq!(hub.server_count(), 0);
+        assert!(hub.is_empty());
+    }
+
+    #[tokio::test]
+    async fn reconnecting_a_disabled_server_drops_its_session_and_records_disabled() {
+        let directory = tempfile::tempdir().unwrap();
+        let server = echoing(&directory.path().join("environment"));
+        let hub = McpHub::new();
+        assert_eq!(
+            hub.reconnect_within("notes", &server, &Proxy::default(), LIMIT)
+                .await,
+            connected(&["echo"])
+        );
+
+        let outcome = hub
+            .reconnect_within("notes", &server.disable(), &Proxy::default(), LIMIT)
+            .await;
+
+        assert_eq!(outcome, McpOutcome::Disabled);
+        assert_eq!(hub.outcome("notes"), Some(McpOutcome::Disabled));
+        assert!(hub.is_empty());
+        assert!(hub.server_names().is_empty());
+    }
+
+    #[tokio::test]
+    async fn remove_drops_the_server_and_its_outcome() {
+        let directory = tempfile::tempdir().unwrap();
+        let hub = McpHub::new();
+        hub.reconnect_within(
+            "notes",
+            &echoing(&directory.path().join("environment")),
+            &Proxy::default(),
+            LIMIT,
+        )
+        .await;
+        let mut registry = ToolRegistry::new();
+        assert_eq!(register(&mut registry, &hub), 1);
+
+        assert!(hub.remove("notes"), "the hub held the server");
+
+        assert!(hub.is_empty());
+        assert_eq!(hub.outcome("notes"), None);
+        assert!(hub.outcomes().is_empty());
+        assert!(!hub.remove("notes"), "a second remove finds nothing");
+        let name = crate::mcp::qualified_tool_name("notes", "echo");
+        let result = registry
+            .execute(
+                &name,
+                serde_json::json!({}),
+                &ToolContext {
+                    command_timeout: Duration::from_secs(5),
+                    ..ToolContext::default()
+                },
+            )
+            .await
+            .expect("a registered tool keeps its session alive");
+        assert!(
+            result
+                .output
+                .as_deref()
+                .unwrap_or_default()
+                .contains("echoed"),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_server_has_no_outcome() {
+        let hub = McpHub::new();
+
+        assert_eq!(hub.outcome("unknown"), None);
+        assert!(hub.outcomes().is_empty());
+        assert!(!hub.remove("unknown"));
+    }
+
+    #[tokio::test]
+    async fn reconnecting_two_servers_at_once_records_both() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = echoing(&directory.path().join("first"));
+        let second = echoing(&directory.path().join("second"));
+        let proxy = Proxy::default();
+        let hub = McpHub::new();
+
+        let (one, two) = tokio::join!(
+            hub.reconnect_within("first", &first, &proxy, LIMIT),
+            hub.reconnect_within("second", &second, &proxy, LIMIT),
+        );
+
+        assert_eq!(one, connected(&["echo"]));
+        assert_eq!(two, connected(&["echo"]));
+        assert_eq!(hub.server_names(), ["first", "second"]);
+        assert_eq!(hub.outcomes().len(), 2);
+    }
+
+    #[test]
+    fn the_hub_is_send_and_sync() {
+        fn assert<T: Send + Sync + Unpin>() {}
+        assert::<McpHub>();
+    }
+
+    #[test]
+    fn a_reconnect_future_is_send() {
+        fn send<T: Send>(_: T) {}
+        let hub = McpHub::new();
+        let server = McpServer::command("x", Vec::<String>::new());
+        send(hub.reconnect("x", &server, &Proxy::default()));
     }
 
     #[tokio::test]
