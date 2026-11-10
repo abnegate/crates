@@ -445,15 +445,15 @@ async fn ripgrep(
         if results.len() >= maximum_results {
             break None;
         }
-        match timeout_at(deadline, next_match(&mut stdout, &mut name, &mut found)).await {
-            Ok(Ok(false)) => {
+        match next_match_before(deadline, &mut stdout, &mut name, &mut found).await {
+            Some(Ok(false)) => {
                 break match timeout_at(deadline, child.wait()).await {
                     Ok(Ok(status)) if searched_everything(status) => None,
                     Ok(_) => Some(UNREADABLE),
                     Err(_) => Some(OUT_OF_TIME),
                 };
             }
-            Ok(Ok(true)) => {
+            Some(Ok(true)) => {
                 let path = Path::new(OsStr::from_bytes(&name));
                 let shown = match &judged {
                     Some((last, shown)) if last == path => *shown,
@@ -471,8 +471,8 @@ async fn ripgrep(
                     ));
                 }
             }
-            Ok(Err(_)) => break Some(UNREADABLE),
-            Err(_) => break Some(OUT_OF_TIME),
+            Some(Err(_)) => break Some(UNREADABLE),
+            None => break Some(OUT_OF_TIME),
         }
     };
 
@@ -482,6 +482,25 @@ async fn ripgrep(
         return None;
     }
     Some(format_search_results(results, maximum_results, incomplete))
+}
+
+/// [`next_match`], or `None` once `deadline` has passed.
+///
+/// The clock is read before the read begins, as a walk reads it before each
+/// entry: `timeout_at` polls the read first, so a record already waiting
+/// would be taken however long ago the deadline passed.
+async fn next_match_before<Reader: AsyncBufRead + Unpin>(
+    deadline: Instant,
+    stdout: &mut Reader,
+    name: &mut Vec<u8>,
+    found: &mut Vec<u8>,
+) -> Option<io::Result<bool>> {
+    if Instant::now() >= deadline {
+        return None;
+    }
+    timeout_at(deadline, next_match(stdout, name, found))
+        .await
+        .ok()
 }
 
 /// Read ripgrep's next `path\0number:text` record into `name` and `found`,
@@ -1171,6 +1190,60 @@ mod tests {
             MAXIMUM_SEARCH_RESULTS,
             Instant::now(),
             &context,
+        )
+        .await
+        .expect("a search out of time still answers")
+        .output
+        .unwrap();
+
+        assert_eq!(
+            output,
+            "No matches found so far\n[search stopped early: out of time]"
+        );
+    }
+
+    /// The deadline was consulted only once a read had to wait, so a match
+    /// `rg` had already printed was read however long ago the search's time
+    /// had run out, and a search given no time at all reported one whenever
+    /// `rg` printed it before the search next looked.
+    #[tokio::test]
+    async fn a_match_is_read_only_while_time_remains() {
+        const RECORD: &str = concat!("a.rs", "\0", "3:first\n");
+        let (mut name, mut found) = (Vec::new(), Vec::new());
+
+        let mut waiting = RECORD.as_bytes();
+        let late = next_match_before(Instant::now(), &mut waiting, &mut name, &mut found).await;
+        assert!(
+            late.is_none(),
+            "a match was read after its search's time ran out: {late:?}"
+        );
+        assert_eq!(waiting, RECORD.as_bytes(), "the late match was consumed");
+
+        let mut waiting = RECORD.as_bytes();
+        let timely = next_match_before(patient_deadline(), &mut waiting, &mut name, &mut found)
+            .await
+            .expect("a match within its search's time is read")
+            .expect("the record reads");
+        assert!(timely, "the record was taken for the end of the output");
+        assert_eq!(
+            (name.as_slice(), found.as_slice()),
+            (b"a.rs".as_slice(), b"3:first\n".as_slice())
+        );
+    }
+
+    /// A search whose time had run out before `rg` started still read the
+    /// first match `rg` printed, so one given no time answered with a match
+    /// on a host quick enough to print it before the clock was next read.
+    #[tokio::test]
+    async fn a_search_already_out_of_time_reads_nothing_rg_prints() {
+        let (_tree, root) = tree();
+
+        let output = ripgrep(
+            shell(&printed(&root, "a.rs", "3:first")),
+            &root,
+            MAXIMUM_SEARCH_RESULTS,
+            Instant::now(),
+            &patient(&root),
         )
         .await
         .expect("a search out of time still answers")

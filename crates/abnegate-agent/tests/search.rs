@@ -40,10 +40,13 @@ fn the_default_search_timeout_is_twenty_seconds() {
 }
 
 #[tokio::test]
-async fn a_search_given_no_time_stops_early_and_says_so() {
+async fn a_search_without_ripgrep_given_no_time_stops_early_and_says_so() {
     let directory = checkout();
+    let programs = TempDir::new().expect("a directory holding no ripgrep");
     let context = context(directory.path())
-        .with_environment(EnvironmentPolicy::empty())
+        .with_environment(
+            EnvironmentPolicy::empty().with("PATH", programs.path().display().to_string()),
+        )
         .with_search_timeout(Duration::ZERO);
 
     let output = search(&context).await;
@@ -60,6 +63,7 @@ async fn a_search_that_may_use_ripgrep_given_no_time_stops_early_too() {
     let output = search(&context).await;
 
     assert!(output.contains(STOPPED_EARLY), "{output}");
+    assert!(!output.contains("main.rs"), "{output}");
 }
 
 #[tokio::test]
