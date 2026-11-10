@@ -230,17 +230,21 @@ change, and updates each crate's `CHANGELOG.md`. Nothing is published until
 that pull request is merged.
 
 Merging the release pull request publishes every crate whose new version is not
-yet on crates.io. Publishing happens only from `main`, and only on the merge
-commit of a pull request whose branch name starts with `release-plz-`:
+yet on crates.io. Publishing happens only from `main`, and only on the push
+that merges a pull request whose branch name starts with `release-plz-`:
 `release_always = false` in `release-plz.toml` has the release job skip every
 other push, so a crate is published and tagged on the commit that carries its
 changelog entry. Published any earlier, the crate would lack its changelog, and
 the commit that added it would count as an unreleased change to every crate it
-touched. release-plz asks GitHub which pull request a commit came from, and an
-empty answer skips the release without failing the job, so after merging a
-release pull request, confirm that the Release job logged `published <crate>
-<version>` for each crate. `scripts/audit_release.py`, which needs Python 3.11
-or later, holds these settings in CI.
+touched. Release pull requests are squash-merged, and the crates are published
+and tagged on that squash commit. Merged in a way that keeps the pull request's
+last commit in the history of `main`, as a merge commit does, release-plz
+publishes from and tags that last commit instead. release-plz asks GitHub which
+pull request a commit came from, and an empty answer skips the release without
+failing the job, so after merging a release pull request, confirm that the
+Release job logged `published <crate> <version>` for each crate.
+`scripts/audit_release.py`, which needs Python 3.11 or later, holds these
+settings in CI.
 
 A version bumped by hand in a feature pull request is not published by that
 merge. The release pull request that follows writes its changelog, and merging
@@ -248,14 +252,16 @@ that one publishes it. For it to open, the commit that bumps the version must
 be a releasing type or carry `!`, and must not write that version's changelog
 entry itself: with the entry already there no release pull request opens, and
 nothing publishes the version. The way out is a pull request from a branch
-named `release-plz-<anything>`, whose merge commit the release job publishes
+named `release-plz-<anything>`, whose squash commit the release job publishes
 from.
 
 If the release job fails part-way, re-run the failed Release job, not every job
 in the run: a later push is no longer on the release commit and publishes
 nothing. The re-run passes over a crate that already reached crates.io, so one
 that was published before its tag was created is not tagged, and its
-`abnegate-<name>/v<version>` tag has to be pushed by hand.
+`abnegate-<name>/v<version>` tag has to be pushed by hand, onto the commit the
+release job published from: the squash commit, or the release pull request's
+last commit where the merge kept it in the history of `main`.
 
 The release job authenticates through crates.io Trusted Publishing: release-plz
 exchanges the job's GitHub OIDC token for a short-lived publish token scoped to
