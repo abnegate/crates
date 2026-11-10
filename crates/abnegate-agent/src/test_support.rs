@@ -261,19 +261,27 @@ pub(crate) async fn captured_logs_until<T>(
 ) -> (T, String) {
     captured_logs(async {
         let value = work.await;
-        let buffer = SINK.with(|sink| sink.borrow().clone()).expect("collecting");
-        let deadline = Instant::now() + PATIENCE;
-        while !logged(&buffer).contains(until) {
-            assert!(
-                Instant::now() < deadline,
-                "nothing logged {until:?} in {PATIENCE:?}: {}",
-                logged(&buffer)
-            );
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        until_logged(until).await;
         value
     })
     .await
+}
+
+/// Wait until what this thread is collecting holds `line`, for a task under
+/// [`captured_logs`] that must not go on before it is logged. Fails past
+/// [`PATIENCE`].
+#[cfg(feature = "mcp")]
+pub(crate) async fn until_logged(line: &str) {
+    let buffer = SINK.with(|sink| sink.borrow().clone()).expect("collecting");
+    let deadline = Instant::now() + PATIENCE;
+    while !logged(&buffer).contains(line) {
+        assert!(
+            Instant::now() < deadline,
+            "nothing logged {line:?} in {PATIENCE:?}: {}",
+            logged(&buffer)
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 
 fn logged(buffer: &Mutex<Vec<u8>>) -> String {

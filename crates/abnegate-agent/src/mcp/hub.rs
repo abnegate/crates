@@ -365,6 +365,12 @@ fn named(name: &str, server: &McpServer) -> McpServer {
 
 #[cfg(test)]
 mod tests {
+    use std::io;
+    use std::net::Ipv4Addr;
+    use std::net::SocketAddr;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
+
     use rmcp::RoleServer;
     use rmcp::ServerHandler;
     use rmcp::ServiceExt;
@@ -386,6 +392,10 @@ mod tests {
     use rmcp::transport::IntoTransport;
     use rmcp::transport::Transport;
     use serde::Deserialize;
+    use tokio::io::AsyncReadExt;
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::TcpListener;
+    use tokio::net::TcpStream;
     use tokio::process::Command;
     use wiremock::Mock;
     use wiremock::MockServer;
@@ -412,6 +422,7 @@ mod tests {
     use crate::test_support::assert_routed;
     use crate::test_support::assert_unrouted;
     use crate::test_support::ran_in_child;
+    use crate::test_support::until_logged;
     use crate::tool::Tier;
     use crate::tool::ToolContext;
     use crate::tool::ToolRegistry;
@@ -1539,6 +1550,75 @@ mod tests {
         McpServer::remote(format!("{}{MCP_PATH}", server.uri()))
     }
 
+    /// [`reached`] through a relay that holds back `server`'s answer to a
+    /// request naming `held` until this thread has logged `line`, so what the
+    /// client meets first is settled by what it has done, not by a delay.
+    /// The flag beside it is set once the relay has held an answer back.
+    async fn relayed(
+        server: &MockServer,
+        held: &'static str,
+        line: &'static str,
+    ) -> (McpServer, Arc<AtomicBool>) {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("a port for the relay");
+        let address = listener.local_addr().expect("the relay's address");
+        let upstream = *server.address();
+        let engaged = Arc::new(AtomicBool::new(false));
+        let holding = engaged.clone();
+        tokio::spawn(async move {
+            while let Ok((client, _)) = listener.accept().await {
+                tokio::spawn(relay(client, upstream, held, line, holding.clone()));
+            }
+        });
+        (
+            McpServer::remote(format!("http://{address}{MCP_PATH}")),
+            engaged,
+        )
+    }
+
+    /// Copy each request `client` sends to `upstream` and each answer back,
+    /// the answer to a request naming `held` only once this thread has logged
+    /// `line`, setting `engaged` before that wait.
+    async fn relay(
+        mut client: TcpStream,
+        upstream: SocketAddr,
+        held: &'static str,
+        line: &'static str,
+        engaged: Arc<AtomicBool>,
+    ) -> io::Result<()> {
+        let mut server = TcpStream::connect(upstream).await?;
+        let mut request = Vec::new();
+        let (mut sent, mut answered) = ([0; 4096], [0; 4096]);
+        loop {
+            tokio::select! {
+                read = client.read(&mut sent) => {
+                    let read = read?;
+                    if read == 0 {
+                        return Ok(());
+                    }
+                    request.extend_from_slice(&sent[..read]);
+                    server.write_all(&sent[..read]).await?;
+                }
+                read = server.read(&mut answered) => {
+                    let read = read?;
+                    if read == 0 {
+                        return Ok(());
+                    }
+                    if request
+                        .windows(held.len())
+                        .any(|window| window == held.as_bytes())
+                    {
+                        engaged.store(true, Ordering::Relaxed);
+                        until_logged(line).await;
+                    }
+                    request.clear();
+                    client.write_all(&answered[..read]).await?;
+                }
+            }
+        }
+    }
+
     /// [`reached`], sent [`SECRET`] bare in [`KEY_HEADER`].
     fn keyed(server: &MockServer) -> McpServer {
         reached(server)
@@ -1893,6 +1973,7 @@ mod tests {
     /// failure after it.
     #[tokio::test]
     async fn a_refused_redirect_is_never_blamed_for_another_failure() {
+        let listing = "tools/list";
         let server = MockServer::start().await;
         let elsewhere = MockServer::start().await;
         Mock::given(method("GET"))
@@ -1904,22 +1985,22 @@ mod tests {
             .mount(&server)
             .await;
         Mock::given(method("POST"))
-            .and(wiremock::matchers::body_string_contains("tools/list"))
-            .respond_with(
-                ResponseTemplate::new(400)
-                    .set_body_string("listing refused")
-                    .set_delay(Duration::from_millis(500)),
-            )
+            .and(wiremock::matchers::body_string_contains(listing))
+            .respond_with(ResponseTemplate::new(400).set_body_string("listing refused"))
             .with_priority(1)
             .mount(&server)
             .await;
         streamable(&server, None).await;
+        let (relayed, engaged) = relayed(&server, listing, "fail to get common stream").await;
 
-        let ((_, outcome), logs) =
-            crate::test_support::captured_logs(reconnected(&reached(&server))).await;
+        let ((_, outcome), logs) = crate::test_support::captured_logs(reconnected(&relayed)).await;
 
         assert!(
-            logs.contains("fail to get common stream"),
+            engaged.load(Ordering::Relaxed),
+            "the relay never held the answer to {listing} back, so nothing ordered it after the refused redirect"
+        );
+        assert!(
+            logs.contains("refused a redirect to"),
             "the background stream met its redirect first: {logs}"
         );
         let error = failure(&outcome);
