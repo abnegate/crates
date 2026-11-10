@@ -79,6 +79,7 @@ mod attachment;
 mod codex_server;
 mod config;
 mod config_error;
+mod endpoint;
 mod entry;
 mod inline_table;
 mod launch;
@@ -94,6 +95,7 @@ pub(crate) use crate::mcp::attachment::McpAttachment;
 pub use crate::mcp::config::DEFAULT_PREFIX;
 pub use crate::mcp::config::McpConfig;
 pub use crate::mcp::config_error::McpConfigError;
+pub use crate::mcp::endpoint::McpEndpoint;
 #[cfg(test)]
 pub(crate) use crate::mcp::placeholders::NAMESPACE;
 pub(crate) use crate::mcp::placeholders::expand;
