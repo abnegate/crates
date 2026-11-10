@@ -41,8 +41,9 @@ pub enum McpError {
         message: String,
     },
     /// A server reached by URL could not be reached as configured: its URL
-    /// or headers do not resolve or are refused, or it redirected somewhere
-    /// this client does not follow.
+    /// or headers do not resolve or are refused, or no HTTP client could be
+    /// built for it. A redirect this client does not follow fails the
+    /// handshake instead.
     #[error("MCP transport failed for '{server}': {message}")]
     #[non_exhaustive]
     Transport {

@@ -123,8 +123,12 @@ of each. Each `${VAR}` in a server reached by `url` resolves, here and in
 server in code with `McpServer::with_secret` or `McpConfig::with_secret`, which
 a document never holds, or else its default, and never against this process's
 environment or the one a CLI is given. Such a server is never sent to a
-link-local or cloud metadata address, follows only a same-origin 307 or 308
-redirect, and is reached through the hub's proxy alone. Each `${VAR}` or
+link-local or cloud metadata address (behind a proxy, which resolves names
+itself, only a literal one is refused), follows only a same-origin 307 or 308
+redirect, and is reached through the hub's proxy alone. Releases before this
+one skipped every server reached by `url`; `with_defaults_and_mcp` and
+`McpHub::connect` now contact each enabled one, so mark a server that must not
+be contacted `"disabled": true`, or call `McpServer::disable` on it. Each `${VAR}` or
 `${VAR:-default}` in a server's command, arguments and `env` is expanded before
 it starts, as Claude Code expands it: from the secrets bound to the server with
 `McpServer::with_secret` or `McpConfig::with_secret` first, and then from this

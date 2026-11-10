@@ -248,7 +248,34 @@ pub(crate) async fn captured_logs<T>(work: impl Future<Output = T>) -> (T, Strin
     let value = work.await;
     SINK.with(|sink| sink.borrow_mut().take());
 
-    let logged =
-        String::from_utf8(buffer.lock().expect("log buffer").clone()).expect("logs are utf-8");
-    (value, logged)
+    (value, logged(&buffer))
+}
+
+/// [`captured_logs`], collecting on past `work` until what was logged holds
+/// `until`, for a line a task `work` left behind writes later. Fails past
+/// [`PATIENCE`].
+#[cfg(feature = "mcp")]
+pub(crate) async fn captured_logs_until<T>(
+    work: impl Future<Output = T>,
+    until: &str,
+) -> (T, String) {
+    captured_logs(async {
+        let value = work.await;
+        let buffer = SINK.with(|sink| sink.borrow().clone()).expect("collecting");
+        let deadline = Instant::now() + PATIENCE;
+        while !logged(&buffer).contains(until) {
+            assert!(
+                Instant::now() < deadline,
+                "nothing logged {until:?} in {PATIENCE:?}: {}",
+                logged(&buffer)
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        value
+    })
+    .await
+}
+
+fn logged(buffer: &Mutex<Vec<u8>>) -> String {
+    String::from_utf8(buffer.lock().expect("log buffer").clone()).expect("logs are utf-8")
 }

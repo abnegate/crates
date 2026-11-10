@@ -36,6 +36,10 @@ pub struct McpHub {
 struct Servers {
     sessions: BTreeMap<String, Arc<McpSession>>,
     outcomes: BTreeMap<String, McpOutcome>,
+    /// Bumped by every connect and removal of a name, so only the latest
+    /// call's result is recorded. Kept after a removal, so a connect begun
+    /// before it can never match a later one.
+    generations: BTreeMap<String, u64>,
 }
 
 impl McpHub {
@@ -66,6 +70,10 @@ impl McpHub {
     /// Each server is routed through the proxy [`Proxy::from_environment`]
     /// reads: a command server is given it in its environment, and a `url`
     /// server is reached through it.
+    ///
+    /// Every enabled `url` server is contacted, where releases before this
+    /// one skipped them; [disable](McpServer::disable) one, or set
+    /// `"disabled": true` on it, to keep it from being contacted.
     pub async fn connect(config: &McpConfig) -> Self {
         Self::launch(config, &Proxy::from_environment(), CONNECT_TIMEOUT).await
     }
@@ -104,21 +112,22 @@ impl McpHub {
         let hub = Self::new();
         for session in sessions {
             let name = session.name.clone();
-            hub.record(&name, Ok(session));
+            let generation = hub.begin(&name);
+            hub.record(&name, generation, Ok(session));
         }
         hub
     }
 
     async fn launch(config: &McpConfig, proxy: &Proxy, limit: Duration) -> Self {
-        let results =
-            join_all(config.servers.iter().map(|(name, server)| async move {
-                (name, start(name, server, proxy, limit).await)
-            }))
-            .await;
-
         let hub = Self::new();
-        for (name, started) in results {
-            hub.record(name, started);
+        let results = join_all(config.servers.iter().map(|(name, server)| {
+            let generation = hub.begin(name);
+            async move { (name, generation, start(name, server, proxy, limit).await) }
+        }))
+        .await;
+
+        for (name, generation, started) in results {
+            hub.record(name, generation, started);
         }
         hub
     }
@@ -129,9 +138,15 @@ impl McpHub {
     /// The old session is dropped whatever the outcome, so a server that is
     /// now disabled, invalid or unreachable leaves the hub. A name the hub
     /// does not hold yet is added. No other server is touched, and no lock is
-    /// held while the server connects. Tools a
+    /// held while the server connects, so the old session and the new one
+    /// briefly overlap.
+    ///
+    /// The latest call for a name wins: a reconnect that finishes after a
+    /// later [`reconnect`](Self::reconnect) or [`remove`](Self::remove) of
+    /// the same name records nothing and drops its session, though it still
+    /// returns its outcome. Tools a
     /// [`ToolRegistry`](crate::tool::ToolRegistry) already holds keep the old
-    /// session alive until that registry drops them.
+    /// session alive, still serving them, until that registry drops them.
     pub async fn reconnect(&self, name: &str, server: &McpServer, proxy: &Proxy) -> McpOutcome {
         self.reconnect_within(name, server, proxy, CONNECT_TIMEOUT)
             .await
@@ -144,16 +159,23 @@ impl McpHub {
         proxy: &Proxy,
         limit: Duration,
     ) -> McpOutcome {
+        let generation = self.begin(name);
         let started = start(name, server, proxy, limit).await;
-        self.record(name, started)
+        self.record(name, generation, started)
     }
 
     /// Drop the server named `name` and its outcome, and return whether the
-    /// hub held it. Tools a [`ToolRegistry`](crate::tool::ToolRegistry)
-    /// already holds keep its session alive until that registry drops them.
+    /// hub held it.
+    ///
+    /// The latest call for a name wins, so a removal cancels every
+    /// [`reconnect`](Self::reconnect) of it still connecting: none of them
+    /// records anything. Tools a [`ToolRegistry`](crate::tool::ToolRegistry)
+    /// already holds keep its session alive, still serving them, until that
+    /// registry drops them.
     pub fn remove(&self, name: &str) -> bool {
         let (session, outcome) = {
             let mut servers = self.write();
+            Self::advance(&mut servers, name);
             (servers.sessions.remove(name), servers.outcomes.remove(name))
         };
         drop(session);
@@ -208,9 +230,29 @@ impl McpHub {
             .collect()
     }
 
+    /// Start a connect of the server named `name`, superseding every one
+    /// before it, and return its generation.
+    fn begin(&self, name: &str) -> u64 {
+        Self::advance(&mut self.write(), name)
+    }
+
+    fn advance(servers: &mut Servers, name: &str) -> u64 {
+        let generation = servers.generations.entry(name.to_string()).or_default();
+        *generation += 1;
+        *generation
+    }
+
     /// Record what became of the server named `name`, holding its session
-    /// when it connected and dropping any it held before.
-    fn record(&self, name: &str, started: Result<McpSession, McpOutcome>) -> McpOutcome {
+    /// when it connected and dropping any it held before, unless a later
+    /// connect or removal of it began after `generation` did, when the
+    /// session is dropped and nothing is recorded. Either way the outcome is
+    /// returned.
+    fn record(
+        &self,
+        name: &str,
+        generation: u64,
+        started: Result<McpSession, McpOutcome>,
+    ) -> McpOutcome {
         let (session, outcome) = match started {
             Ok(session) => {
                 tracing::info!(
@@ -229,15 +271,19 @@ impl McpHub {
             }
             Err(outcome) => (None, outcome),
         };
-        let replaced = {
+        let dropped = {
             let mut servers = self.write();
-            servers.outcomes.insert(name.to_string(), outcome.clone());
-            match session {
-                Some(session) => servers.sessions.insert(name.to_string(), session),
-                None => servers.sessions.remove(name),
+            if servers.generations.get(name) != Some(&generation) {
+                session
+            } else {
+                servers.outcomes.insert(name.to_string(), outcome.clone());
+                match session {
+                    Some(session) => servers.sessions.insert(name.to_string(), session),
+                    None => servers.sessions.remove(name),
+                }
             }
         };
-        drop(replaced);
+        drop(dropped);
         outcome
     }
 
@@ -355,11 +401,13 @@ mod tests {
     use crate::mcp::McpTransport;
     use crate::mcp::recorder::LIMIT;
     use crate::mcp::recorder::echoing;
+    use crate::mcp::recorder::gated;
     use crate::mcp::recorder::recorder;
     use crate::mcp::register;
     use crate::test_support::CHILD_TEST;
     use crate::test_support::CONFIGURED_PROXY;
     use crate::test_support::ENVIRONMENT_PROXY;
+    use crate::test_support::PATIENCE;
     use crate::test_support::assert_passed;
     use crate::test_support::assert_routed;
     use crate::test_support::assert_unrouted;
@@ -1405,6 +1453,10 @@ mod tests {
 
     const MCP_PATH: &str = "/mcp";
 
+    /// A header no redaction recognises as holding a credential, so only
+    /// scrubbing the server's own secrets keeps one out of a failure.
+    const KEY_HEADER: &str = "x-key";
+
     /// Long and distinctive, so finding it in a failure's text cannot be
     /// chance.
     const SECRET: &str = "a3f1c0de-secret-that-must-never-be-printed-77b2";
@@ -1412,7 +1464,7 @@ mod tests {
     /// A streamable HTTP MCP server answering each JSON-RPC message with JSON
     /// under the id it was sent: the handshake, one tool, `echo`, and
     /// `echoed` for every call. A request whose method is `refusing` is
-    /// answered with a 400 that echoes its `Authorization` header back.
+    /// answered with a 400 that echoes its [`KEY_HEADER`] back, bare.
     #[derive(Clone, Copy, Default)]
     struct Streamable {
         refusing: Option<&'static str>,
@@ -1425,7 +1477,7 @@ mod tests {
             if called.is_some() && called == self.refusing {
                 let echoed = request
                     .headers
-                    .get("authorization")
+                    .get(KEY_HEADER)
                     .and_then(|value| value.to_str().ok())
                     .unwrap_or_default()
                     .to_string();
@@ -1485,6 +1537,13 @@ mod tests {
 
     fn reached(server: &MockServer) -> McpServer {
         McpServer::remote(format!("{}{MCP_PATH}", server.uri()))
+    }
+
+    /// [`reached`], sent [`SECRET`] bare in [`KEY_HEADER`].
+    fn keyed(server: &MockServer) -> McpServer {
+        reached(server)
+            .with_header(KEY_HEADER, "${TOKEN}")
+            .with_secret("TOKEN", SECRET)
     }
 
     fn authorized(server: &MockServer) -> McpServer {
@@ -1568,7 +1627,7 @@ mod tests {
             reconnected(&reached(&server).with_header("Authorization", "Bearer ${TOKEN}")).await;
 
         assert!(
-            failure(&outcome).contains("no secret bound to the server"),
+            failure(&outcome).contains("do not resolve against the server's bound secrets"),
             "{outcome:?}"
         );
         assert!(requests(&server).await.is_empty(), "a request was sent");
@@ -1583,9 +1642,12 @@ mod tests {
         .await
         .expect("refused before any request");
 
-        assert!(
-            failure(&outcome).contains("refusing a link-local or cloud metadata address"),
-            "{outcome:?}"
+        assert_eq!(
+            outcome,
+            failed(
+                "MCP transport failed for 'docs': refusing a link-local or cloud metadata address"
+            ),
+            "refused as a transport failure, before any client is built"
         );
     }
 
@@ -1691,6 +1753,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_bound_secret_never_reaches_a_failure_text() {
+        let scrubbed = format!("refused {}", abnegate_secret::REDACTED);
         for refusing in ["initialize", "tools/list"] {
             let server = MockServer::start().await;
             serve(
@@ -1699,15 +1762,15 @@ mod tests {
                 Streamable {
                     refusing: Some(refusing),
                 },
-                Some(SECRET),
+                None,
             )
             .await;
 
-            let (_, outcome) = reconnected(&authorized(&server)).await;
+            let (_, outcome) = reconnected(&keyed(&server)).await;
 
             let error = failure(&outcome);
             assert!(
-                error.contains("refused") && error.contains(abnegate_secret::REDACTED),
+                error.contains(&scrubbed),
                 "the server's echo should be in the failure, scrubbed: {error}"
             );
             assert!(
@@ -1723,23 +1786,424 @@ mod tests {
             Streamable {
                 refusing: Some("tools/call"),
             },
-            Some(SECRET),
+            None,
         )
         .await;
-        let (hub, outcome) = reconnected(&authorized(&server)).await;
+        let (hub, outcome) = reconnected(&keyed(&server)).await;
         assert_eq!(outcome, connected(&["echo"]));
         let mut registry = ToolRegistry::new();
         register(&mut registry, &hub);
         let result = called(&registry, "docs__echo").await;
         let text = format!("{result:?}");
         assert!(
-            !result.success && text.contains(abnegate_secret::REDACTED),
+            !result.success && text.contains(&scrubbed),
             "the server's echo should be in the failure, scrubbed: {text}"
         );
         assert!(
             !text.contains(SECRET),
             "a call failure printed the secret: {text}"
         );
+    }
+
+    /// Every header value used to be scrubbed, however short, so a `1` took
+    /// the digits of the status code out of the failure, and a literal one
+    /// was scrubbed though it held no secret.
+    #[tokio::test]
+    async fn a_literal_header_value_is_never_scrubbed() {
+        let server = MockServer::start().await;
+        streamable(&server, Some(SECRET)).await;
+
+        for versioned in [
+            reached(&server).with_header("X-Version", "1"),
+            reached(&server)
+                .with_header("X-Version", "${VERSION}")
+                .with_secret("VERSION", "1"),
+        ] {
+            let (_, outcome) = reconnected(&versioned).await;
+
+            let error = failure(&outcome);
+            assert!(error.contains("401"), "{error}");
+            assert!(!error.contains(abnegate_secret::REDACTED), "{error}");
+        }
+
+        let server = MockServer::start().await;
+        serve(
+            &server,
+            MCP_PATH,
+            Streamable {
+                refusing: Some("initialize"),
+            },
+            None,
+        )
+        .await;
+
+        let (_, outcome) =
+            reconnected(&reached(&server).with_header(KEY_HEADER, "a-literal-value")).await;
+
+        let error = failure(&outcome);
+        assert!(error.contains("refused a-literal-value"), "{error}");
+    }
+
+    /// Short and percent-encoded in a query, so neither scrubbing it as
+    /// configured nor redacting what looks like a credential would catch it.
+    const QUERIED: &str = "open sesame 9c1e";
+
+    /// The client's own errors named the URL they were sent to, query and
+    /// all, percent-encoded past any scrubbing, in the failure and in what
+    /// the transport logs itself.
+    #[tokio::test]
+    async fn a_url_never_reaches_a_failure_text_or_a_log() {
+        let encoded = QUERIED.replace(' ', "%20");
+        let queried = |base: &str| {
+            McpServer::remote(format!("{base}{MCP_PATH}?key=${{KEY}}")).with_secret("KEY", QUERIED)
+        };
+
+        let (_, outcome) = reconnected(&queried("http://127.0.0.1:1")).await;
+        let error = failure(&outcome);
+        assert!(error.contains("error sending request"), "{error}");
+        for leaked in ["key=", "9c1e", encoded.as_str()] {
+            assert!(!error.contains(leaked), "{leaked} reached {error}");
+        }
+
+        let server = MockServer::start().await;
+        let elsewhere = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(307)
+                    .insert_header("Location", format!("{}{MCP_PATH}", elsewhere.uri())),
+            )
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        streamable(&server, None).await;
+        let (outcome, logs) = crate::test_support::captured_logs_until(
+            async { reconnected(&queried(&server.uri())).await },
+            "fail to get common stream",
+        )
+        .await;
+        assert_eq!(outcome.1, connected(&["echo"]));
+        assert!(logs.contains("refused a redirect to"), "{logs}");
+        for leaked in ["key=", "9c1e", encoded.as_str()] {
+            assert!(!logs.contains(leaked), "{leaked} reached the logs: {logs}");
+        }
+    }
+
+    /// A refused redirect was remembered for the whole connection, so one the
+    /// transport's background stream met was blamed for an unrelated
+    /// failure after it.
+    #[tokio::test]
+    async fn a_refused_redirect_is_never_blamed_for_another_failure() {
+        let server = MockServer::start().await;
+        let elsewhere = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(307)
+                    .insert_header("Location", format!("{}{MCP_PATH}", elsewhere.uri())),
+            )
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::body_string_contains("tools/list"))
+            .respond_with(
+                ResponseTemplate::new(400)
+                    .set_body_string("listing refused")
+                    .set_delay(Duration::from_millis(500)),
+            )
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        streamable(&server, None).await;
+
+        let ((_, outcome), logs) =
+            crate::test_support::captured_logs(reconnected(&reached(&server))).await;
+
+        assert!(
+            logs.contains("fail to get common stream"),
+            "the background stream met its redirect first: {logs}"
+        );
+        let error = failure(&outcome);
+        assert!(error.contains("listing refused"), "{error}");
+        assert!(!error.contains("refused a redirect"), "{error}");
+    }
+
+    /// A followed redirect's paths were logged, and a path can hold a secret.
+    #[tokio::test]
+    async fn a_followed_redirect_never_logs_its_path() {
+        let server = MockServer::start().await;
+        Mock::given(path(format!("/{SECRET}{MCP_PATH}")))
+            .respond_with(
+                ResponseTemplate::new(307).insert_header("Location", format!("/{SECRET}/next")),
+            )
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        serve(
+            &server,
+            &format!("/{SECRET}/next"),
+            Streamable::default(),
+            None,
+        )
+        .await;
+        let routed = McpServer::remote(format!("{}/${{KEY}}{MCP_PATH}", server.uri()))
+            .with_secret("KEY", SECRET);
+
+        let ((_, outcome), logs) = crate::test_support::captured_logs(reconnected(&routed)).await;
+
+        assert_eq!(outcome, connected(&["echo"]));
+        assert!(
+            logs.contains("following a same-origin MCP redirect"),
+            "{logs}"
+        );
+        assert!(!logs.contains(SECRET), "a redirect logged its path: {logs}");
+    }
+
+    #[tokio::test]
+    async fn the_proxy_the_environment_names_is_never_used() {
+        let unreachable = "http://127.0.0.1:1";
+        if ran_in_child(
+            "mcp::hub::tests::the_proxy_the_environment_names_is_never_used",
+            &[
+                ("HTTP_PROXY", unreachable),
+                ("HTTPS_PROXY", unreachable),
+                ("ALL_PROXY", unreachable),
+                ("http_proxy", unreachable),
+                ("https_proxy", unreachable),
+                ("all_proxy", unreachable),
+            ],
+        )
+        .await
+        {
+            return;
+        }
+        let server = MockServer::start().await;
+        streamable(&server, None).await;
+
+        let (_, outcome) = reconnected(&reached(&server)).await;
+
+        assert_eq!(outcome, connected(&["echo"]));
+    }
+
+    #[tokio::test]
+    async fn a_header_the_transport_sets_itself_is_failed_without_a_request() {
+        for reserved in [
+            "Accept",
+            "Mcp-Session-Id",
+            "MCP-Protocol-Version",
+            "Last-Event-Id",
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(any())
+                .respond_with(ResponseTemplate::new(500))
+                .expect(0)
+                .mount(&server)
+                .await;
+
+            let (_, outcome) = reconnected(&reached(&server).with_header(reserved, "value")).await;
+
+            assert!(
+                failure(&outcome).contains(&format!("invalid header `{reserved}`")),
+                "{outcome:?}"
+            );
+            server.verify().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_header_value_holding_a_newline_is_failed_without_its_value() {
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let (_, outcome) = reconnected(
+            &reached(&server)
+                .with_header(KEY_HEADER, "${TOKEN}")
+                .with_secret("TOKEN", format!("{SECRET}\ninjected: yes")),
+        )
+        .await;
+
+        let error = failure(&outcome);
+        assert!(
+            error.contains(&format!("invalid header `{KEY_HEADER}`")),
+            "{error}"
+        );
+        assert!(
+            !error.contains(SECRET) && !error.contains("injected"),
+            "{error}"
+        );
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn two_headers_differing_only_in_case_are_failed_without_a_request() {
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let (_, outcome) = reconnected(
+            &reached(&server)
+                .with_header("X-Key", "first")
+                .with_header("x-key", "second"),
+        )
+        .await;
+
+        assert!(failure(&outcome).contains("invalid header"), "{outcome:?}");
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn a_scheme_other_than_http_or_https_is_failed() {
+        for url in [
+            "ftp://127.0.0.1:1/mcp",
+            "file:///etc/passwd",
+            "ws://127.0.0.1:1",
+        ] {
+            let (_, outcome) = reconnected(&McpServer::remote(url)).await;
+
+            assert!(
+                failure(&outcome).ends_with("invalid URL"),
+                "{url}: {outcome:?}"
+            );
+        }
+    }
+
+    /// Redirects `/hop/{n}` to `/hop/{n + 1}` with a 307, for ever.
+    struct Hopping;
+
+    impl Respond for Hopping {
+        fn respond(&self, request: &Request) -> ResponseTemplate {
+            let hop: usize = request
+                .url
+                .path()
+                .rsplit('/')
+                .next()
+                .and_then(|hop| hop.parse().ok())
+                .unwrap_or_default();
+            ResponseTemplate::new(307).insert_header("Location", format!("/hop/{}", hop + 1))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_redirect_past_the_hop_limit_is_refused() {
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(Hopping)
+            .mount(&server)
+            .await;
+
+        let (_, outcome) = reconnected(&McpServer::remote(format!("{}/hop/0", server.uri()))).await;
+
+        assert!(
+            failure(&outcome).contains(&format!(
+                "refused more than {} redirects",
+                crate::mcp::redirect::MAXIMUM_REDIRECTS
+            )),
+            "{outcome:?}"
+        );
+        let posted = requests(&server)
+            .await
+            .into_iter()
+            .filter(|request| request.method == wiremock::http::Method::POST)
+            .count();
+        assert_eq!(posted, crate::mcp::redirect::MAXIMUM_REDIRECTS + 1);
+    }
+
+    /// The redirect's target is needed in a failure for a reader to act on,
+    /// but never with the credentials or query that may come with it.
+    #[tokio::test]
+    async fn a_refused_location_is_shown_without_its_userinfo_or_query() {
+        let first = MockServer::start().await;
+        let second = MockServer::start().await;
+        let address = second.address();
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(307).insert_header(
+                "Location",
+                format!("http://user:hunter2@{address}{MCP_PATH}?key=abc123"),
+            ))
+            .mount(&first)
+            .await;
+
+        let (_, outcome) = reconnected(&reached(&first)).await;
+
+        let error = failure(&outcome);
+        assert!(
+            error.contains(&format!("refused a redirect to http://{address}{MCP_PATH}")),
+            "{error}"
+        );
+        for leaked in ["user", "hunter2", "key=", "abc123"] {
+            assert!(!error.contains(leaked), "{leaked} reached {error}");
+        }
+    }
+
+    /// Removing a server while it connected used to be undone once the
+    /// connect finished, putting back a server the caller had removed.
+    #[tokio::test]
+    async fn a_removal_while_connecting_cancels_the_connect() {
+        let directory = tempfile::tempdir().unwrap();
+        let started = directory.path().join("started");
+        let release = directory.path().join("release");
+        let hub = McpHub::new();
+        let server = gated(&started, &release);
+        let proxy = Proxy::default();
+
+        let (outcome, ()) = tokio::join!(
+            hub.reconnect_within("notes", &server, &proxy, LIMIT),
+            async {
+                arrived(&started).await;
+                assert!(!hub.remove("notes"), "nothing was recorded yet");
+                std::fs::write(&release, "").unwrap();
+            },
+        );
+
+        assert_eq!(outcome, connected(&["echo"]));
+        assert_eq!(hub.outcome("notes"), None);
+        assert!(hub.is_empty());
+        assert!(hub.tools().is_empty());
+    }
+
+    /// Two reconnects of one name used to be settled by whichever finished
+    /// last, not whichever was asked for last.
+    #[tokio::test]
+    async fn a_slow_older_reconnect_never_overwrites_a_newer_one() {
+        let directory = tempfile::tempdir().unwrap();
+        let started = directory.path().join("started");
+        let release = directory.path().join("release");
+        let hub = McpHub::new();
+        let older = gated(&started, &release).with_tools(["absent"]);
+        let newer = echoing(&directory.path().join("environment"));
+        let proxy = Proxy::default();
+
+        let (stale, current) = tokio::join!(
+            hub.reconnect_within("notes", &older, &proxy, LIMIT),
+            async {
+                arrived(&started).await;
+                let current = hub.reconnect_within("notes", &newer, &proxy, LIMIT).await;
+                std::fs::write(&release, "").unwrap();
+                current
+            },
+        );
+
+        assert_eq!(stale, connected(&[]));
+        assert_eq!(current, connected(&["echo"]));
+        assert_eq!(hub.outcome("notes"), Some(connected(&["echo"])));
+        assert_eq!(hub.tools().len(), 1);
+    }
+
+    /// Wait until `path` exists, failing past [`PATIENCE`].
+    async fn arrived(path: &std::path::Path) {
+        tokio::time::timeout(PATIENCE, async {
+            while !path.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the server started");
     }
 
     #[tokio::test]

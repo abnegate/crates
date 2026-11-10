@@ -4,21 +4,16 @@ use std::collections::HashSet;
 use std::io;
 use std::process::Stdio;
 use std::sync::Arc;
-use std::sync::PoisonError;
 use std::time::Duration;
 
 use abnegate_exec::Proxy;
-use abnegate_http::metadata::MetadataResolver;
 use abnegate_http::metadata::is_url;
 use abnegate_secret::REDACTED;
 use abnegate_secret::SecretValue;
 use abnegate_secret::redact;
-use reqwest::NoProxy;
-use reqwest::StatusCode;
 use reqwest::Url;
 use reqwest::header::HeaderName;
 use reqwest::header::HeaderValue;
-use reqwest::redirect::Policy;
 use rmcp::RoleClient;
 use rmcp::ServiceExt;
 use rmcp::model::CallToolRequestParams;
@@ -40,6 +35,7 @@ use super::McpEndpoint;
 use super::McpError;
 use super::McpServer;
 use super::name::unique_qualified_tool_name;
+use super::remote::Remote;
 use super::server_process::ServerProcess;
 use super::tool::McpTool;
 use crate::tool::Tool;
@@ -50,10 +46,6 @@ const MAXIMUM_LOGGED_STDERR_BYTES: usize = 64 * 1024;
 
 const STDERR_BUFFER_BYTES: usize = 4 * 1024;
 
-/// Same-origin redirects a remote server's request follows before the next
-/// is refused.
-const MAXIMUM_REDIRECTS: usize = 10;
-
 /// Headers the streamable HTTP transport sets itself, which a server's
 /// configuration may not.
 const RESERVED_HEADERS: [&str; 4] = [
@@ -63,7 +55,7 @@ const RESERVED_HEADERS: [&str; 4] = [
     "last-event-id",
 ];
 
-const UNRESOLVED: &str = "a reference in its URL or headers has no secret bound to the server and no default, or still holds `${` once resolved";
+const UNRESOLVED: &str = "its URL or headers do not resolve against the server's bound secrets";
 
 const TIMED_OUT: &str = "handshake timed out";
 
@@ -74,15 +66,12 @@ const INVALID_URL: &str = "invalid URL";
 
 const METADATA_URL: &str = "refusing a link-local or cloud metadata address";
 
-const INVALID_PROXY: &str = "invalid proxy URL";
+/// The shortest value scrubbed from a failure's text: one shorter would
+/// replace digits and words it merely shares, such as a status code.
+const MINIMUM_SCRUBBED_LENGTH: usize = 6;
 
-const UNBUILT_CLIENT: &str = "could not build an HTTP client";
-
-const REFUSED_REDIRECT: &str = "refused a redirect";
-
-/// Where a refused redirect pointed, written by the redirect policy and read
-/// once a connection fails.
-type Refused = Arc<std::sync::Mutex<Option<String>>>;
+/// What marks a configured value as one a bound secret may expand into.
+const REFERENCE: &str = "${";
 
 /// A client running this crate's [`McpSession::configuration`].
 pub(super) type Client = RunningService<RoleClient, ClientConfig>;
@@ -142,9 +131,11 @@ impl McpSession {
     ///
     /// Its URL and headers resolve against the secrets bound to it alone. A
     /// link-local or metadata address is refused before any request, and so
-    /// is every address a name resolves to. Only a same-origin 307 or 308 is
-    /// followed, for at most [`MAXIMUM_REDIRECTS`] hops. No failure's text
-    /// holds a bound secret or a header's value.
+    /// is every address a name resolves to when the server is reached
+    /// directly; behind a proxy, which resolves names itself, only a literal
+    /// metadata address is. Only a same-origin 307 or 308 is followed, for at
+    /// most [`MAXIMUM_REDIRECTS`](super::redirect::MAXIMUM_REDIRECTS) hops. No failure's text holds a URL, a
+    /// bound secret or a value one expanded into.
     pub(super) async fn connect_remote(
         name: &str,
         server: &McpServer,
@@ -165,8 +156,7 @@ impl McpSession {
         }
         let headers =
             headers(&endpoint).map_err(|header| failed(&format!("invalid header `{header}`")))?;
-        let refused = Refused::default();
-        let client = client(proxy, Arc::clone(&refused)).map_err(failed)?;
+        let client = Remote::new(proxy).map_err(|message| failed(&message))?;
         let secrets = secrets(server, &endpoint);
         let transport = StreamableHttpClientTransport::with_client(
             client,
@@ -196,19 +186,7 @@ impl McpSession {
                 session.secrets = secrets;
                 Ok(session)
             }
-            Err(error) => {
-                let location = refused
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .take();
-                Err(match location {
-                    Some(location) => failed(&scrubbed(
-                        &format!("{REFUSED_REDIRECT} to {location}"),
-                        &secrets,
-                    )),
-                    None => scrubbed_error(error, &secrets),
-                })
-            }
+            Err(error) => Err(scrubbed_error(error, &secrets)),
         }
     }
 
@@ -335,88 +313,43 @@ impl McpSession {
 }
 
 /// Each of `endpoint`'s headers as the transport sends it, marked sensitive,
-/// or the name of the first one that is not a valid header or is one the
-/// transport sets itself.
+/// or the name of the first one that is not a valid header, is one the
+/// transport sets itself, or repeats another's name in any case.
 fn headers(endpoint: &McpEndpoint) -> Result<HashMap<HeaderName, HeaderValue>, String> {
-    endpoint
-        .headers
-        .iter()
-        .map(|(name, value)| {
-            let header = HeaderName::from_bytes(name.as_bytes())
-                .ok()
-                .filter(|header| !RESERVED_HEADERS.contains(&header.as_str()))
-                .ok_or_else(|| name.clone())?;
-            let mut value = HeaderValue::from_str(value.expose()).map_err(|_| name.clone())?;
-            value.set_sensitive(true);
-            Ok((header, value))
-        })
-        .collect()
-}
-
-/// A client for one remote server: it resolves names past link-local and
-/// metadata addresses, keeps no idle connection, follows only the redirects
-/// [`redirects`] allows, writing where a refused one pointed to `refused`,
-/// and routes through `proxy` alone, never a proxy the environment or the
-/// system names.
-fn client(proxy: &Proxy, refused: Refused) -> Result<reqwest::Client, &'static str> {
-    let builder = reqwest::Client::builder()
-        .pool_max_idle_per_host(0)
-        .dns_resolver(MetadataResolver::new())
-        .redirect(redirects(refused));
-    let builder = match proxy.url() {
-        Some(url) => {
-            let url = url.to_str().ok_or(INVALID_PROXY)?;
-            let route = reqwest::Proxy::all(url)
-                .map_err(|_| INVALID_PROXY)?
-                .no_proxy(NoProxy::from_string(&proxy.bypass().join(",")));
-            builder.proxy(route)
+    let mut headers = HashMap::with_capacity(endpoint.headers.len());
+    for (name, value) in &endpoint.headers {
+        let header = HeaderName::from_bytes(name.as_bytes())
+            .ok()
+            .filter(|header| !RESERVED_HEADERS.contains(&header.as_str()))
+            .ok_or_else(|| name.clone())?;
+        let mut value = HeaderValue::from_str(value.expose()).map_err(|_| name.clone())?;
+        value.set_sensitive(true);
+        if headers.insert(header, value).is_some() {
+            return Err(name.clone());
         }
-        None => builder.no_proxy(),
-    };
-    builder.build().map_err(|_| UNBUILT_CLIENT)
+    }
+    Ok(headers)
 }
 
-/// Follow a 307 or 308, which keep the method and body, while it stays on
-/// the origin first requested, for at most [`MAXIMUM_REDIRECTS`] hops, and
-/// refuse any other, writing its origin and path to `refused`.
-fn redirects(refused: Refused) -> Policy {
-    Policy::custom(move |attempt| {
-        let previous = attempt.previous();
-        let preserving = matches!(
-            attempt.status(),
-            StatusCode::TEMPORARY_REDIRECT | StatusCode::PERMANENT_REDIRECT
-        );
-        let within = previous
-            .first()
-            .is_some_and(|sent| sent.origin() == attempt.url().origin());
-        if preserving && within && previous.len() <= MAXIMUM_REDIRECTS {
-            tracing::debug!(
-                status = %attempt.status(),
-                from = previous.last().map(Url::path).unwrap_or_default(),
-                to = attempt.url().path(),
-                "following a same-origin MCP redirect"
-            );
-            return attempt.follow();
-        }
-        let location = format!(
-            "{}{}",
-            attempt.url().origin().ascii_serialization(),
-            attempt.url().path()
-        );
-        *refused.lock().unwrap_or_else(PoisonError::into_inner) = Some(location);
-        attempt.error(REFUSED_REDIRECT)
-    })
-}
-
-/// Every non-empty secret bound to `server` and header value of `endpoint`,
+/// What a failure's text is scrubbed of: every secret bound to `server`,
+/// and each value of `endpoint` its configuration builds from a reference,
+/// a header's or the URL, that is at least [`MINIMUM_SCRUBBED_LENGTH`] long,
 /// longest first, so a value holding another is replaced whole.
 fn secrets(server: &McpServer, endpoint: &McpEndpoint) -> Vec<SecretValue> {
+    let referring = |raw: Option<&str>| raw.is_some_and(|raw| raw.contains(REFERENCE));
+    let expanded = endpoint
+        .headers
+        .iter()
+        .filter(|(name, _)| referring(server.headers.get(*name).map(SecretValue::expose)))
+        .map(|(_, value)| value.clone());
+    let url = referring(server.url.as_deref()).then(|| SecretValue::new(endpoint.url.clone()));
     let mut secrets: Vec<SecretValue> = server
         .secrets
         .values()
-        .chain(endpoint.headers.values())
-        .filter(|secret| !secret.is_empty())
         .cloned()
+        .chain(expanded)
+        .chain(url)
+        .filter(|secret| secret.expose().len() >= MINIMUM_SCRUBBED_LENGTH)
         .collect();
     secrets.sort_by_key(|secret| Reverse(secret.expose().len()));
     secrets

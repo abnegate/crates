@@ -23,8 +23,15 @@
 //! an [`McpEndpoint`]: each `${VAR}` in its URL and headers resolves only to
 //! a [secret](McpServer::secrets) bound to it, or to its default, never to
 //! this process's environment. A link-local or cloud metadata address is
-//! refused, including one a name resolves to; only a same-origin 307 or 308
-//! redirect is followed; and no failure's text holds a bound secret.
+//! refused, including one a name resolves to when the server is reached
+//! directly; behind a proxy, which resolves names itself, only a literal
+//! metadata address is refused. Only a same-origin 307 or 308 redirect is
+//! followed, and no failure's text holds the server's URL or a bound secret.
+//!
+//! [`McpHub::connect`] and [`with_defaults_and_mcp`] contact every enabled
+//! `url` server, where releases before this one skipped them: a server that
+//! must not be contacted is [disabled](McpServer::disabled), with
+//! [`McpServer::disable`] or `"disabled": true`.
 //!
 //! The configuration is `abnegate-agent-cli`'s, re-exported here, so one
 //! `mcp.json` drives both this client and a coding agent CLI.
@@ -100,7 +107,9 @@ mod name;
 mod outcome;
 #[cfg(test)]
 mod recorder;
+mod redirect;
 mod register;
+mod remote;
 mod server_process;
 mod session;
 mod tool;
