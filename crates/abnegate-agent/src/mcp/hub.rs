@@ -418,6 +418,7 @@ mod tests {
     use wiremock::matchers::any;
     use wiremock::matchers::body_string_contains;
     use wiremock::matchers::header;
+    use wiremock::matchers::header_exists;
     use wiremock::matchers::method;
     use wiremock::matchers::path;
 
@@ -2655,6 +2656,32 @@ mod tests {
             .await;
         streamable(&server, None).await;
         server
+    }
+
+    /// A listing answered with an event stream that ends before its answer
+    /// is resumed after the last event it sent, and a challenge to that
+    /// resumption is why the listing failed, not a connection that closed.
+    #[tokio::test]
+    async fn a_challenge_to_a_resumed_listing_fails_as_unauthorized() {
+        let server = listing(
+            ResponseTemplate::new(200)
+                .set_body_raw("id: listing\nretry: 1\n\n", "text/event-stream"),
+        )
+        .await;
+        Mock::given(method("GET"))
+            .and(header_exists("last-event-id"))
+            .respond_with(challenged(401))
+            .with_priority(1)
+            .mount(&server)
+            .await;
+
+        let (_, outcome) = reconnected(&reached(&server)).await;
+
+        assert_eq!(
+            cause(&outcome),
+            (McpFailure::Unauthorized, Some(401)),
+            "{outcome:?}"
+        );
     }
 
     /// Answers `initialize` as [`Streamable`] does, under the id after the

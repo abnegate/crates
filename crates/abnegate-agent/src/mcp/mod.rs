@@ -148,6 +148,7 @@ mod hub;
 mod name;
 mod outcome;
 mod posted;
+mod reading;
 #[cfg(test)]
 mod recorder;
 mod redirect;

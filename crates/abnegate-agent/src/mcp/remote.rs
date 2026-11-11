@@ -2,9 +2,11 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::error::Error;
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use abnegate_exec::Proxy;
 use abnegate_http::metadata::MetadataResolver;
+use futures::StreamExt;
 use reqwest::NoProxy;
 use reqwest::StatusCode;
 use reqwest::header::HeaderName;
@@ -21,6 +23,7 @@ use super::cause::Cause;
 use super::cause::failing;
 use super::posted::Posted;
 use super::posted::Slot;
+use super::reading::Reading;
 use super::redirect::MAXIMUM_REDIRECTS;
 use super::redirect::Redirect;
 use super::retry::answered;
@@ -49,12 +52,15 @@ type Failure = StreamableHttpError<reqwest::Error>;
 /// answer's status only in an error's text, so what became of the last
 /// [recorded](recorded) request is kept first, with the status the client
 /// saw it [`answered`] with, as a [`Posted`] every clone shares with
-/// whoever asked for [`posted`](Self::posted).
+/// whoever asked for [`posted`](Self::posted). A request answered with an
+/// event stream that ends before its answer does is resumed, and what
+/// became of that resumption is kept as what became of the request.
 #[derive(Clone)]
 pub(super) struct Remote {
     client: reqwest::Client,
     scrubber: Scrubber,
     posted: Arc<Slot>,
+    reading: Arc<Mutex<Reading>>,
 }
 
 impl Remote {
@@ -81,6 +87,7 @@ impl Remote {
                 client,
                 scrubber,
                 posted: Arc::default(),
+                reading: Arc::default(),
             })
             .map_err(|error| format!("{CLIENT_FAILED}: {}", error.without_url()))
     }
@@ -103,19 +110,65 @@ impl Remote {
     /// the client saw this request, and no other, answered with. Any other
     /// message leaves what is kept alone, so one sent beside the request a
     /// session waits on never stands in for what became of that request.
+    ///
+    /// The event stream a recorded request is answered with notes the task
+    /// that reads it, which alone [resumes](Self::resumed) it.
     async fn sent(
         &self,
         recorded: bool,
         post: impl Future<Output = Result<StreamableHttpPostResponse, Failure>> + Send,
     ) -> Result<StreamableHttpPostResponse, Failure> {
-        if recorded {
+        let request = recorded.then(|| {
+            let request = Reading::locked(&self.reading).sent();
             Posted::default().write(&self.posted);
-        }
+            request
+        });
         let (result, answer) = answered(post).await;
-        if recorded {
-            kept(&result, answer).write(&self.posted);
+        let Some(request) = request else {
+            return result.map_err(|error| self.unlocated(error));
+        };
+        self.keep(request, kept(&result, answer));
+        match result {
+            Ok(StreamableHttpPostResponse::Sse(stream, session)) => {
+                let reading = self.reading.clone();
+                let stream = stream
+                    .inspect(move |_| Reading::locked(&reading).read(request))
+                    .boxed();
+                Ok(StreamableHttpPostResponse::Sse(stream, session))
+            }
+            result => result.map_err(|error| self.unlocated(error)),
         }
+    }
+
+    /// The stream `get` opens, its error [unlocated](Self::unlocated).
+    ///
+    /// Opened from the task that read the last recorded request's event
+    /// stream, it resumes that request's answer, so what became of it is
+    /// kept as what became of the request, as [`sent`](Self::sent) keeps a
+    /// request's own. Opened from any other task, such as the one holding
+    /// the session's background stream open, it is no request a session
+    /// waits on, and what is kept is left alone.
+    async fn resumed(
+        &self,
+        get: impl Future<Output = Result<BoxedSseResponse, Failure>> + Send,
+    ) -> Result<BoxedSseResponse, Failure> {
+        let resumed = Reading::locked(&self.reading).resumed();
+        let Some(request) = resumed else {
+            return get.await.map_err(|error| self.unlocated(error));
+        };
+        self.keep(request, Posted::default());
+        let (result, answer) = answered(get).await;
+        self.keep(request, kept(&result, answer));
         result.map_err(|error| self.unlocated(error))
+    }
+
+    /// Keep `posted` as what became of `request`, unless a request has been
+    /// sent since.
+    fn keep(&self, request: u64, posted: Posted) {
+        let reading = Reading::locked(&self.reading);
+        if reading.current(request) {
+            posted.write(&self.posted);
+        }
     }
 
     /// `error` with no URL or secret in it: a refused redirect becomes the
@@ -210,10 +263,10 @@ impl StreamableHttpClient for Remote {
         auth_header: Option<String>,
         custom_headers: HashMap<HeaderName, HeaderValue>,
     ) -> Result<BoxedSseResponse, Failure> {
-        self.client
-            .get_stream(uri, session_id, last_event_id, auth_header, custom_headers)
-            .await
-            .map_err(|error| self.unlocated(error))
+        let get =
+            self.client
+                .get_stream(uri, session_id, last_event_id, auth_header, custom_headers);
+        self.resumed(get).await
     }
 
     async fn get_stream_with_max_sse_event_size(
@@ -225,17 +278,15 @@ impl StreamableHttpClient for Remote {
         custom_headers: HashMap<HeaderName, HeaderValue>,
         max_sse_event_size: usize,
     ) -> Result<BoxedSseResponse, Failure> {
-        self.client
-            .get_stream_with_max_sse_event_size(
-                uri,
-                session_id,
-                last_event_id,
-                auth_header,
-                custom_headers,
-                max_sse_event_size,
-            )
-            .await
-            .map_err(|error| self.unlocated(error))
+        let get = self.client.get_stream_with_max_sse_event_size(
+            uri,
+            session_id,
+            last_event_id,
+            auth_header,
+            custom_headers,
+            max_sse_event_size,
+        );
+        self.resumed(get).await
     }
 }
 
@@ -258,10 +309,7 @@ fn recorded(message: &ClientJsonRpcMessage) -> bool {
 /// answered with `answer`, if at all. An answer that was not a success
 /// keeps its status though the transport made something of it, as it does
 /// of one carrying a JSON-RPC error.
-fn kept(
-    result: &Result<StreamableHttpPostResponse, Failure>,
-    answer: Option<StatusCode>,
-) -> Posted {
+fn kept<T>(result: &Result<T, Failure>, answer: Option<StatusCode>) -> Posted {
     match result {
         Ok(_) => Posted {
             failure: None,
@@ -317,7 +365,10 @@ mod tests {
     use std::net::Ipv4Addr;
 
     use serde_json::json;
+    use tokio::io::AsyncReadExt;
+    use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
+    use tokio::sync::mpsc;
     use wiremock::Mock;
     use wiremock::MockServer;
     use wiremock::ResponseTemplate;
@@ -419,6 +470,30 @@ mod tests {
 
     fn redirecting() -> ResponseTemplate {
         ResponseTemplate::new(302).insert_header("Location", "/elsewhere")
+    }
+
+    /// The id of the one event [`streaming`] sends.
+    const EVENT: &str = "1";
+
+    /// An event stream that ends after one event, so the transport resumes
+    /// it after [`EVENT`].
+    fn streaming() -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_raw(format!("id: {EVENT}\n\n"), "text/event-stream")
+    }
+
+    /// Open a stream from `remote` to `at` as the transport resumes one,
+    /// after [`EVENT`].
+    async fn resume(remote: &Remote, at: Arc<str>) -> Result<BoxedSseResponse, Failure> {
+        remote
+            .get_stream_with_max_sse_event_size(
+                at,
+                Some(SESSION.into()),
+                Some(EVENT.into()),
+                None,
+                HashMap::new(),
+                usize::MAX,
+            )
+            .await
     }
 
     #[test]
@@ -577,6 +652,118 @@ mod tests {
                 assert_eq!(Posted::read(&remote.posted()), kept);
             }
         }
+    }
+
+    /// The transport resumes a request's event stream from the task that
+    /// read it and holds its background stream open from another, so only a
+    /// stream the reading task opens tells what became of the request, and
+    /// only until another request is sent.
+    #[tokio::test]
+    async fn only_the_task_reading_a_request_s_answer_resumes_it() {
+        let server = MockServer::start().await;
+        let refusing = MockServer::start().await;
+        answering(&server, streaming()).await;
+        answering(&refusing, challenged()).await;
+        let remote = remote();
+        let challenge = Posted {
+            failure: Some(McpFailure::Unauthorized),
+            status: Some(401),
+        };
+        let Ok(StreamableHttpPostResponse::Sse(mut stream, _)) =
+            post(&remote, &server, request()).await
+        else {
+            panic!("the request is answered with an event stream");
+        };
+        let (tell, mut told) = mpsc::channel::<()>(1);
+        let (go, mut going) = mpsc::channel::<()>(1);
+        let (reader, at) = (remote.clone(), address(&refusing));
+        let reading = tokio::spawn(async move {
+            let event = stream.next().await;
+            tell.send(()).await.expect("the test listens");
+            going.recv().await;
+            let resumed = resume(&reader, at.clone()).await;
+            tell.send(()).await.expect("the test listens");
+            going.recv().await;
+            let stale = resume(&reader, at).await;
+            (event, resumed.is_err(), stale.is_err())
+        });
+
+        told.recv().await;
+        let elsewhere = {
+            let (remote, at) = (remote.clone(), address(&refusing));
+            tokio::spawn(async move { resume(&remote, at).await.is_err() })
+                .await
+                .expect("another task")
+        };
+        assert!(elsewhere);
+        assert_eq!(Posted::read(&remote.posted()), Posted::default());
+
+        go.send(()).await.expect("the reading task waits");
+        told.recv().await;
+        assert_eq!(Posted::read(&remote.posted()), challenge);
+
+        answering(&server, ResponseTemplate::new(202)).await;
+        post(&remote, &server, request())
+            .await
+            .expect("a 202 is an answer");
+        assert_eq!(Posted::read(&remote.posted()), Posted::default());
+
+        go.send(()).await.expect("the reading task waits");
+        let (event, resumed, stale) = reading.await.expect("the reading task");
+        let event = event
+            .expect("an event")
+            .expect("an event that is well formed");
+        assert_eq!(event.id.as_deref(), Some(EVENT));
+        assert!(resumed && stale);
+        assert_eq!(Posted::read(&remote.posted()), Posted::default());
+    }
+
+    /// A resumption still in flight when another request is sent tells
+    /// nothing of that request, however it is answered.
+    #[tokio::test]
+    async fn a_resumption_answered_after_another_request_is_sent_is_not_kept() {
+        let server = MockServer::start().await;
+        answering(&server, streaming()).await;
+        let held = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("a listener");
+        let at: Arc<str> = format!(
+            "http://{}{MCP_PATH}",
+            held.local_addr().expect("an address")
+        )
+        .into();
+        let remote = remote();
+        let Ok(StreamableHttpPostResponse::Sse(mut stream, _)) =
+            post(&remote, &server, request()).await
+        else {
+            panic!("the request is answered with an event stream");
+        };
+        let reader = remote.clone();
+        let reading = tokio::spawn(async move {
+            stream.next().await;
+            resume(&reader, at).await
+        });
+        let (mut connection, _) = held.accept().await.expect("the resumption's connection");
+        let read = connection
+            .read(&mut [0; 4096])
+            .await
+            .expect("the resumption's request");
+        assert!(read > 0, "the resumption sent its request");
+
+        answering(&server, ResponseTemplate::new(202)).await;
+        post(&remote, &server, request())
+            .await
+            .expect("a 202 is an answer");
+        connection
+            .write_all(
+                b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer realm=\"mcp\"\r\nContent-Length: 0\r\n\r\n",
+            )
+            .await
+            .expect("the resumption's answer");
+        let resumed = reading.await.expect("the reading task");
+
+        assert!(resumed.is_err());
+        assert_eq!(Posted::read(&remote.posted()), Posted::default());
     }
 
     /// A request still in flight has no fate yet, and the one before it is
