@@ -27,9 +27,9 @@
 //! the server or a proxy in front of it, and the client observed it. It is
 //! `None` for a 2xx the client could not use, for a request that got no
 //! answer, and for every failure before a request is sent. The client does
-//! not observe the answer to the last attempt it makes after retrying a
-//! request an HTTP/2 server refused, so that answer can leave `None` too,
-//! and one such as a bare 401 or 403 then fails as
+//! not observe the answer to a request's third and last attempt, which it
+//! makes only after an HTTP/2 server refused the first two, so that answer
+//! leaves `None` too, and one such as a bare 401 or 403 then fails as
 //! [`Protocol`](McpFailure::Protocol). An `https` server behind a proxy is
 //! reached through a tunnel, and the client never sees the proxy's refusal
 //! of that tunnel, a 407 included, as a response: it is

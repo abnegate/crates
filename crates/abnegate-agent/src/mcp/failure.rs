@@ -40,16 +40,16 @@ pub enum McpFailure {
     /// The server, or a proxy in front of it, answered 401 or 403 with a
     /// `WWW-Authenticate` challenge the client could read. A 401 or 403
     /// without one, or with one that is not valid text, is
-    /// [`Status`](Self::Status) with that code, unless it answered the last
-    /// attempt after the client retried a request an HTTP/2 server refused,
-    /// which the client does not observe: that is
-    /// [`Protocol`](Self::Protocol) with no status.
+    /// [`Status`](Self::Status) with that code, unless it answered the third
+    /// attempt, made after an HTTP/2 server refused the first two, which the
+    /// client does not observe: that is [`Protocol`](Self::Protocol) with no
+    /// status.
     Unauthorized,
     /// The server, or a proxy in front of it, answered with an HTTP status
     /// that is not a success and that no other kind names. An answer to the
-    /// last attempt after the client retried a request an HTTP/2 server
-    /// refused is not observed, so it can be [`Protocol`](Self::Protocol)
-    /// with no status instead.
+    /// third attempt, made after an HTTP/2 server refused the first two, is
+    /// not observed, so it can be [`Protocol`](Self::Protocol) with no
+    /// status instead.
     Status,
     /// The server answered with something other than the MCP message the
     /// client was waiting for.
