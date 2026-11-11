@@ -26,11 +26,11 @@ impl Unconnected {
 
     /// `server` did not complete its handshake or its tool listing, for
     /// `cause`, which `message` words.
-    pub(super) fn handshake(server: &str, message: String, cause: Cause) -> Self {
+    pub(super) fn handshake(server: &str, message: impl Into<String>, cause: Cause) -> Self {
         Self {
             error: McpError::Handshake {
                 server: server.to_string(),
-                message,
+                message: message.into(),
             },
             cause,
         }
@@ -38,11 +38,11 @@ impl Unconnected {
 
     /// `server` could not be reached as configured, for the `failure` that
     /// `message` words.
-    pub(super) fn transport(server: &str, message: &str, failure: McpFailure) -> Self {
+    pub(super) fn transport(server: &str, message: impl Into<String>, failure: McpFailure) -> Self {
         Self {
             error: McpError::Transport {
                 server: server.to_string(),
-                message: message.to_string(),
+                message: message.into(),
             },
             cause: Cause::of(failure),
         }

@@ -62,10 +62,14 @@ pub(super) async fn answered<T>(work: impl Future<Output = T>) -> (T, Option<Sta
 /// it, which makes the request safe to send again: a graceful `GOAWAY`, or
 /// a stream reset with `REFUSED_STREAM`.
 ///
-/// This must stay the test `reqwest` 0.13 applies by default, which it
-/// keeps private as `retry::is_retryable_error`: the HTTP/2 error is looked
-/// for exactly three sources below the request's own error, under the
-/// connection pool's error and the protocol's, and nowhere else.
+/// This repeats the HTTP/2 test `reqwest` 0.13.5 applies by default, which
+/// it keeps private as `retry::is_retryable_error`: the HTTP/2 error is
+/// looked for exactly three sources below the request's own error, under
+/// the connection pool's error and the protocol's, and nowhere else. It
+/// matches only while this crate's `h2` is the copy `reqwest` links. The
+/// tests that run each case under both `reqwest`'s default policy and
+/// [`retries`] guard it, so re-run them on every `reqwest`, `hyper` or `h2`
+/// bump.
 fn refused(error: Option<&(dyn Error + 'static)>) -> bool {
     error
         .and_then(|request| request.source())
@@ -95,54 +99,63 @@ mod tests {
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
     use tokio::net::TcpStream;
+    use tokio::task::JoinSet;
 
     use super::*;
-
-    const MCP_PATH: &str = "/mcp";
+    use crate::mcp::fixture::MCP_PATH;
 
     /// The policies that must retry alike: the HTTP client's own, and the
     /// one that stands in for it.
     const ALIKE: [Policy; 2] = [Policy::Default, Policy::Replica];
 
-    /// The length of what a client opens an HTTP/2 connection with, before
-    /// its first frame.
+    /// More requests refused every time than a retry budget lets one client
+    /// retry twice: the budget a `reqwest` policy has unless it is told
+    /// `no_budget` takes five from a reserve of 500 for each retry, and a
+    /// refused attempt puts nothing back, so it allows 100 of these 120.
+    const REFUSALS: usize = 60;
+
     const PREFACE: usize = 24;
 
     /// The length of a frame's head: its payload's length in three bytes,
     /// its type, its flags, and its stream in four.
     const HEAD: usize = 9;
 
+    /// Where a frame's head holds the last byte of its payload's length.
+    const LENGTH: usize = 2;
+
+    /// Where a frame's head holds its type.
+    const KIND: usize = 3;
+
     /// An empty `SETTINGS` frame, which a server opens a connection with.
     const SETTINGS: [u8; HEAD] = [0, 0, 0, 4, 0, 0, 0, 0, 0];
 
-    /// The type of a `HEADERS` frame, which opens a stream.
     const HEADERS: u8 = 1;
 
-    /// The type of a `GOAWAY` frame.
     const GOAWAY: u8 = 7;
 
     /// The length of a `GOAWAY` frame's payload: the last stream the
     /// server acted on, and why it is leaving, in four bytes each.
     const FAREWELL: u8 = 8;
 
+    /// Where a `GOAWAY` frame holds why the server is leaving, past the
+    /// last stream it acted on.
+    const REASON: usize = HEAD + 4;
+
     /// A `GOAWAY` frame for `reason` that names no stream, so the server
     /// acted on none.
     fn departure(reason: Reason) -> [u8; HEAD + FAREWELL as usize] {
         let mut frame = [0; HEAD + FAREWELL as usize];
-        frame[2] = FAREWELL;
-        frame[3] = GOAWAY;
-        frame[HEAD + 4..].copy_from_slice(&u32::from(reason).to_be_bytes());
+        frame[LENGTH] = FAREWELL;
+        frame[KIND] = GOAWAY;
+        frame[REASON..].copy_from_slice(&u32::from(reason).to_be_bytes());
         frame
     }
 
     #[derive(Debug, Clone, Copy)]
     enum Policy {
-        /// The one a client has when it is given none.
         Default,
-        /// [`retries`].
         Replica,
-        /// `reqwest::retry::never`, which shows a retry is the policy's
-        /// doing.
+        /// Shows a retry is the policy's doing.
         Never,
     }
 
@@ -436,6 +449,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_client_retries_every_refused_request_whatever_it_retried_before() {
+        for policy in ALIKE {
+            let server = serving(None, |_| Reply::Reset(Reason::REFUSED_STREAM)).await;
+            let client = client(policy);
+            let mut requests = JoinSet::new();
+            for _ in 0..REFUSALS {
+                let (client, url) = (client.clone(), server.url.clone());
+                requests.spawn(async move { client.post(url).send().await });
+            }
+
+            while let Some(sent) = requests.join_next().await {
+                let status = sent.expect("the request ran");
+                assert!(status.is_err(), "{policy:?}: {status:?}");
+            }
+            assert_eq!(server.streams(), 3 * REFUSALS, "{policy:?}");
+        }
+    }
+
+    #[tokio::test]
     async fn the_status_is_that_of_the_answer_a_retry_ended_with() {
         let server = serving(None, refused_once).await;
 
@@ -541,20 +573,29 @@ mod tests {
         assert_eq!(server.streams(), 2);
     }
 
+    /// `cause` three sources below the request's own error, where an
+    /// HTTP/2 refusal is looked for.
+    fn beneath(cause: impl Error + 'static) -> Wrapped {
+        Wrapped(Box::new(Wrapped(Box::new(Wrapped(Box::new(cause))))))
+    }
+
     #[test]
-    fn nothing_is_refused_where_no_remote_refusal_lies_three_sources_down() {
-        let wrapped = |depth: usize| {
-            let refusal: Box<dyn Error> = Box::new(h2::Error::from(Reason::REFUSED_STREAM));
-            (0..depth).fold(refusal, |error, _| Box::new(Wrapped(error)))
-        };
-        let unrelated = Wrapped(Box::new(Wrapped(Box::new(Wrapped(Box::new(
-            io::Error::from(io::ErrorKind::ConnectionReset),
-        ))))));
+    fn no_error_or_one_that_is_not_http2_is_a_refusal() {
+        let reset = io::Error::from(io::ErrorKind::ConnectionReset);
 
         assert!(!refused(None));
-        assert!(!refused(Some(&unrelated)));
-        for depth in 0..=4 {
-            assert!(!refused(Some(wrapped(depth).as_ref())), "{depth}");
+        assert!(!refused(Some(&beneath(reset))));
+    }
+
+    /// A reason this side raised is no server refusing anything, though it
+    /// names the very reason a server refuses with.
+    #[test]
+    fn a_reason_raised_locally_is_never_a_refusal() {
+        for reason in [Reason::REFUSED_STREAM, Reason::NO_ERROR] {
+            assert!(
+                !refused(Some(&beneath(h2::Error::from(reason)))),
+                "{reason:?}"
+            );
         }
     }
 }

@@ -2,7 +2,6 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::error::Error;
 use std::sync::Arc;
-use std::sync::Mutex;
 
 use abnegate_exec::Proxy;
 use abnegate_http::metadata::MetadataResolver;
@@ -21,6 +20,7 @@ use rmcp::transport::streamable_http_client::StreamableHttpPostResponse;
 use super::cause::Cause;
 use super::cause::failing;
 use super::posted::Posted;
+use super::posted::Slot;
 use super::redirect::MAXIMUM_REDIRECTS;
 use super::redirect::Redirect;
 use super::retry::answered;
@@ -54,7 +54,7 @@ type Failure = StreamableHttpError<reqwest::Error>;
 pub(super) struct Remote {
     client: reqwest::Client,
     scrubber: Scrubber,
-    posted: Arc<Mutex<Posted>>,
+    posted: Arc<Slot>,
 }
 
 impl Remote {
@@ -87,8 +87,9 @@ impl Remote {
 
     /// Where this client keeps what became of the last [recorded](recorded)
     /// request it sent, to be read once a request the session waited on has
-    /// failed, never before.
-    pub(super) fn posted(&self) -> Arc<Mutex<Posted>> {
+    /// failed, never before. What it writes there once the session has
+    /// connected is never read.
+    pub(super) fn posted(&self) -> Arc<Slot> {
         self.posted.clone()
     }
 }
@@ -112,7 +113,7 @@ impl Remote {
         }
         let (result, answer) = answered(post).await;
         if recorded {
-            outcome(&result, answer).write(&self.posted);
+            kept(&result, answer).write(&self.posted);
         }
         result.map_err(|error| self.unlocated(error))
     }
@@ -257,7 +258,7 @@ fn recorded(message: &ClientJsonRpcMessage) -> bool {
 /// answered with `answer`, if at all. An answer that was not a success
 /// keeps its status though the transport made something of it, as it does
 /// of one carrying a JSON-RPC error.
-fn outcome(
+fn kept(
     result: &Result<StreamableHttpPostResponse, Failure>,
     answer: Option<StatusCode>,
 ) -> Posted {
@@ -325,8 +326,7 @@ mod tests {
     use super::*;
     use crate::mcp::McpFailure;
     use crate::mcp::McpServer;
-
-    const MCP_PATH: &str = "/mcp";
+    use crate::mcp::fixture::MCP_PATH;
 
     const SESSION: &str = "session";
 

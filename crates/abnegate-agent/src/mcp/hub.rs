@@ -419,6 +419,9 @@ mod tests {
 
     use super::*;
     use crate::mcp::McpTransport;
+    use crate::mcp::fixture::MCP_PATH;
+    use crate::mcp::fixture::UNREACHABLE;
+    use crate::mcp::fixture::UNRESOLVABLE;
     use crate::mcp::recorder::LIMIT;
     use crate::mcp::recorder::echoing;
     use crate::mcp::recorder::gated;
@@ -1477,8 +1480,6 @@ mod tests {
         );
     }
 
-    const MCP_PATH: &str = "/mcp";
-
     /// A header no redaction recognises as holding a credential, so only
     /// scrubbing the server's own secrets keeps one out of a failure.
     const KEY_HEADER: &str = "x-key";
@@ -1831,7 +1832,7 @@ mod tests {
         let outcome = hub
             .reconnect_within(
                 "docs",
-                &McpServer::remote("http://mcp.invalid/mcp"),
+                &McpServer::remote(UNRESOLVABLE),
                 &Proxy::new(proxy.uri()).with_bypass(Vec::<String>::new()),
                 LIMIT,
             )
@@ -1958,7 +1959,7 @@ mod tests {
             McpServer::remote(format!("{base}{MCP_PATH}?key=${{KEY}}")).with_secret("KEY", QUERIED)
         };
 
-        let (_, outcome) = reconnected(&queried("http://127.0.0.1:1")).await;
+        let (_, outcome) = reconnected(&queried(UNREACHABLE)).await;
         let error = failure(&outcome);
         assert!(error.contains("error sending request"), "{error}");
         for leaked in ["key=", "9c1e", encoded.as_str()] {
@@ -2126,16 +2127,15 @@ mod tests {
 
     #[tokio::test]
     async fn the_proxy_the_environment_names_is_never_used() {
-        let unreachable = "http://127.0.0.1:1";
         if ran_in_child(
             "mcp::hub::tests::the_proxy_the_environment_names_is_never_used",
             &[
-                ("HTTP_PROXY", unreachable),
-                ("HTTPS_PROXY", unreachable),
-                ("ALL_PROXY", unreachable),
-                ("http_proxy", unreachable),
-                ("https_proxy", unreachable),
-                ("all_proxy", unreachable),
+                ("HTTP_PROXY", UNREACHABLE),
+                ("HTTPS_PROXY", UNREACHABLE),
+                ("ALL_PROXY", UNREACHABLE),
+                ("http_proxy", UNREACHABLE),
+                ("https_proxy", UNREACHABLE),
+                ("all_proxy", UNREACHABLE),
             ],
         )
         .await
@@ -2576,9 +2576,6 @@ mod tests {
         assert_eq!(cause(&outcome), (McpFailure::Protocol, None), "{outcome:?}");
     }
 
-    /// Nothing listens on port 1.
-    const UNREACHABLE: &str = "http://127.0.0.1:1";
-
     /// A proxy URL that is text, which [`reqwest::Proxy::all`] still refuses
     /// for the IPv6 host it leaves open.
     const UNPARSED_PROXY: &str = "http://[::1";
@@ -2625,7 +2622,6 @@ mod tests {
         }
     }
 
-    /// Fail unless each case's connection fails as it says.
     async fn assert_failures(cases: impl IntoIterator<Item = Case>) {
         for Case {
             label,
@@ -3019,9 +3015,6 @@ mod tests {
         assert_eq!(cause(&outcome), (McpFailure::Protocol, None), "{outcome:?}");
     }
 
-    /// A target no name server knows, so only a proxy can reach it.
-    const PROXIED: &str = "http://mcp.invalid/mcp";
-
     /// `proxy`, through which every host is reached.
     fn routed(proxy: &str) -> Proxy {
         Proxy::new(proxy).with_bypass(Vec::<String>::new())
@@ -3035,7 +3028,7 @@ mod tests {
         let unauthenticated = mounted(ResponseTemplate::new(407)).await;
         let unauthorized = mounted(challenged(401)).await;
         let idle = MockServer::start().await;
-        let target = || McpServer::remote(PROXIED);
+        let target = || McpServer::remote(UNRESOLVABLE);
 
         assert_failures([
             Case::new("a 503", target(), McpFailure::Status, Some(503))
@@ -3071,10 +3064,8 @@ mod tests {
         );
     }
 
-    /// The end of a request's head.
     const HEAD_END: &[u8] = b"\r\n\r\n";
 
-    /// How a request for a tunnel begins.
     const TUNNEL: &[u8] = b"CONNECT ";
 
     const TUNNEL_REFUSAL: &[u8] = b"HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"proxy\"\r\nContent-Length: 0\r\n\r\n";

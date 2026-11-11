@@ -53,7 +53,7 @@ impl Cause {
     /// type implied, when the kind is one an answer brings about. A kind
     /// that tells of no answer keeps none, whatever an earlier attempt of
     /// the request was answered.
-    const fn after(self, answer: Option<u16>) -> Self {
+    const fn answered(self, answer: Option<u16>) -> Self {
         match self.failure {
             McpFailure::Redirect
             | McpFailure::Unauthorized
@@ -95,7 +95,7 @@ impl Cause {
     ) -> Self {
         let answer = failing(answered);
         let cause = match error {
-            StreamableHttpError::Client(error) => Self::of(request(error)),
+            StreamableHttpError::Client(error) => Self::of(classified(error)),
             StreamableHttpError::AuthRequired(_) => {
                 Self::implied(McpFailure::Unauthorized, StatusCode::UNAUTHORIZED)
             }
@@ -127,7 +127,7 @@ impl Cause {
             | StreamableHttpError::SessionRecoveryTimeout => Self::of(McpFailure::Timeout),
             _ => Self::of(McpFailure::Other),
         };
-        cause.after(answer)
+        cause.answered(answer)
     }
 
     /// The cause behind a handshake's `error`, whose last request `posted`
@@ -159,7 +159,7 @@ impl Cause {
             | ClientInitializeError::NoPreferredProtocolVersion => Self::of(McpFailure::Protocol),
             _ => Self::of(McpFailure::Other),
         };
-        cause.after(posted.status)
+        cause.answered(posted.status)
     }
 
     /// The cause behind the `error` of a request made once the handshake
@@ -178,7 +178,7 @@ impl Cause {
             ServiceError::Timeout { .. } => Self::of(McpFailure::Timeout),
             _ => Self::of(McpFailure::Other),
         };
-        cause.after(posted.status)
+        cause.answered(posted.status)
     }
 
     /// The cause `posted` names, when the request it tells of failed.
@@ -214,7 +214,7 @@ pub(super) fn failing(answered: Option<StatusCode>) -> Option<u16> {
 /// The kind of a request the HTTP client itself failed. A refused redirect
 /// is the request's direct source; a name that resolved only to link-local
 /// or metadata addresses lies deeper, under the connection it stopped.
-fn request(error: &reqwest::Error) -> McpFailure {
+fn classified(error: &reqwest::Error) -> McpFailure {
     if error.source().is_some_and(<dyn Error>::is::<Redirect>) {
         return McpFailure::Redirect;
     }
@@ -263,13 +263,13 @@ mod tests {
     use wiremock::matchers::any;
 
     use super::*;
+    use crate::mcp::fixture::MCP_PATH;
+    use crate::mcp::fixture::UNREACHABLE;
+    use crate::mcp::fixture::UNRESOLVABLE;
 
     type Failure = StreamableHttpError<reqwest::Error>;
 
     const CHALLENGE: &str = "Bearer realm=\"mcp\"";
-
-    /// A name no resolver is asked for but the one a test installs.
-    const UNRESOLVABLE: &str = "http://mcp.invalid/mcp";
 
     fn coded(failure: McpFailure, status: u16) -> Cause {
         Cause {
@@ -356,12 +356,14 @@ mod tests {
         StreamableHttpError::Client(error)
     }
 
-    /// A local listener and the URL that reaches it.
     async fn listening() -> (TcpListener, String) {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
             .await
             .expect("a listener");
-        let url = format!("http://{}/mcp", listener.local_addr().expect("an address"));
+        let url = format!(
+            "http://{}{MCP_PATH}",
+            listener.local_addr().expect("an address")
+        );
         (listener, url)
     }
 
@@ -564,7 +566,7 @@ mod tests {
         let error = client()
             .build()
             .expect("a client")
-            .get("http://127.0.0.1:1/mcp")
+            .get(format!("{UNREACHABLE}{MCP_PATH}"))
             .send()
             .await
             .expect_err("nothing listens on port 1");

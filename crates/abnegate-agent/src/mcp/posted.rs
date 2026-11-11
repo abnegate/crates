@@ -19,14 +19,18 @@ pub(super) struct Posted {
     pub(super) status: Option<u16>,
 }
 
+/// Where a [`Remote`](super::remote::Remote) keeps the [`Posted`] of its
+/// last request, shared with the session it connects.
+pub(super) type Slot = Mutex<Posted>;
+
 impl Posted {
     /// What `slot` holds now.
-    pub(super) fn read(slot: &Mutex<Self>) -> Self {
+    pub(super) fn read(slot: &Slot) -> Self {
         *slot.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Put `self` in `slot`, over what it held.
-    pub(super) fn write(self, slot: &Mutex<Self>) {
+    pub(super) fn write(self, slot: &Slot) {
         *slot.lock().unwrap_or_else(PoisonError::into_inner) = self;
     }
 }

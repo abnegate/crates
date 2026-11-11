@@ -139,6 +139,8 @@
 mod cause;
 mod error;
 mod failure;
+#[cfg(test)]
+mod fixture;
 mod format;
 mod guidance;
 mod hub;
