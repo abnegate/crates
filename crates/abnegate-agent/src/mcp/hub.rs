@@ -373,10 +373,14 @@ fn named(name: &str, server: &McpServer) -> McpServer {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::ffi::OsString;
     use std::io;
     use std::iter;
     use std::net::Ipv4Addr;
     use std::net::SocketAddr;
+    #[cfg(unix)]
+    use std::os::unix::ffi::OsStringExt;
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::Ordering;
 
@@ -2732,6 +2736,14 @@ mod tests {
                 None,
             )
             .through(Proxy::new(UNPARSED_PROXY)),
+            #[cfg(unix)]
+            Case::new(
+                "a proxy that is not UTF-8",
+                unreachable(),
+                McpFailure::Client,
+                None,
+            )
+            .through(Proxy::new(OsString::from_vec(vec![0xff]))),
         ])
         .await;
     }
