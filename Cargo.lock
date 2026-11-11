@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "abnegate-agent"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "abnegate-agent-cli",
  "abnegate-config",

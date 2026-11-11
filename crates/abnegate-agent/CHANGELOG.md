@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2](https://github.com/abnegate/crates/compare/abnegate-agent/v0.2.1...abnegate-agent/v0.2.2) - 2026-11-11
+
+### Added
+
+- *(agent)* report why an mcp server failed to connect as data ([#84](https://github.com/abnegate/crates/pull/84))
+
 ## [0.2.1](https://github.com/abnegate/crates/compare/abnegate-agent/v0.2.0...abnegate-agent/v0.2.1) - 2026-11-10
 
 ### Added
