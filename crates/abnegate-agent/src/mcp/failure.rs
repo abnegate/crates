@@ -52,7 +52,8 @@ pub enum McpFailure {
     /// status instead.
     Status,
     /// The server answered with something other than the MCP message the
-    /// client was waiting for.
+    /// client was waiting for. An event-stream answer that brings a
+    /// malformed event in its place is [`Closed`](Self::Closed) instead.
     Protocol,
     /// The server answered the handshake or the tool listing with a
     /// JSON-RPC error.
@@ -64,7 +65,11 @@ pub enum McpFailure {
     /// The server's answer was larger than the client reads.
     Oversized,
     /// The connection closed, or the server's process went away, before the
-    /// handshake and the tool listing completed.
+    /// handshake and the tool listing completed. An event-stream answer that
+    /// brings a malformed event, or one that is not JSON-RPC, in place of the
+    /// message awaited is this kind too, not [`Protocol`](Self::Protocol):
+    /// the transport reads its events only once it has taken the answer as a
+    /// success, and only logs what it could not read.
     Closed,
     /// A failure no other kind names.
     Other,

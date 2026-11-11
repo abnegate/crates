@@ -31,9 +31,14 @@
 //! makes only after an HTTP/2 server refused the first two, so that answer's
 //! status is only one the error's own kind implies, and an answer the
 //! transport does not name by type, such as a bare 401 or 403, then fails as
-//! [`Protocol`](McpFailure::Protocol) with no status. An `https` server
-//! behind a proxy is reached through a tunnel, and the client never sees the
-//! proxy's refusal of that tunnel, a 407 included, as a response: it is
+//! [`Protocol`](McpFailure::Protocol) with no status. An event-stream answer
+//! that brings a malformed event, or one that is not JSON-RPC, in place of
+//! the message awaited fails as [`Closed`](McpFailure::Closed) with no
+//! status, not as [`Protocol`](McpFailure::Protocol): the transport reads
+//! its events only once it has taken the answer as a success, and only logs
+//! what it could not read. An `https` server behind a proxy is reached
+//! through a tunnel, and the client never sees the proxy's refusal of that
+//! tunnel, a 407 included, as a response: it is
 //! [`Unreachable`](McpFailure::Unreachable) with no status.
 //!
 //! ```
