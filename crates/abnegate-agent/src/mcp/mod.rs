@@ -19,6 +19,39 @@
 //! with a warning, its name and the tools it names sanitized as a CLI names
 //! them.
 //!
+//! A [failed](McpOutcome::Failed) outcome names its kind as an
+//! [`McpFailure`] and carries the HTTP status of the answer that failed it,
+//! so a host can say why a server failed without reading the failure's text
+//! or showing what the server sent. The status is `Some` exactly when the
+//! request that failed the connection got an answer that was not 2xx and the
+//! client observed it. It is `None` for a 2xx the client could not use, for
+//! a request that got no answer, and for every failure before a request is
+//! sent. An `https` server behind a proxy is reached through a tunnel, and
+//! the client never sees the proxy's refusal of that tunnel, a 407 included,
+//! as a response: it is [`Unreachable`](McpFailure::Unreachable) with no
+//! status.
+//!
+//! ```
+//! use abnegate_agent::mcp::McpFailure;
+//! use abnegate_agent::mcp::McpOutcome;
+//!
+//! fn reason(outcome: &McpOutcome) -> Option<String> {
+//!     let McpOutcome::Failed { failure, status, .. } = outcome else {
+//!         return None;
+//!     };
+//!     let reason = match (*failure, *status) {
+//!         (McpFailure::Unauthorized, _) => "it needs credentials".to_owned(),
+//!         (McpFailure::Unreachable | McpFailure::Timeout, _) => {
+//!             "it could not be reached".to_owned()
+//!         }
+//!         (_, Some(status)) => format!("it answered {status}"),
+//!         _ => "it could not be connected".to_owned(),
+//!     };
+//!     Some(reason)
+//! }
+//! # let _ = reason;
+//! ```
+//!
 //! A `url` server is sent the headers [`McpServer::endpoint`] resolves, as
 //! an [`McpEndpoint`]: each `${VAR}` in its URL and headers resolves only to
 //! a [secret](McpServer::secrets) bound to it, or to its default, never to
