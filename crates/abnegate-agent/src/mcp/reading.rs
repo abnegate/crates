@@ -8,11 +8,17 @@ use tokio::task::Id;
 /// Which recorded request a [`Remote`](super::remote::Remote) sent last, and
 /// the task that reads the event stream it was answered with, once one has.
 ///
-/// The transport reads each request's event stream in a task of its own,
-/// apart from the stream it holds open in the background, and resumes a
-/// request's stream from the task that read it, after the last event it
-/// read. A stream that task opens is therefore that request's, while one
-/// opened from any other task is not, whatever event it resumes after.
+/// The transport of `rmcp` 3.9.0 reads each request's event stream in a
+/// task of its own, apart from the task that holds its background stream
+/// open, and resumes a request's stream from the task that read it, after
+/// the last event it read. A stream that task opens is therefore that
+/// request's, while one opened from any other task is not, whatever event
+/// it resumes after.
+///
+/// That layout is `rmcp`'s own, which it neither documents nor promises.
+/// The tests of a resumption challenged in a listing's place, and of a
+/// background stream challenged while a listing's answer is read, guard
+/// it, so re-check it and re-run them on every `rmcp` bump.
 #[derive(Debug, Default)]
 pub(super) struct Reading {
     request: u64,

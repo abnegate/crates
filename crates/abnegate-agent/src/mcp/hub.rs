@@ -1580,36 +1580,78 @@ mod tests {
         held: &'static str,
         line: &'static str,
     ) -> (McpServer, Arc<AtomicBool>) {
+        let hold = Hold::new(held, "", line);
+        let engaged = hold.engaged.clone();
+        (holding(server, vec![hold]).await, engaged)
+    }
+
+    /// What a relay holds back: the rest of the answer to a request naming
+    /// `request`, from just past `after` in it, until this thread has logged
+    /// `line`. Its flag is set once the relay has held that answer back.
+    #[derive(Clone)]
+    struct Hold {
+        request: &'static str,
+        after: &'static str,
+        line: &'static str,
+        engaged: Arc<AtomicBool>,
+    }
+
+    impl Hold {
+        fn new(request: &'static str, after: &'static str, line: &'static str) -> Self {
+            Self {
+                request,
+                after,
+                line,
+                engaged: Arc::default(),
+            }
+        }
+
+        fn engaged(&self) -> bool {
+            self.engaged.load(Ordering::Relaxed)
+        }
+    }
+
+    /// Where `needle` first ends in `haystack`, if it is there at all. An
+    /// empty `needle` ends where `haystack` starts.
+    fn ending(haystack: &[u8], needle: &str) -> Option<usize> {
+        if needle.is_empty() {
+            return Some(0);
+        }
+        haystack
+            .windows(needle.len())
+            .position(|window| window == needle.as_bytes())
+            .map(|start| start + needle.len())
+    }
+
+    /// [`reached`] through a relay that holds back `server`'s answers as
+    /// each of `holds` says, so what the client meets first is settled by
+    /// what it has done, not by a delay.
+    async fn holding(server: &MockServer, holds: Vec<Hold>) -> McpServer {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
             .await
             .expect("a port for the relay");
         let address = listener.local_addr().expect("the relay's address");
         let upstream = *server.address();
-        let engaged = Arc::new(AtomicBool::new(false));
-        let holding = engaged.clone();
+        let holds = Arc::<[Hold]>::from(holds);
         tokio::spawn(async move {
             while let Ok((client, _)) = listener.accept().await {
-                tokio::spawn(relay(client, upstream, held, line, holding.clone()));
+                tokio::spawn(relay(client, upstream, holds.clone()));
             }
         });
-        (
-            McpServer::remote(format!("http://{address}{MCP_PATH}")),
-            engaged,
-        )
+        McpServer::remote(format!("http://{address}{MCP_PATH}"))
     }
 
     /// Copy each request `client` sends to `upstream` and each answer back,
-    /// the answer to a request naming `held` only once this thread has logged
-    /// `line`, setting `engaged` before that wait.
+    /// holding back an answer one of `holds` names as it says, setting its
+    /// flag before that wait.
     async fn relay(
         mut client: TcpStream,
         upstream: SocketAddr,
-        held: &'static str,
-        line: &'static str,
-        engaged: Arc<AtomicBool>,
+        holds: Arc<[Hold]>,
     ) -> io::Result<()> {
         let mut server = TcpStream::connect(upstream).await?;
-        let mut request = Vec::new();
+        let (mut request, mut answer) = (Vec::new(), Vec::new());
+        let mut held: Option<&Hold> = None;
         let (mut sent, mut answered) = ([0; 4096], [0; 4096]);
         loop {
             tokio::select! {
@@ -1626,15 +1668,28 @@ mod tests {
                     if read == 0 {
                         return Ok(());
                     }
-                    if request
-                        .windows(held.len())
-                        .any(|window| window == held.as_bytes())
-                    {
-                        engaged.store(true, Ordering::Relaxed);
-                        until_logged(line).await;
+                    if !request.is_empty() {
+                        held = holds
+                            .iter()
+                            .find(|hold| ending(&request, hold.request).is_some());
+                        request.clear();
+                        answer.clear();
                     }
-                    request.clear();
-                    client.write_all(&answered[..read]).await?;
+                    let chunk = &answered[..read];
+                    let start = answer.len();
+                    answer.extend_from_slice(chunk);
+                    let split = held.and_then(|hold| Some((hold, ending(&answer, hold.after)?)));
+                    match split {
+                        Some((hold, end)) => {
+                            let (head, tail) = chunk.split_at(end.saturating_sub(start));
+                            client.write_all(head).await?;
+                            hold.engaged.store(true, Ordering::Relaxed);
+                            until_logged(hold.line).await;
+                            held = None;
+                            client.write_all(tail).await?;
+                        }
+                        None => client.write_all(chunk).await?,
+                    }
                 }
             }
         }
@@ -2682,6 +2737,66 @@ mod tests {
             (McpFailure::Unauthorized, Some(401)),
             "{outcome:?}"
         );
+    }
+
+    /// An event that is not JSON-RPC, which the transport passes over once
+    /// it has read it.
+    const UNPARSED: &str = "data: unparsed\n\n";
+
+    /// The background stream of `rmcp` 3.9.0 reconnects from a task of its
+    /// own, as [`Reading`](crate::mcp::reading::Reading) says, while the
+    /// listing's event stream is still read, so a challenge to that
+    /// reconnection is not why the listing failed, though the listing is the
+    /// request sent last and a task has read its answer.
+    ///
+    /// The background stream's first answer is held until the listing's
+    /// first event has been read, so it reconnects only once the task reading
+    /// the listing is noted, and the rest of the listing's answer is held
+    /// until that reconnection was refused, so the listing ends, unanswered
+    /// and with no event to resume after, only once that refusal was met.
+    #[tokio::test]
+    async fn a_challenge_to_the_background_stream_is_never_the_listing_s() {
+        let server = listing(
+            ResponseTemplate::new(200)
+                .set_body_raw(format!("{UNPARSED}: closing\n\n"), "text/event-stream"),
+        )
+        .await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw("retry: 1\n\n", "text/event-stream"),
+            )
+            .up_to_n_times(1)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .respond_with(challenged(401))
+            .with_priority(2)
+            .mount(&server)
+            .await;
+        let opened = Hold::new("GET ", "", "failed to deserialize server message");
+        let listed = Hold::new("tools/list", UNPARSED, "retry sse stream error");
+        let relayed = holding(&server, vec![opened.clone(), listed.clone()]).await;
+
+        let ((_, outcome), logs) = crate::test_support::captured_logs(reconnected(&relayed)).await;
+
+        assert!(
+            opened.engaged() && listed.engaged(),
+            "the relay never held the background stream and the listing back, so nothing ordered the reconnection inside the listing: {logs}"
+        );
+        let opens: Vec<_> = requests(&server)
+            .await
+            .into_iter()
+            .filter(|request| request.method.as_str() == "GET")
+            .collect();
+        assert_eq!(opens.len(), 2, "the background stream reconnected once");
+        assert!(
+            opens
+                .iter()
+                .all(|open| !open.headers.contains_key("last-event-id")),
+            "nothing resumed the listing"
+        );
+        assert_eq!(cause(&outcome), (McpFailure::Closed, None), "{outcome:?}");
     }
 
     /// Answers `initialize` as [`Streamable`] does, under the id after the

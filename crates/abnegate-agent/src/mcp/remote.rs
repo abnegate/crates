@@ -54,7 +54,9 @@ type Failure = StreamableHttpError<reqwest::Error>;
 /// saw it [`answered`] with, as a [`Posted`] every clone shares with
 /// whoever asked for [`posted`](Self::posted). A request answered with an
 /// event stream that ends before its answer does is resumed, and what
-/// became of that resumption is kept as what became of the request.
+/// became of that resumption is kept as what became of the request, told
+/// apart from the background stream by the task that opens it, as the
+/// transport of `rmcp` 3.9.0 lays its tasks out ([`Reading`]).
 #[derive(Clone)]
 pub(super) struct Remote {
     client: reqwest::Client,
@@ -112,7 +114,7 @@ impl Remote {
     /// session waits on never stands in for what became of that request.
     ///
     /// The event stream a recorded request is answered with notes the task
-    /// that reads it, which alone [resumes](Self::resumed) it.
+    /// that reads it, which alone [resumes](Self::opened) it.
     async fn sent(
         &self,
         recorded: bool,
@@ -143,12 +145,13 @@ impl Remote {
     /// The stream `get` opens, its error [unlocated](Self::unlocated).
     ///
     /// Opened from the task that read the last recorded request's event
-    /// stream, it resumes that request's answer, so what became of it is
-    /// kept as what became of the request, as [`sent`](Self::sent) keeps a
-    /// request's own. Opened from any other task, such as the one holding
-    /// the session's background stream open, it is no request a session
-    /// waits on, and what is kept is left alone.
-    async fn resumed(
+    /// stream, it resumes that request's answer, as `rmcp` 3.9.0 lays its
+    /// tasks out ([`Reading`]), so what became of it is kept as what became
+    /// of the request, as [`sent`](Self::sent) keeps a request's own. Opened
+    /// from any other task, such as the one holding the session's background
+    /// stream open, it is no request a session waits on, and what is kept is
+    /// left alone.
+    async fn opened(
         &self,
         get: impl Future<Output = Result<BoxedSseResponse, Failure>> + Send,
     ) -> Result<BoxedSseResponse, Failure> {
@@ -266,7 +269,7 @@ impl StreamableHttpClient for Remote {
         let get =
             self.client
                 .get_stream(uri, session_id, last_event_id, auth_header, custom_headers);
-        self.resumed(get).await
+        self.opened(get).await
     }
 
     async fn get_stream_with_max_sse_event_size(
@@ -286,7 +289,7 @@ impl StreamableHttpClient for Remote {
             custom_headers,
             max_sse_event_size,
         );
-        self.resumed(get).await
+        self.opened(get).await
     }
 }
 
@@ -654,12 +657,12 @@ mod tests {
         }
     }
 
-    /// The transport resumes a request's event stream from the task that
-    /// read it and holds its background stream open from another, so only a
-    /// stream the reading task opens tells what became of the request, and
-    /// only until another request is sent.
+    /// The transport of `rmcp` 3.9.0 resumes a request's event stream from
+    /// the task that read it and holds its background stream open from
+    /// another ([`Reading`]), so only a stream the reading task opens tells
+    /// what became of the request, and only until another request is sent.
     #[tokio::test]
-    async fn only_the_task_reading_a_request_s_answer_resumes_it() {
+    async fn only_the_task_reading_an_answer_resumes_it() {
         let server = MockServer::start().await;
         let refusing = MockServer::start().await;
         answering(&server, streaming()).await;
