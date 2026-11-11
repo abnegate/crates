@@ -58,13 +58,16 @@ pub enum McpOutcome {
         /// `error`'s text.
         failure: McpFailure,
         /// The HTTP status of the answer, the server's or a proxy's in front
-        /// of it, that failed the connection: `Some` exactly when the
-        /// request that failed it received an answer whose status was not
-        /// 2xx and the client observed it, and `None` otherwise, as for a
-        /// failure before any request was sent. The client does not observe
-        /// the answer to a request's third and last attempt, which it makes
-        /// only after an HTTP/2 server refused the first two, so that answer
-        /// leaves `None`.
+        /// of it, that failed the connection: `Some` when the request that
+        /// failed it received an answer whose status was not 2xx and the
+        /// client observed it, and `None` when it received no answer or a
+        /// 2xx, as for a failure before any request was sent. The client does
+        /// not observe the answer to a request's third and last attempt,
+        /// made only after an HTTP/2 server refused the first two, so that
+        /// answer's status is only one the error's own kind implies, and an
+        /// answer the transport does not name by type, such as a bare 401 or
+        /// 403, then fails as [`Protocol`](McpFailure::Protocol) with no
+        /// status.
         status: Option<u16>,
     },
     /// The server is [disabled](super::McpServer::disabled), so it was not

@@ -22,17 +22,18 @@
 //! A [failed](McpOutcome::Failed) outcome names its kind as an
 //! [`McpFailure`] and carries the HTTP status of the answer that failed it,
 //! so a host can say why a server failed without reading the failure's text
-//! or showing what the server sent. The status is `Some` exactly when the
-//! request that failed the connection got an answer that was not 2xx, from
-//! the server or a proxy in front of it, and the client observed it. It is
+//! or showing what the server sent. The status is `Some` when the request
+//! that failed the connection got an answer that was not 2xx, from the
+//! server or a proxy in front of it, and the client observed it. It is
 //! `None` for a 2xx the client could not use, for a request that got no
 //! answer, and for every failure before a request is sent. The client does
 //! not observe the answer to a request's third and last attempt, which it
-//! makes only after an HTTP/2 server refused the first two, so that answer
-//! leaves `None` too, and one such as a bare 401 or 403 then fails as
-//! [`Protocol`](McpFailure::Protocol). An `https` server behind a proxy is
-//! reached through a tunnel, and the client never sees the proxy's refusal
-//! of that tunnel, a 407 included, as a response: it is
+//! makes only after an HTTP/2 server refused the first two, so that answer's
+//! status is only one the error's own kind implies, and an answer the
+//! transport does not name by type, such as a bare 401 or 403, then fails as
+//! [`Protocol`](McpFailure::Protocol) with no status. An `https` server
+//! behind a proxy is reached through a tunnel, and the client never sees the
+//! proxy's refusal of that tunnel, a 407 included, as a response: it is
 //! [`Unreachable`](McpFailure::Unreachable) with no status.
 //!
 //! ```
