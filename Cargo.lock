@@ -17,6 +17,7 @@ dependencies = [
  "dashmap",
  "dirs 7.0.0",
  "futures",
+ "h2",
  "hex",
  "nix",
  "regex",

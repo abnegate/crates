@@ -38,6 +38,7 @@ fast_image_resize = "6"
 fastembed = { version = "7", default-features = false }
 futures = "0.3"
 getrandom = "0.4"
+h2 = "0.4"
 hex = "0.4"
 hmac = "0.13"
 httpdate = "1"

@@ -1,3 +1,5 @@
+use super::McpFailure;
+
 /// What became of one configured server the last time an
 /// [`McpHub`](super::McpHub) connected it.
 ///
@@ -15,6 +17,27 @@
 /// }
 /// # let _ = failure;
 /// ```
+///
+/// A failure names its kind, and the status of the HTTP answer that failed
+/// it when there was one, so a host can tell failures apart without reading
+/// their text:
+///
+/// ```
+/// use abnegate_agent::mcp::McpFailure;
+/// use abnegate_agent::mcp::McpOutcome;
+///
+/// fn unauthorized(outcome: &McpOutcome) -> bool {
+///     matches!(
+///         outcome,
+///         McpOutcome::Failed {
+///             failure: McpFailure::Unauthorized,
+///             status: Some(401),
+///             ..
+///         }
+///     )
+/// }
+/// # let _ = unauthorized;
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum McpOutcome {
@@ -31,6 +54,21 @@ pub enum McpOutcome {
     Failed {
         /// Why, in the hub's words.
         error: String,
+        /// The kind of failure, taken from what failed and never from
+        /// `error`'s text.
+        failure: McpFailure,
+        /// The HTTP status of the answer, the server's or a proxy's in front
+        /// of it, that failed the connection: `Some` when the request that
+        /// failed it received an answer whose status was not 2xx and the
+        /// client observed it, and `None` when it received no answer or a
+        /// 2xx, as for a failure before any request was sent. The client does
+        /// not observe the answer to a request's third and last attempt,
+        /// made only after an HTTP/2 server refused the first two, so that
+        /// answer's status is only one the error's own kind implies, and an
+        /// answer the transport does not name by type, such as a bare 401 or
+        /// 403, then fails as [`Protocol`](McpFailure::Protocol) with no
+        /// status.
+        status: Option<u16>,
     },
     /// The server is [disabled](super::McpServer::disabled), so it was not
     /// started.

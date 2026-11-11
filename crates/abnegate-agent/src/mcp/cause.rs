@@ -1,0 +1,1146 @@
+use std::error::Error;
+use std::io;
+use std::iter;
+
+use abnegate_http::Error as Refusal;
+use reqwest::StatusCode;
+use rmcp::ServiceError;
+use rmcp::service::ClientInitializeError;
+use rmcp::transport::DynamicTransportError;
+use rmcp::transport::streamable_http_client::StreamableHttpError;
+
+use super::McpFailure;
+use super::posted::Posted;
+use super::redirect::Redirect;
+
+/// What failed a server's connection: its kind and, when an HTTP answer
+/// failed it, that answer's status.
+///
+/// It is taken from an error's type, from what the error holds as data and
+/// from the status the client saw the failing request answered with, never
+/// from an error's text, which a server's reply and a bound secret both
+/// shape.
+///
+/// The status is that of the answer to the request that failed the
+/// connection, when that answer was not a success and the client saw it,
+/// whatever kind names the failure. A request that got no answer, or one
+/// the client could not use though it was a success, has none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Cause {
+    pub(super) failure: McpFailure,
+    pub(super) status: Option<u16>,
+}
+
+impl Cause {
+    /// `failure` with no HTTP answer behind it.
+    pub(super) const fn of(failure: McpFailure) -> Self {
+        Self {
+            failure,
+            status: None,
+        }
+    }
+
+    /// `failure` from an error only an answer of `status` produces.
+    const fn implied(failure: McpFailure, status: StatusCode) -> Self {
+        Self {
+            failure,
+            status: Some(status.as_u16()),
+        }
+    }
+
+    /// This cause for a request whose answer was `answer`, a status that
+    /// [fails](failing) it: that status rather than the one the error's own
+    /// type implied, when the kind is one an answer brings about. A kind
+    /// that tells of no answer keeps none, whatever an earlier attempt of
+    /// the request was answered.
+    const fn answered(self, answer: Option<u16>) -> Self {
+        match self.failure {
+            McpFailure::Redirect
+            | McpFailure::Unauthorized
+            | McpFailure::Status
+            | McpFailure::Protocol
+            | McpFailure::Rejected
+            | McpFailure::Oversized
+            | McpFailure::Closed => Self {
+                failure: self.failure,
+                status: match answer {
+                    Some(_) => answer,
+                    None => self.status,
+                },
+            },
+            McpFailure::Invalid
+            | McpFailure::Unsupported
+            | McpFailure::Unresolved
+            | McpFailure::Address
+            | McpFailure::Metadata
+            | McpFailure::Header
+            | McpFailure::Client
+            | McpFailure::Timeout
+            | McpFailure::Unreachable
+            | McpFailure::Spawn
+            | McpFailure::Other => self,
+        }
+    }
+
+    /// The cause behind a streamable HTTP request's `error`, when the
+    /// client saw the request last `answered` with that status, if at all.
+    ///
+    /// The transport reports most answers that are not a success as an
+    /// unexpected response, with the status only in its text. Such an error
+    /// beside an answer that was not a success is therefore that status,
+    /// and only without one is it the protocol broken.
+    pub(super) fn transport(
+        error: &StreamableHttpError<reqwest::Error>,
+        answered: Option<StatusCode>,
+    ) -> Self {
+        let answer = failing(answered);
+        let cause = match error {
+            StreamableHttpError::Client(error) => Self::of(classified(error)),
+            StreamableHttpError::AuthRequired(_) => {
+                Self::implied(McpFailure::Unauthorized, StatusCode::UNAUTHORIZED)
+            }
+            StreamableHttpError::InsufficientScope(_) => {
+                Self::implied(McpFailure::Unauthorized, StatusCode::FORBIDDEN)
+            }
+            StreamableHttpError::HttpStatus(error) => Self {
+                failure: McpFailure::Status,
+                status: Some(error.status),
+            },
+            StreamableHttpError::SessionExpired => {
+                Self::implied(McpFailure::Status, StatusCode::NOT_FOUND)
+            }
+            StreamableHttpError::UnexpectedServerResponse(_) if answer.is_some() => {
+                Self::of(McpFailure::Status)
+            }
+            StreamableHttpError::UnexpectedServerResponse(_)
+            | StreamableHttpError::UnexpectedContentType(_)
+            | StreamableHttpError::Deserialize(_)
+            | StreamableHttpError::Sse(_)
+            | StreamableHttpError::MissingSessionIdInResponse => Self::of(McpFailure::Protocol),
+            StreamableHttpError::ReinitializationFailed(_) => Self::of(McpFailure::Rejected),
+            StreamableHttpError::ResponseBodyTooLarge { .. } => Self::of(McpFailure::Oversized),
+            StreamableHttpError::TransportChannelClosed
+            | StreamableHttpError::UnexpectedEndOfStream
+            | StreamableHttpError::Io(_) => Self::of(McpFailure::Closed),
+            StreamableHttpError::ReservedHeaderConflict(_) => Self::of(McpFailure::Header),
+            StreamableHttpError::ControlRequestTimeout
+            | StreamableHttpError::SessionRecoveryTimeout => Self::of(McpFailure::Timeout),
+            _ => Self::of(McpFailure::Other),
+        };
+        cause.answered(answer)
+    }
+
+    /// The cause behind a handshake's `error`, whose last request `posted`
+    /// tells of.
+    ///
+    /// A remote server's transport hands over a failed request's error only
+    /// once its text is fit to show, which can cost the error its kind, and
+    /// reports a failure it met after the first answer only as a connection
+    /// that closed. What `posted` names is therefore taken first, and the
+    /// error's own kind only when it names nothing.
+    ///
+    /// A failure that is no request's own, such as a JSON-RPC error the
+    /// server answered with, still has the status `posted` kept of that
+    /// answer.
+    pub(super) fn initialize(error: &ClientInitializeError, posted: Posted) -> Self {
+        let cause = match error {
+            ClientInitializeError::TransportError { error, .. } => {
+                Self::recorded(posted).unwrap_or_else(|| Self::carried(error))
+            }
+            ClientInitializeError::ConnectionClosed(_) => {
+                Self::recorded(posted).unwrap_or(Self::of(McpFailure::Closed))
+            }
+            ClientInitializeError::JsonRpcError(_) => Self::of(McpFailure::Rejected),
+            ClientInitializeError::ExpectedInitResponse(_)
+            | ClientInitializeError::ExpectedInitResult(_)
+            | ClientInitializeError::ConflictInitResponseId(..)
+            | ClientInitializeError::UncorrelatedErrorResponse { .. }
+            | ClientInitializeError::NoCompatibleProtocolVersion { .. }
+            | ClientInitializeError::NoPreferredProtocolVersion => Self::of(McpFailure::Protocol),
+            _ => Self::of(McpFailure::Other),
+        };
+        cause.answered(posted.status)
+    }
+
+    /// The cause behind the `error` of a request made once the handshake
+    /// was done, such as the tool listing, which `posted` tells of as it
+    /// does for [`initialize`](Self::initialize).
+    pub(super) fn service(error: &ServiceError, posted: Posted) -> Self {
+        let cause = match error {
+            ServiceError::TransportSend(error) => {
+                Self::recorded(posted).unwrap_or_else(|| Self::carried(error))
+            }
+            ServiceError::TransportClosed => {
+                Self::recorded(posted).unwrap_or(Self::of(McpFailure::Closed))
+            }
+            ServiceError::McpError(_) => Self::of(McpFailure::Rejected),
+            ServiceError::UnexpectedResponse => Self::of(McpFailure::Protocol),
+            ServiceError::Timeout { .. } => Self::of(McpFailure::Timeout),
+            _ => Self::of(McpFailure::Other),
+        };
+        cause.answered(posted.status)
+    }
+
+    /// The cause `posted` names, when the request it tells of failed.
+    fn recorded(posted: Posted) -> Option<Self> {
+        posted.failure.map(|failure| Self {
+            failure,
+            status: posted.status,
+        })
+    }
+
+    /// The cause behind the error a transport of either kind gave: a
+    /// streamable HTTP request's own, or the `io::Error` of a stdio pipe.
+    fn carried(error: &DynamicTransportError) -> Self {
+        let error = error.error.as_ref();
+        if let Some(error) = error.downcast_ref::<StreamableHttpError<reqwest::Error>>() {
+            return Self::transport(error, None);
+        }
+        if error.is::<io::Error>() {
+            return Self::of(McpFailure::Closed);
+        }
+        Self::of(McpFailure::Other)
+    }
+}
+
+/// The status of an answer that fails the request it answers, which is
+/// any the client saw `answered` but a success.
+pub(super) fn failing(answered: Option<StatusCode>) -> Option<u16> {
+    answered
+        .filter(|status| !status.is_success())
+        .map(|status| status.as_u16())
+}
+
+/// The kind of a request the HTTP client itself failed. A refused redirect
+/// is the request's direct source; a name that resolved only to link-local
+/// or metadata addresses lies deeper, under the connection it stopped.
+fn classified(error: &reqwest::Error) -> McpFailure {
+    if error.source().is_some_and(<dyn Error>::is::<Redirect>) {
+        return McpFailure::Redirect;
+    }
+    let refused = iter::successors(error.source(), |source| (*source).source()).any(|source| {
+        matches!(
+            source.downcast_ref::<Refusal>(),
+            Some(Refusal::MetadataResolution { .. })
+        )
+    });
+    if refused {
+        return McpFailure::Metadata;
+    }
+    if error.is_timeout() {
+        return McpFailure::Timeout;
+    }
+    if error.is_body() || error.is_decode() {
+        return McpFailure::Closed;
+    }
+    McpFailure::Unreachable
+}
+
+#[cfg(test)]
+mod tests {
+    use std::any::TypeId;
+    use std::fmt;
+    use std::net::Ipv4Addr;
+    use std::time::Duration;
+
+    use abnegate_http::metadata::MetadataResolver;
+    use reqwest::dns::Name;
+    use reqwest::dns::Resolve;
+    use reqwest::dns::Resolving;
+    use reqwest::redirect::Policy;
+    use rmcp::ErrorData;
+    use rmcp::model::RequestId;
+    use rmcp::transport::streamable_http_client::AuthRequiredError;
+    use rmcp::transport::streamable_http_client::HttpStatusError;
+    use rmcp::transport::streamable_http_client::InsufficientScopeError;
+    use rmcp::transport::streamable_http_client::SseError;
+    use tokio::io::AsyncReadExt;
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::TcpListener;
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::any;
+
+    use super::*;
+    use crate::mcp::fixture::MCP_PATH;
+    use crate::mcp::fixture::UNREACHABLE;
+    use crate::mcp::fixture::UNRESOLVABLE;
+
+    type Failure = StreamableHttpError<reqwest::Error>;
+
+    const CHALLENGE: &str = "Bearer realm=\"mcp\"";
+
+    fn coded(failure: McpFailure, status: u16) -> Cause {
+        Cause {
+            failure,
+            status: Some(status),
+        }
+    }
+
+    /// What a remote kept of a request that failed for `failure`.
+    fn posted(failure: McpFailure, status: Option<u16>) -> Posted {
+        Posted {
+            failure: Some(failure),
+            status,
+        }
+    }
+
+    /// What a remote kept of a request the transport made something of,
+    /// though it was answered `status`.
+    fn kept(status: u16) -> Posted {
+        Posted {
+            failure: None,
+            status: Some(status),
+        }
+    }
+
+    /// A handshake that failed sending, for `error`.
+    fn unsent(error: Failure) -> ClientInitializeError {
+        ClientInitializeError::TransportError {
+            error: carried(error),
+            context: "send initialize request".into(),
+        }
+    }
+
+    fn rejection() -> ErrorData {
+        ErrorData::internal_error("no", None)
+    }
+
+    fn broken() -> io::Error {
+        io::Error::from(io::ErrorKind::BrokenPipe)
+    }
+
+    fn undecodable() -> serde_json::Error {
+        serde_json::from_str::<serde_json::Value>("{").expect_err("not JSON")
+    }
+
+    /// `error` as a transport of any kind hands it to a session.
+    fn carried(error: impl Error + Send + Sync + 'static) -> DynamicTransportError {
+        DynamicTransportError::from_parts("test", TypeId::of::<()>(), Box::new(error))
+    }
+
+    fn client() -> reqwest::ClientBuilder {
+        reqwest::Client::builder().no_proxy()
+    }
+
+    /// Answers every name with what its function resolves.
+    struct Scripted(fn() -> Resolving);
+
+    impl Resolve for Scripted {
+        fn resolve(&self, _: Name) -> Resolving {
+            (self.0)()
+        }
+    }
+
+    /// What [`MetadataResolver`] answers for a metadata address, which it
+    /// refuses without asking the network.
+    fn metadata() -> Resolving {
+        MetadataResolver::new().resolve("169.254.169.254".parse().expect("a name"))
+    }
+
+    fn nameless() -> Resolving {
+        Box::pin(async { Err(io::Error::from(io::ErrorKind::NotFound).into()) })
+    }
+
+    /// The error of a request whose name `resolver` answers.
+    async fn unresolved(resolver: Scripted) -> Failure {
+        let error = client()
+            .dns_resolver(resolver)
+            .build()
+            .expect("a client")
+            .get(UNRESOLVABLE)
+            .send()
+            .await
+            .expect_err("the name resolves to nothing reachable");
+        StreamableHttpError::Client(error)
+    }
+
+    async fn listening() -> (TcpListener, String) {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("a listener");
+        let url = format!(
+            "http://{}{MCP_PATH}",
+            listener.local_addr().expect("an address")
+        );
+        (listener, url)
+    }
+
+    #[test]
+    fn a_cause_of_a_kind_alone_has_no_status() {
+        assert_eq!(
+            Cause::of(McpFailure::Spawn),
+            Cause {
+                failure: McpFailure::Spawn,
+                status: None
+            }
+        );
+    }
+
+    #[test]
+    fn a_challenge_is_unauthorized_with_the_status_that_carries_it() {
+        let required = Failure::AuthRequired(AuthRequiredError::new(CHALLENGE.to_string()));
+        let insufficient =
+            Failure::InsufficientScope(InsufficientScopeError::new(CHALLENGE.to_string(), None));
+
+        assert_eq!(
+            Cause::transport(&required, None),
+            coded(McpFailure::Unauthorized, 401)
+        );
+        assert_eq!(
+            Cause::transport(&insufficient, None),
+            coded(McpFailure::Unauthorized, 403)
+        );
+    }
+
+    #[test]
+    fn a_failing_status_is_carried_as_data() {
+        for status in [429, 500, 503] {
+            let error = Failure::HttpStatus(HttpStatusError::new(status, None));
+
+            assert_eq!(
+                Cause::transport(&error, None),
+                coded(McpFailure::Status, status)
+            );
+        }
+        assert_eq!(
+            Cause::transport(&Failure::SessionExpired, None),
+            coded(McpFailure::Status, 404)
+        );
+    }
+
+    #[test]
+    fn an_answer_that_is_not_the_protocol_is_a_protocol_failure() {
+        let errors = [
+            Failure::UnexpectedServerResponse("HTTP 503: Auth required".into()),
+            Failure::UnexpectedContentType(Some("text/html".to_string())),
+            Failure::UnexpectedContentType(None),
+            Failure::Deserialize(undecodable()),
+            Failure::Sse(SseError::InvalidLine),
+            Failure::MissingSessionIdInResponse,
+        ];
+
+        for error in errors {
+            assert_eq!(
+                Cause::transport(&error, None),
+                Cause::of(McpFailure::Protocol),
+                "{error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_refused_reinitialization_is_rejected() {
+        assert_eq!(
+            Cause::transport(&Failure::ReinitializationFailed(rejection()), None),
+            Cause::of(McpFailure::Rejected)
+        );
+    }
+
+    #[test]
+    fn a_body_past_the_limit_is_oversized() {
+        assert_eq!(
+            Cause::transport(&Failure::ResponseBodyTooLarge { max_size: 1 }, None),
+            Cause::of(McpFailure::Oversized)
+        );
+    }
+
+    #[test]
+    fn a_stream_that_ends_is_closed() {
+        let errors = [
+            Failure::TransportChannelClosed,
+            Failure::UnexpectedEndOfStream,
+            Failure::Io(broken()),
+        ];
+
+        for error in errors {
+            assert_eq!(
+                Cause::transport(&error, None),
+                Cause::of(McpFailure::Closed),
+                "{error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_reserved_header_is_a_header_failure() {
+        assert_eq!(
+            Cause::transport(&Failure::ReservedHeaderConflict("accept".to_string()), None),
+            Cause::of(McpFailure::Header)
+        );
+    }
+
+    #[test]
+    fn a_transport_that_gives_up_waiting_timed_out() {
+        for error in [
+            Failure::ControlRequestTimeout,
+            Failure::SessionRecoveryTimeout,
+        ] {
+            assert_eq!(
+                Cause::transport(&error, None),
+                Cause::of(McpFailure::Timeout),
+                "{error:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_transport_error_with_no_kind_of_its_own_is_other() {
+        let task = tokio::spawn(std::future::pending::<()>());
+        task.abort();
+        let aborted = task.await.expect_err("the task was aborted");
+        let errors = [
+            Failure::TokioJoinError(aborted),
+            Failure::ServerDoesNotSupportSse,
+            Failure::ServerDoesNotSupportDeleteSession,
+        ];
+
+        for error in errors {
+            assert_eq!(
+                Cause::transport(&error, None),
+                Cause::of(McpFailure::Other),
+                "{error:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refused_redirect_is_a_redirect() {
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(307).insert_header("location", "/elsewhere"))
+            .mount(&server)
+            .await;
+        let error = client()
+            .redirect(Policy::custom(|attempt| attempt.error(Redirect::Exceeded)))
+            .build()
+            .expect("a client")
+            .get(server.uri())
+            .send()
+            .await
+            .expect_err("the redirect is refused");
+
+        let error = Failure::Client(error);
+
+        assert_eq!(
+            Cause::transport(&error, None),
+            Cause::of(McpFailure::Redirect)
+        );
+        assert_eq!(
+            Cause::transport(&error, Some(StatusCode::TEMPORARY_REDIRECT)),
+            coded(McpFailure::Redirect, 307)
+        );
+    }
+
+    /// The resolver's refusal lies under the connection error it caused by
+    /// the time a request fails with it, and is still there to find by type.
+    #[tokio::test]
+    async fn a_name_that_resolves_only_to_metadata_addresses_is_metadata() {
+        let error = unresolved(Scripted(metadata)).await;
+
+        for answered in [None, Some(StatusCode::TEMPORARY_REDIRECT)] {
+            assert_eq!(
+                Cause::transport(&error, answered),
+                Cause::of(McpFailure::Metadata),
+                "{answered:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_name_that_does_not_resolve_is_unreachable() {
+        let error = unresolved(Scripted(nameless)).await;
+
+        for answered in [None, Some(StatusCode::TEMPORARY_REDIRECT)] {
+            assert_eq!(
+                Cause::transport(&error, answered),
+                Cause::of(McpFailure::Unreachable),
+                "{answered:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refused_connection_is_unreachable() {
+        let error = client()
+            .build()
+            .expect("a client")
+            .get(format!("{UNREACHABLE}{MCP_PATH}"))
+            .send()
+            .await
+            .expect_err("nothing listens on port 1");
+
+        assert_eq!(
+            Cause::transport(&Failure::Client(error), None),
+            Cause::of(McpFailure::Unreachable)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_request_that_outlasts_its_client_timed_out() {
+        let (_listener, url) = listening().await;
+        let error = client()
+            .timeout(Duration::from_millis(50))
+            .build()
+            .expect("a client")
+            .get(url)
+            .send()
+            .await
+            .expect_err("no answer comes");
+        let error = Failure::Client(error);
+
+        for answered in [None, Some(StatusCode::TEMPORARY_REDIRECT)] {
+            assert_eq!(
+                Cause::transport(&error, answered),
+                Cause::of(McpFailure::Timeout),
+                "{answered:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_body_cut_short_is_closed() {
+        const PARTIAL: &[u8] = b"HTTP/1.1 200 OK\r\ncontent-length: 64\r\n\r\npartial";
+        let (listener, url) = listening().await;
+        let served = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("a connection");
+            let mut request = [0; 1024];
+            let _ = stream.read(&mut request).await.expect("a request");
+            stream.write_all(PARTIAL).await.expect("a partial answer");
+        });
+        let response = client()
+            .build()
+            .expect("a client")
+            .get(url)
+            .send()
+            .await
+            .expect("the head arrives");
+        let error = response
+            .bytes()
+            .await
+            .expect_err("the body ends before its length");
+        served.await.expect("the server ran");
+        let error = Failure::Client(error);
+
+        assert_eq!(
+            Cause::transport(&error, None),
+            Cause::of(McpFailure::Closed)
+        );
+        assert_eq!(
+            Cause::transport(&error, Some(StatusCode::BAD_REQUEST)),
+            coded(McpFailure::Closed, 400)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_body_that_does_not_decode_is_closed() {
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200).set_body_string("{"))
+            .mount(&server)
+            .await;
+        let error = client()
+            .build()
+            .expect("a client")
+            .get(server.uri())
+            .send()
+            .await
+            .expect("an answer")
+            .json::<serde_json::Value>()
+            .await
+            .expect_err("not JSON");
+
+        assert_eq!(
+            Cause::transport(&Failure::Client(error), None),
+            Cause::of(McpFailure::Closed)
+        );
+    }
+
+    #[test]
+    fn a_handshake_answered_out_of_turn_is_a_protocol_failure() {
+        let errors = [
+            ClientInitializeError::ExpectedInitResponse(None),
+            ClientInitializeError::ExpectedInitResult(None),
+            ClientInitializeError::ConflictInitResponseId(
+                RequestId::Number(1),
+                RequestId::Number(2),
+            ),
+            ClientInitializeError::UncorrelatedErrorResponse {
+                expected: RequestId::Number(1),
+                received: RequestId::Number(2),
+            },
+            ClientInitializeError::NoCompatibleProtocolVersion {
+                client_supported: Vec::new(),
+                server_supported: Vec::new(),
+            },
+            ClientInitializeError::NoPreferredProtocolVersion,
+        ];
+
+        for error in errors {
+            assert_eq!(
+                Cause::initialize(&error, Posted::default()),
+                Cause::of(McpFailure::Protocol),
+                "{error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_handshake_whose_connection_went_is_closed() {
+        let error = ClientInitializeError::ConnectionClosed("initialize response".to_string());
+
+        assert_eq!(
+            Cause::initialize(&error, Posted::default()),
+            Cause::of(McpFailure::Closed)
+        );
+    }
+
+    #[test]
+    fn a_handshake_answered_with_an_error_is_rejected() {
+        let error = ClientInitializeError::JsonRpcError(rejection());
+
+        assert_eq!(
+            Cause::initialize(&error, Posted::default()),
+            Cause::of(McpFailure::Rejected)
+        );
+    }
+
+    #[test]
+    fn a_cancelled_handshake_is_other() {
+        assert_eq!(
+            Cause::initialize(&ClientInitializeError::Cancelled, Posted::default()),
+            Cause::of(McpFailure::Other)
+        );
+    }
+
+    #[test]
+    fn a_handshake_takes_the_cause_its_transport_carried() {
+        let cases = [
+            (
+                carried(Failure::HttpStatus(HttpStatusError::new(503, None))),
+                coded(McpFailure::Status, 503),
+            ),
+            (
+                carried(Failure::AuthRequired(AuthRequiredError::new(
+                    CHALLENGE.to_string(),
+                ))),
+                coded(McpFailure::Unauthorized, 401),
+            ),
+            (carried(broken()), Cause::of(McpFailure::Closed)),
+            (carried(fmt::Error), Cause::of(McpFailure::Other)),
+        ];
+
+        for (error, cause) in cases {
+            let error = ClientInitializeError::TransportError {
+                error,
+                context: "send initialize request".into(),
+            };
+
+            assert_eq!(
+                Cause::initialize(&error, Posted::default()),
+                cause,
+                "{error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_request_takes_the_cause_its_transport_carried() {
+        let cases = [
+            (
+                carried(Failure::InsufficientScope(InsufficientScopeError::new(
+                    CHALLENGE.to_string(),
+                    None,
+                ))),
+                coded(McpFailure::Unauthorized, 403),
+            ),
+            (
+                carried(Failure::SessionExpired),
+                coded(McpFailure::Status, 404),
+            ),
+            (carried(broken()), Cause::of(McpFailure::Closed)),
+            (carried(fmt::Error), Cause::of(McpFailure::Other)),
+        ];
+
+        for (error, cause) in cases {
+            let error = ServiceError::TransportSend(error);
+
+            assert_eq!(
+                Cause::service(&error, Posted::default()),
+                cause,
+                "{error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_request_names_what_became_of_it() {
+        let cases = [
+            (ServiceError::McpError(rejection()), McpFailure::Rejected),
+            (ServiceError::TransportClosed, McpFailure::Closed),
+            (ServiceError::UnexpectedResponse, McpFailure::Protocol),
+            (
+                ServiceError::Timeout {
+                    timeout: Duration::from_secs(1),
+                },
+                McpFailure::Timeout,
+            ),
+            (ServiceError::Cancelled { reason: None }, McpFailure::Other),
+            (
+                ServiceError::SubscriptionLagged { capacity: 1 },
+                McpFailure::Other,
+            ),
+            (
+                ServiceError::InputRequiredRoundsExceeded { max_rounds: 1 },
+                McpFailure::Other,
+            ),
+        ];
+
+        for (error, failure) in cases {
+            assert_eq!(
+                Cause::service(&error, Posted::default()),
+                Cause::of(failure),
+                "{error:?}"
+            );
+        }
+    }
+
+    /// The transport rewrites an error whose text holds a secret into one
+    /// with no kind of its own, and reports a failure after the first answer
+    /// only as a connection that closed.
+    #[test]
+    fn a_handshake_takes_what_was_posted_over_what_its_transport_reports() {
+        let errors = [
+            unsent(Failure::UnexpectedServerResponse("[REDACTED]".into())),
+            unsent(Failure::TransportChannelClosed),
+            unsent(Failure::HttpStatus(HttpStatusError::new(500, None))),
+            ClientInitializeError::ConnectionClosed("initialize response".to_string()),
+        ];
+
+        for error in errors {
+            assert_eq!(
+                Cause::initialize(&error, posted(McpFailure::Status, Some(503))),
+                coded(McpFailure::Status, 503),
+                "{error:?}"
+            );
+            assert_eq!(
+                Cause::initialize(&error, posted(McpFailure::Redirect, None)),
+                Cause::of(McpFailure::Redirect),
+                "{error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_handshake_that_failed_past_its_transport_is_never_what_was_posted() {
+        let cases = [
+            (
+                ClientInitializeError::JsonRpcError(rejection()),
+                coded(McpFailure::Rejected, 503),
+            ),
+            (
+                ClientInitializeError::ExpectedInitResponse(None),
+                coded(McpFailure::Protocol, 503),
+            ),
+            (
+                ClientInitializeError::Cancelled,
+                Cause::of(McpFailure::Other),
+            ),
+        ];
+
+        for (error, cause) in cases {
+            assert_eq!(
+                Cause::initialize(&error, posted(McpFailure::Status, Some(503))),
+                cause,
+                "{error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_request_takes_what_was_posted_over_what_its_transport_reports() {
+        let errors = [
+            ServiceError::TransportSend(carried(Failure::UnexpectedServerResponse(
+                "[REDACTED]".into(),
+            ))),
+            ServiceError::TransportSend(carried(Failure::TransportChannelClosed)),
+            ServiceError::TransportSend(carried(Failure::HttpStatus(HttpStatusError::new(
+                500, None,
+            )))),
+            ServiceError::TransportClosed,
+        ];
+
+        for error in errors {
+            assert_eq!(
+                Cause::service(&error, posted(McpFailure::Unauthorized, Some(401))),
+                coded(McpFailure::Unauthorized, 401),
+                "{error:?}"
+            );
+            assert_eq!(
+                Cause::service(&error, posted(McpFailure::Redirect, None)),
+                Cause::of(McpFailure::Redirect),
+                "{error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_request_that_failed_past_its_transport_is_never_what_was_posted() {
+        let cases = [
+            (
+                ServiceError::McpError(rejection()),
+                coded(McpFailure::Rejected, 503),
+            ),
+            (
+                ServiceError::UnexpectedResponse,
+                coded(McpFailure::Protocol, 503),
+            ),
+            (
+                ServiceError::Timeout {
+                    timeout: Duration::from_secs(1),
+                },
+                Cause::of(McpFailure::Timeout),
+            ),
+            (
+                ServiceError::Cancelled { reason: None },
+                Cause::of(McpFailure::Other),
+            ),
+        ];
+
+        for (error, cause) in cases {
+            assert_eq!(
+                Cause::service(&error, posted(McpFailure::Status, Some(503))),
+                cause,
+                "{error:?}"
+            );
+        }
+    }
+
+    /// With nothing posted, the error is one the transport made itself, and
+    /// an unexpected response among those is the protocol broken.
+    #[test]
+    fn an_unexpected_response_with_nothing_posted_is_a_protocol_failure() {
+        let unexpected = || Failure::UnexpectedServerResponse("HTTP 503: Auth required".into());
+
+        assert_eq!(
+            Cause::initialize(&unsent(unexpected()), Posted::default()),
+            Cause::of(McpFailure::Protocol)
+        );
+        assert_eq!(
+            Cause::service(
+                &ServiceError::TransportSend(carried(unexpected())),
+                Posted::default()
+            ),
+            Cause::of(McpFailure::Protocol)
+        );
+    }
+
+    #[test]
+    fn only_an_answer_that_was_not_a_success_fails_a_request() {
+        for answered in [
+            None,
+            Some(StatusCode::OK),
+            Some(StatusCode::ACCEPTED),
+            Some(StatusCode::NO_CONTENT),
+        ] {
+            assert_eq!(failing(answered), None, "{answered:?}");
+        }
+        for status in [302, 307, 400, 401, 404, 500, 503] {
+            let answered = StatusCode::from_u16(status).expect("a status");
+
+            assert_eq!(failing(Some(answered)), Some(status));
+        }
+    }
+
+    /// The transport words every answer it has no kind for alike, a 401 or
+    /// a 403 that came with no challenge included, and words an answer it
+    /// could not read as a success the same way.
+    #[test]
+    fn an_unexpected_response_is_the_status_of_the_answer_that_failed_it() {
+        let unexpected = Failure::UnexpectedServerResponse("HTTP 200: Auth required".into());
+
+        for status in [400, 401, 403, 404, 405, 500] {
+            let answered = StatusCode::from_u16(status).expect("a status");
+
+            assert_eq!(
+                Cause::transport(&unexpected, Some(answered)),
+                coded(McpFailure::Status, status)
+            );
+        }
+        for answered in [None, Some(StatusCode::OK), Some(StatusCode::ACCEPTED)] {
+            assert_eq!(
+                Cause::transport(&unexpected, answered),
+                Cause::of(McpFailure::Protocol),
+                "{answered:?}"
+            );
+        }
+    }
+
+    /// The status is the answer's, whatever kind names the failure, and
+    /// the one an error's own type implies only stands in for it.
+    #[test]
+    fn a_failing_answer_is_the_status_of_every_kind_an_answer_brings_about() {
+        let cases = [
+            (
+                Failure::AuthRequired(AuthRequiredError::new(CHALLENGE.to_string())),
+                McpFailure::Unauthorized,
+                Some(401),
+            ),
+            (
+                Failure::InsufficientScope(InsufficientScopeError::new(
+                    CHALLENGE.to_string(),
+                    None,
+                )),
+                McpFailure::Unauthorized,
+                Some(403),
+            ),
+            (
+                Failure::HttpStatus(HttpStatusError::new(503, None)),
+                McpFailure::Status,
+                Some(503),
+            ),
+            (Failure::SessionExpired, McpFailure::Status, Some(404)),
+            (
+                Failure::UnexpectedContentType(None),
+                McpFailure::Protocol,
+                None,
+            ),
+            (
+                Failure::Deserialize(undecodable()),
+                McpFailure::Protocol,
+                None,
+            ),
+            (
+                Failure::MissingSessionIdInResponse,
+                McpFailure::Protocol,
+                None,
+            ),
+            (
+                Failure::ReinitializationFailed(rejection()),
+                McpFailure::Rejected,
+                None,
+            ),
+            (
+                Failure::ResponseBodyTooLarge { max_size: 1 },
+                McpFailure::Oversized,
+                None,
+            ),
+            (Failure::TransportChannelClosed, McpFailure::Closed, None),
+            (Failure::UnexpectedEndOfStream, McpFailure::Closed, None),
+            (Failure::Io(broken()), McpFailure::Closed, None),
+        ];
+
+        for (error, failure, implied) in cases {
+            assert_eq!(
+                Cause::transport(&error, Some(StatusCode::IM_A_TEAPOT)),
+                coded(failure, 418),
+                "{error:?}"
+            );
+            assert_eq!(
+                Cause::transport(&error, Some(StatusCode::OK)),
+                Cause {
+                    failure,
+                    status: implied
+                },
+                "{error:?}"
+            );
+        }
+    }
+
+    /// A request that was redirected and then got no answer may still be
+    /// told of beside the redirect's status.
+    #[test]
+    fn a_kind_that_tells_of_no_answer_has_no_status_whatever_was_answered() {
+        let cases = [
+            (Failure::ControlRequestTimeout, McpFailure::Timeout),
+            (Failure::SessionRecoveryTimeout, McpFailure::Timeout),
+            (
+                Failure::ReservedHeaderConflict("accept".to_string()),
+                McpFailure::Header,
+            ),
+            (Failure::ServerDoesNotSupportSse, McpFailure::Other),
+        ];
+
+        for (error, failure) in cases {
+            assert_eq!(
+                Cause::transport(&error, Some(StatusCode::TEMPORARY_REDIRECT)),
+                Cause::of(failure),
+                "{error:?}"
+            );
+        }
+    }
+
+    /// The transport makes an answer of a JSON-RPC error whatever status
+    /// carried it, so the failure it leads to is no request's own error,
+    /// and its status is only what was kept of that answer.
+    #[test]
+    fn a_handshake_failure_has_the_status_its_request_was_answered_with() {
+        let cases = [
+            (
+                ClientInitializeError::JsonRpcError(rejection()),
+                coded(McpFailure::Rejected, 400),
+            ),
+            (
+                ClientInitializeError::ExpectedInitResponse(None),
+                coded(McpFailure::Protocol, 400),
+            ),
+            (
+                ClientInitializeError::ConnectionClosed("initialize response".to_string()),
+                coded(McpFailure::Closed, 400),
+            ),
+            (
+                unsent(Failure::TransportChannelClosed),
+                coded(McpFailure::Closed, 400),
+            ),
+            (
+                unsent(Failure::ControlRequestTimeout),
+                Cause::of(McpFailure::Timeout),
+            ),
+            (
+                ClientInitializeError::Cancelled,
+                Cause::of(McpFailure::Other),
+            ),
+        ];
+
+        for (error, cause) in cases {
+            assert_eq!(Cause::initialize(&error, kept(400)), cause, "{error:?}");
+        }
+    }
+
+    #[test]
+    fn a_request_failure_has_the_status_its_request_was_answered_with() {
+        let cases = [
+            (
+                ServiceError::McpError(rejection()),
+                coded(McpFailure::Rejected, 400),
+            ),
+            (
+                ServiceError::UnexpectedResponse,
+                coded(McpFailure::Protocol, 400),
+            ),
+            (
+                ServiceError::TransportClosed,
+                coded(McpFailure::Closed, 400),
+            ),
+            (
+                ServiceError::TransportSend(carried(broken())),
+                coded(McpFailure::Closed, 400),
+            ),
+            (
+                ServiceError::Timeout {
+                    timeout: Duration::from_secs(1),
+                },
+                Cause::of(McpFailure::Timeout),
+            ),
+            (
+                ServiceError::Cancelled { reason: None },
+                Cause::of(McpFailure::Other),
+            ),
+        ];
+
+        for (error, cause) in cases {
+            assert_eq!(Cause::service(&error, kept(400)), cause, "{error:?}");
+        }
+    }
+}

@@ -139,6 +139,26 @@ child sees only the allowlisted environment plus its own `env`, unless it sets
 one a host hands `McpHub::connect_through`, as `ToolContext::with_proxy` hands
 one to every command and background job a tool starts.
 
+A server that was not connected is `McpOutcome::Failed`, which names its kind
+as an `McpFailure` and carries the HTTP status of the answer that failed it, so
+a host can say why without reading the failure's text or showing what the
+server sent. The status is set when the request that failed the connection
+got an answer that was not 2xx, from the server or a proxy in front of it, and
+the client saw it; it is `None` for a 2xx the client could not use, for a
+request that got no answer, and for every failure before a request is sent.
+The client does not see the answer to a request's third and last attempt,
+which it makes only after an HTTP/2 server refused the first two, so that
+answer's status is only one the error's own kind implies, and an answer the
+transport does not name by type, such as a bare 401 or 403, then fails as
+`McpFailure::Protocol` with no status.
+An event-stream answer that brings a malformed event, or one that is not
+JSON-RPC, in place of the message awaited fails as `McpFailure::Closed` with no
+status, not as `McpFailure::Protocol`: the transport reads its events only once
+it has taken the answer as a success, and only logs what it could not read.
+An `https` server behind a proxy is reached through a tunnel, and the client
+never sees the proxy's refusal of that tunnel, a 407 included, as a response,
+so it is reported as `McpFailure::Unreachable` with no status.
+
 This example needs the `mcp` feature, so it is not compiled with this README;
 the same example is compiled in the `mcp` module's documentation.
 

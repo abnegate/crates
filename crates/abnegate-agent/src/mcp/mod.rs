@@ -19,6 +19,49 @@
 //! with a warning, its name and the tools it names sanitized as a CLI names
 //! them.
 //!
+//! A [failed](McpOutcome::Failed) outcome names its kind as an
+//! [`McpFailure`] and carries the HTTP status of the answer that failed it,
+//! so a host can say why a server failed without reading the failure's text
+//! or showing what the server sent. The status is `Some` when the request
+//! that failed the connection got an answer that was not 2xx, from the
+//! server or a proxy in front of it, and the client observed it. It is
+//! `None` for a 2xx the client could not use, for a request that got no
+//! answer, and for every failure before a request is sent. The client does
+//! not observe the answer to a request's third and last attempt, which it
+//! makes only after an HTTP/2 server refused the first two, so that answer's
+//! status is only one the error's own kind implies, and an answer the
+//! transport does not name by type, such as a bare 401 or 403, then fails as
+//! [`Protocol`](McpFailure::Protocol) with no status. An event-stream answer
+//! that brings a malformed event, or one that is not JSON-RPC, in place of
+//! the message awaited fails as [`Closed`](McpFailure::Closed) with no
+//! status, not as [`Protocol`](McpFailure::Protocol): the transport reads
+//! its events only once it has taken the answer as a success, and only logs
+//! what it could not read. An `https` server behind a proxy is reached
+//! through a tunnel, and the client never sees the proxy's refusal of that
+//! tunnel, a 407 included, as a response: it is
+//! [`Unreachable`](McpFailure::Unreachable) with no status.
+//!
+//! ```
+//! use abnegate_agent::mcp::McpFailure;
+//! use abnegate_agent::mcp::McpOutcome;
+//!
+//! fn reason(outcome: &McpOutcome) -> Option<String> {
+//!     let McpOutcome::Failed { failure, status, .. } = outcome else {
+//!         return None;
+//!     };
+//!     let reason = match (*failure, *status) {
+//!         (McpFailure::Unauthorized, _) => "it needs credentials".to_owned(),
+//!         (McpFailure::Unreachable | McpFailure::Timeout, _) => {
+//!             "it could not be reached".to_owned()
+//!         }
+//!         (_, Some(status)) => format!("it answered {status}"),
+//!         _ => "it could not be connected".to_owned(),
+//!     };
+//!     Some(reason)
+//! }
+//! # let _ = reason;
+//! ```
+//!
 //! A `url` server is sent the headers [`McpServer::endpoint`] resolves, as
 //! an [`McpEndpoint`]: each `${VAR}` in its URL and headers resolves only to
 //! a [secret](McpServer::secrets) bound to it, or to its default, never to
@@ -99,21 +142,29 @@
 //!
 //! [`ToolRegistry`]: crate::tool::ToolRegistry
 
+mod cause;
 mod error;
+mod failure;
+#[cfg(test)]
+mod fixture;
 mod format;
 mod guidance;
 mod hub;
 mod name;
 mod outcome;
+mod posted;
+mod reading;
 #[cfg(test)]
 mod recorder;
 mod redirect;
 mod register;
 mod remote;
+mod retry;
 mod scrubber;
 mod server_process;
 mod session;
 mod tool;
+mod unconnected;
 
 pub use abnegate_agent_cli::AgentKind;
 pub use abnegate_agent_cli::mcp::DEFAULT_PREFIX;
@@ -123,6 +174,7 @@ pub use abnegate_agent_cli::mcp::McpEndpoint;
 pub use abnegate_agent_cli::mcp::McpServer;
 pub use abnegate_agent_cli::mcp::McpTransport;
 pub use error::McpError;
+pub use failure::McpFailure;
 pub use format::format_call_result;
 pub use guidance::Guidance;
 pub use guidance::guidance;

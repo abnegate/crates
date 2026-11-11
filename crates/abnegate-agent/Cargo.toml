@@ -19,7 +19,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
-mcp = ["dep:rmcp", "dep:abnegate-agent-cli", "dep:abnegate-http"]
+mcp = ["dep:rmcp", "dep:abnegate-agent-cli", "dep:abnegate-http", "dep:h2"]
 
 [dependencies]
 abnegate-agent-cli = { path = "../abnegate-agent-cli", version = "0.2.1", optional = true }
@@ -33,6 +33,7 @@ chrono = { workspace = true, features = ["serde"] }
 dashmap = { workspace = true }
 dirs = { workspace = true }
 futures = { workspace = true }
+h2 = { workspace = true, optional = true }
 hex = { workspace = true }
 nix = { workspace = true, features = ["fs", "process", "signal"] }
 regex = { workspace = true }
