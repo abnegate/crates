@@ -3,7 +3,8 @@
 ///
 /// It is taken from the typed error behind the failure and from the client's
 /// own checks, never from the words of an error, so a server's reply or a
-/// bound secret cannot change it.
+/// bound secret cannot change it. A forward proxy that answers in the
+/// server's place is named as the server would be for that answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum McpFailure {
@@ -20,7 +21,8 @@ pub enum McpFailure {
     /// The server's URL does not parse, or is neither `http` nor `https`.
     Address,
     /// The server's address is link-local or a cloud metadata service, as
-    /// written or as every address its name resolved to.
+    /// written or as every address its name resolved to. A name that
+    /// resolves to no address at all is reported as this kind too.
     Metadata,
     /// One of the server's headers is not a valid header, is one the
     /// transport sets itself, or repeats another's name.
@@ -35,12 +37,19 @@ pub enum McpFailure {
     /// that leaves the origin first requested, changes the method, or comes
     /// after too many others.
     Redirect,
-    /// The server answered 401 or 403 with a `WWW-Authenticate` challenge
-    /// the client could read. A 401 or 403 without one, or with one that is
-    /// not valid text, is [`Status`](Self::Status) with that code.
+    /// The server, or a proxy in front of it, answered 401 or 403 with a
+    /// `WWW-Authenticate` challenge the client could read. A 401 or 403
+    /// without one, or with one that is not valid text, is
+    /// [`Status`](Self::Status) with that code, unless it answered the last
+    /// attempt after the client retried a request an HTTP/2 server refused,
+    /// which the client does not observe: that is
+    /// [`Protocol`](Self::Protocol) with no status.
     Unauthorized,
-    /// The server answered with an HTTP status that is not a success and
-    /// that no other kind names.
+    /// The server, or a proxy in front of it, answered with an HTTP status
+    /// that is not a success and that no other kind names. An answer to the
+    /// last attempt after the client retried a request an HTTP/2 server
+    /// refused is not observed, so it can be [`Protocol`](Self::Protocol)
+    /// with no status instead.
     Status,
     /// The server answered with something other than the MCP message the
     /// client was waiting for.
