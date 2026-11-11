@@ -19,9 +19,12 @@ use rmcp::transport::streamable_http_client::StreamableHttpError;
 use rmcp::transport::streamable_http_client::StreamableHttpPostResponse;
 
 use super::cause::Cause;
+use super::cause::failing;
 use super::posted::Posted;
 use super::redirect::MAXIMUM_REDIRECTS;
 use super::redirect::Redirect;
+use super::retry::answered;
+use super::retry::retries;
 use super::scrubber::Scrubber;
 
 const INVALID_PROXY: &str = "invalid proxy URL";
@@ -32,8 +35,9 @@ type Failure = StreamableHttpError<reqwest::Error>;
 
 /// The HTTP client one remote server is reached with: it resolves names past
 /// link-local and metadata addresses, follows only the redirects
-/// [`redirects`] allows, and routes through the hub's proxy alone, never a
-/// proxy the environment or the system names.
+/// [`redirects`] allows, retries only as [`retries`] says, which is as a
+/// client told nothing does, and routes through the hub's proxy alone,
+/// never a proxy the environment or the system names.
 ///
 /// Every error it gives the transport is stripped of the URL it was sent
 /// to, which may hold a resolved secret in its path or query, and has its
@@ -41,9 +45,11 @@ type Failure = StreamableHttpError<reqwest::Error>;
 /// server's own words included, since the transport logs some of them
 /// itself before any caller sees them.
 ///
-/// That rewriting can cost an error its kind, so what became of the last
-/// [recorded](recorded) request is kept first, as a [`Posted`] every clone
-/// shares with whoever asked for [`posted`](Self::posted).
+/// That rewriting can cost an error its kind, and the transport keeps an
+/// answer's status only in an error's text, so what became of the last
+/// [recorded](recorded) request is kept first, with the status the client
+/// saw it [`answered`] with, as a [`Posted`] every clone shares with
+/// whoever asked for [`posted`](Self::posted).
 #[derive(Clone)]
 pub(super) struct Remote {
     client: reqwest::Client,
@@ -57,7 +63,8 @@ impl Remote {
     pub(super) fn new(proxy: &Proxy, scrubber: Scrubber) -> Result<Self, String> {
         let builder = reqwest::Client::builder()
             .dns_resolver(MetadataResolver::new())
-            .redirect(redirects());
+            .redirect(redirects())
+            .retry(retries());
         let builder = match proxy.url() {
             Some(url) => {
                 let url = url.to_str().ok_or(INVALID_PROXY)?;
@@ -91,9 +98,10 @@ impl Remote {
     ///
     /// When `recorded`, what became of the request before it is forgotten
     /// as it is sent, and what became of this one is kept as it finishes,
-    /// taken from the error before that is rewritten. Any other message
-    /// leaves what is kept alone, so one sent beside the request a session
-    /// waits on never stands in for what became of that request.
+    /// taken from the error before that is rewritten and from the status
+    /// the client saw this request, and no other, answered with. Any other
+    /// message leaves what is kept alone, so one sent beside the request a
+    /// session waits on never stands in for what became of that request.
     async fn sent(
         &self,
         recorded: bool,
@@ -102,9 +110,9 @@ impl Remote {
         if recorded {
             Posted::default().write(&self.posted);
         }
-        let result = post.await;
+        let (result, answer) = answered(post).await;
         if recorded {
-            outcome(&result).write(&self.posted);
+            outcome(&result, answer).write(&self.posted);
         }
         result.map_err(|error| self.unlocated(error))
     }
@@ -245,12 +253,21 @@ fn recorded(message: &ClientJsonRpcMessage) -> bool {
     }
 }
 
-/// What became of the request `result` answers.
-fn outcome(result: &Result<StreamableHttpPostResponse, Failure>) -> Posted {
+/// What became of the request `result` answers, which the client saw
+/// answered with `answer`, if at all. An answer that was not a success
+/// keeps its status though the transport made something of it, as it does
+/// of one carrying a JSON-RPC error.
+fn outcome(
+    result: &Result<StreamableHttpPostResponse, Failure>,
+    answer: Option<StatusCode>,
+) -> Posted {
     match result {
-        Ok(_) => Posted::default(),
+        Ok(_) => Posted {
+            failure: None,
+            status: failing(answer),
+        },
         Err(error) => {
-            let Cause { failure, status } = Cause::transport(error);
+            let Cause { failure, status } = Cause::transport(error, answer);
             Posted {
                 failure: Some(failure),
                 status,
@@ -607,7 +624,7 @@ mod tests {
                 redirecting(),
                 Posted {
                     failure: Some(McpFailure::Redirect),
-                    status: None,
+                    status: Some(302),
                 },
             ),
         ];
@@ -624,5 +641,122 @@ mod tests {
             );
             assert_eq!(Posted::read(&remote.posted()), kept);
         }
+    }
+
+    /// The transport has no kind for most answers that are not a success,
+    /// a 401 or a 403 that came with no challenge included, and keeps their
+    /// status only in the text of its error.
+    #[tokio::test]
+    async fn an_answer_the_transport_has_no_kind_for_leaves_its_status() {
+        let server = MockServer::start().await;
+        let remote = remote();
+
+        for status in [400, 401, 403, 404, 405] {
+            answering(&server, ResponseTemplate::new(status)).await;
+            post(&remote, &server, request())
+                .await
+                .expect_err("the request fails");
+
+            assert_eq!(
+                Posted::read(&remote.posted()),
+                Posted {
+                    failure: Some(McpFailure::Status),
+                    status: Some(status)
+                }
+            );
+        }
+    }
+
+    /// A JSON-RPC error is an answer to the transport whatever status
+    /// carried it, so the request does not fail, and the session that
+    /// fails over it has only this to tell the status by.
+    #[tokio::test]
+    async fn an_answer_the_transport_took_leaves_its_status_unless_it_was_a_success() {
+        let server = MockServer::start().await;
+        let remote = remote();
+        let rejected = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": {"code": -32603, "message": "no"}
+        });
+
+        for (status, kept) in [(400, Some(400)), (500, Some(500)), (200, None)] {
+            answering(
+                &server,
+                ResponseTemplate::new(status).set_body_json(&rejected),
+            )
+            .await;
+            let answer = post(&remote, &server, request())
+                .await
+                .expect("a JSON-RPC error is an answer");
+
+            assert!(
+                matches!(answer, StreamableHttpPostResponse::Json(..)),
+                "{answer:?}"
+            );
+            assert_eq!(
+                Posted::read(&remote.posted()),
+                Posted {
+                    failure: None,
+                    status: kept
+                }
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_success_the_client_could_not_use_leaves_no_status() {
+        let server = MockServer::start().await;
+        let remote = remote();
+        answering(
+            &server,
+            ResponseTemplate::new(200).set_body_raw("<html></html>", "text/html"),
+        )
+        .await;
+
+        post(&remote, &server, request())
+            .await
+            .expect_err("a page is no answer");
+
+        assert_eq!(
+            Posted::read(&remote.posted()),
+            Posted {
+                failure: Some(McpFailure::Protocol),
+                status: None
+            }
+        );
+    }
+
+    /// The transport sends a session's other messages and opens its stream
+    /// from the task that sends its requests, so the status a request
+    /// leaves must be its own answer's and none of theirs.
+    #[tokio::test]
+    async fn a_request_sent_beside_others_in_one_task_leaves_only_its_own_answer() {
+        let server = MockServer::start().await;
+        let other = MockServer::start().await;
+        let remote = remote();
+        answering(&server, ResponseTemplate::new(404)).await;
+        answering(&other, ResponseTemplate::new(500)).await;
+
+        let (requested, beside, stream) = tokio::join!(
+            post(&remote, &server, request()),
+            post(&remote, &other, response()),
+            remote.get_stream(
+                address(&other),
+                Some(SESSION.into()),
+                None,
+                None,
+                HashMap::new()
+            ),
+        );
+
+        assert!(requested.is_err() && beside.is_err() && stream.is_err());
+        assert_eq!(
+            Posted::read(&remote.posted()),
+            Posted {
+                failure: Some(McpFailure::Status),
+                status: Some(404)
+            }
+        );
     }
 }

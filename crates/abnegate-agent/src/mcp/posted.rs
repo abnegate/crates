@@ -5,12 +5,14 @@ use super::McpFailure;
 
 /// What became of the last request one remote server was sent that a
 /// connecting session waits on: why it failed, when it did, and the status
-/// of the answer that failed it.
+/// it was answered with, when that was not a success.
 ///
 /// A [`Remote`](super::remote::Remote) keeps one behind a lock it shares
 /// with the session, taken from each error before that error is rewritten
 /// for showing, so the session can still name a failure the transport
-/// handed it as text, or only as a connection that closed.
+/// handed it as text, or only as a connection that closed. A status with no
+/// failure beside it is an answer the transport took though it was not a
+/// success, as it takes one carrying a JSON-RPC error.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct Posted {
     pub(super) failure: Option<McpFailure>,

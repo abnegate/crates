@@ -2337,7 +2337,11 @@ mod tests {
 
         let (_, outcome) = reconnected(&reached(&first)).await;
 
-        assert_eq!(cause(&outcome).0, McpFailure::Redirect, "{outcome:?}");
+        assert_eq!(
+            cause(&outcome),
+            (McpFailure::Redirect, Some(307)),
+            "{outcome:?}"
+        );
     }
 
     #[tokio::test]
@@ -2352,7 +2356,11 @@ mod tests {
 
         let (_, outcome) = reconnected(&reached(&server)).await;
 
-        assert_eq!(cause(&outcome).0, McpFailure::Redirect, "{outcome:?}");
+        assert_eq!(
+            cause(&outcome),
+            (McpFailure::Redirect, Some(302)),
+            "{outcome:?}"
+        );
     }
 
     #[tokio::test]
@@ -2365,7 +2373,11 @@ mod tests {
 
         let (_, outcome) = reconnected(&McpServer::remote(format!("{}/hop/0", server.uri()))).await;
 
-        assert_eq!(cause(&outcome).0, McpFailure::Redirect, "{outcome:?}");
+        assert_eq!(
+            cause(&outcome),
+            (McpFailure::Redirect, Some(307)),
+            "{outcome:?}"
+        );
     }
 
     /// A failure whose text holds a bound secret is rewritten before the
@@ -2480,6 +2492,83 @@ mod tests {
             (McpFailure::Unauthorized, Some(401)),
             "{outcome:?}"
         );
+    }
+
+    /// Answers every request with a JSON-RPC error under the id it was
+    /// sent, carried by its status.
+    struct Rejecting(u16);
+
+    impl Respond for Rejecting {
+        fn respond(&self, request: &Request) -> ResponseTemplate {
+            let message: serde_json::Value = request.body_json().unwrap_or_default();
+            ResponseTemplate::new(self.0).set_body_json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "error": {"code": -32603, "message": "no"}
+            }))
+        }
+    }
+
+    /// What became of connecting to a server that answers every request as
+    /// `responder` does.
+    async fn answering(responder: impl Respond + 'static) -> McpOutcome {
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(responder)
+            .mount(&server)
+            .await;
+        reconnected(&reached(&server)).await.1
+    }
+
+    /// The transport has no kind for these, a 401 or a 403 that says
+    /// nothing of how to authenticate included, and tells their status only
+    /// in the text of its error.
+    #[tokio::test]
+    async fn an_answer_the_transport_has_no_kind_for_fails_as_its_status() {
+        for status in [400, 401, 403, 404, 405] {
+            let outcome = answering(ResponseTemplate::new(status)).await;
+
+            assert_eq!(
+                cause(&outcome),
+                (McpFailure::Status, Some(status)),
+                "{outcome:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_challenge_that_is_not_text_fails_as_its_status() {
+        let unreadable: &[u8] = b"Bearer realm=\"\xff\"";
+
+        let outcome =
+            answering(ResponseTemplate::new(401).insert_header("WWW-Authenticate", unreadable))
+                .await;
+
+        assert_eq!(
+            cause(&outcome),
+            (McpFailure::Status, Some(401)),
+            "{outcome:?}"
+        );
+    }
+
+    /// A JSON-RPC error is the server's answer whatever status carried it,
+    /// and that status is still why the connection failed unless it was a
+    /// success.
+    #[tokio::test]
+    async fn a_json_rpc_error_is_rejected_with_the_status_that_carried_it() {
+        for (status, kept) in [(400, Some(400)), (200, None)] {
+            let outcome = answering(Rejecting(status)).await;
+
+            assert_eq!(cause(&outcome), (McpFailure::Rejected, kept), "{outcome:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_success_that_is_not_the_protocol_has_no_status() {
+        let outcome =
+            answering(ResponseTemplate::new(200).set_body_raw("<html></html>", "text/html")).await;
+
+        assert_eq!(cause(&outcome), (McpFailure::Protocol, None), "{outcome:?}");
     }
 
     /// Removing a server while it connected used to be undone once the

@@ -113,6 +113,7 @@ mod recorder;
 mod redirect;
 mod register;
 mod remote;
+mod retry;
 mod scrubber;
 mod server_process;
 mod session;
