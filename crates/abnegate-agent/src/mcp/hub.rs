@@ -374,6 +374,7 @@ fn named(name: &str, server: &McpServer) -> McpServer {
 #[cfg(test)]
 mod tests {
     use std::io;
+    use std::iter;
     use std::net::Ipv4Addr;
     use std::net::SocketAddr;
     use std::sync::atomic::AtomicBool;
@@ -411,6 +412,7 @@ mod tests {
     use wiremock::Respond;
     use wiremock::ResponseTemplate;
     use wiremock::matchers::any;
+    use wiremock::matchers::body_string_contains;
     use wiremock::matchers::header;
     use wiremock::matchers::method;
     use wiremock::matchers::path;
@@ -2003,7 +2005,7 @@ mod tests {
             .mount(&server)
             .await;
         Mock::given(method("POST"))
-            .and(wiremock::matchers::body_string_contains(listing))
+            .and(body_string_contains(listing))
             .respond_with(ResponseTemplate::new(400).set_body_string("listing refused"))
             .with_priority(1)
             .mount(&server)
@@ -2315,10 +2317,10 @@ mod tests {
         }
     }
 
-    /// A 401 that says how to authenticate, which is what tells a refusal
-    /// to authorize from any other answer.
-    fn challenged() -> ResponseTemplate {
-        ResponseTemplate::new(401).insert_header("WWW-Authenticate", "Bearer realm=\"mcp\"")
+    /// A `status` that says how to authenticate, which is what tells a
+    /// refusal to authorize from any other answer.
+    fn challenged(status: u16) -> ResponseTemplate {
+        ResponseTemplate::new(status).insert_header("WWW-Authenticate", "Bearer realm=\"mcp\"")
     }
 
     /// A refused redirect reaches the session as text, where it reads as
@@ -2409,7 +2411,7 @@ mod tests {
     async fn a_challenge_keeps_its_kind_when_a_bound_secret_spells_it() {
         let server = MockServer::start().await;
         Mock::given(any())
-            .respond_with(challenged())
+            .respond_with(challenged(401))
             .mount(&server)
             .await;
 
@@ -2444,7 +2446,7 @@ mod tests {
             .mount(&server)
             .await;
         Mock::given(method("POST"))
-            .and(wiremock::matchers::body_string_contains(listing))
+            .and(body_string_contains(listing))
             .respond_with(ResponseTemplate::new(503))
             .with_priority(1)
             .mount(&server)
@@ -2476,10 +2478,8 @@ mod tests {
     async fn a_challenge_to_the_end_of_the_handshake_is_unauthorized() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(wiremock::matchers::body_string_contains(
-                "notifications/initialized",
-            ))
-            .respond_with(challenged())
+            .and(body_string_contains("notifications/initialized"))
+            .respond_with(challenged(401))
             .with_priority(1)
             .mount(&server)
             .await;
@@ -2512,12 +2512,17 @@ mod tests {
     /// What became of connecting to a server that answers every request as
     /// `responder` does.
     async fn answering(responder: impl Respond + 'static) -> McpOutcome {
+        reconnected(&reached(&mounted(responder).await)).await.1
+    }
+
+    /// A server that answers every request as `responder` does.
+    async fn mounted(responder: impl Respond + 'static) -> MockServer {
         let server = MockServer::start().await;
         Mock::given(any())
             .respond_with(responder)
             .mount(&server)
             .await;
-        reconnected(&reached(&server)).await.1
+        server
     }
 
     /// The transport has no kind for these, a 401 or a 403 that says
@@ -2569,6 +2574,574 @@ mod tests {
             answering(ResponseTemplate::new(200).set_body_raw("<html></html>", "text/html")).await;
 
         assert_eq!(cause(&outcome), (McpFailure::Protocol, None), "{outcome:?}");
+    }
+
+    /// Nothing listens on port 1.
+    const UNREACHABLE: &str = "http://127.0.0.1:1";
+
+    /// A proxy URL that is text, which [`reqwest::Proxy::all`] still refuses
+    /// for the IPv6 host it leaves open.
+    const UNPARSED_PROXY: &str = "http://[::1";
+
+    /// The most the transport reads of an answer that is not a success.
+    const READABLE_ERROR: usize = 64 * 1024;
+
+    /// The limit given a server that never answers, which its connection
+    /// runs out however soon it is.
+    const BRIEF: Duration = Duration::from_millis(100);
+
+    /// A server to connect, through `proxy` and within `limit`, and the kind
+    /// and status its connection must fail with.
+    struct Case {
+        label: &'static str,
+        server: McpServer,
+        proxy: Proxy,
+        limit: Duration,
+        cause: (McpFailure, Option<u16>),
+    }
+
+    impl Case {
+        fn new(
+            label: &'static str,
+            server: McpServer,
+            failure: McpFailure,
+            status: Option<u16>,
+        ) -> Self {
+            Self {
+                label,
+                server,
+                proxy: Proxy::default(),
+                limit: LIMIT,
+                cause: (failure, status),
+            }
+        }
+
+        fn through(self, proxy: Proxy) -> Self {
+            Self { proxy, ..self }
+        }
+
+        fn within(self, limit: Duration) -> Self {
+            Self { limit, ..self }
+        }
+    }
+
+    /// Fail unless each case's connection fails as it says.
+    async fn assert_failures(cases: impl IntoIterator<Item = Case>) {
+        for Case {
+            label,
+            server,
+            proxy,
+            limit,
+            cause: expected,
+        } in cases
+        {
+            let outcome = McpHub::new()
+                .reconnect_within("docs", &server, &proxy, limit)
+                .await;
+
+            assert_eq!(cause(&outcome), expected, "{label}: {outcome:?}");
+        }
+    }
+
+    /// A server that answers as [`Streamable`] does, but for `tools/list`,
+    /// which it answers as `responder` does.
+    async fn listing(responder: impl Respond + 'static) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(body_string_contains("tools/list"))
+            .respond_with(responder)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        streamable(&server, None).await;
+        server
+    }
+
+    /// Answers `initialize` as [`Streamable`] does, under the id after the
+    /// one it was sent.
+    struct Misaddressed;
+
+    impl Respond for Misaddressed {
+        fn respond(&self, request: &Request) -> ResponseTemplate {
+            let message: serde_json::Value = request.body_json().unwrap_or_default();
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": message["id"].as_i64().unwrap_or_default() + 1,
+                "result": {
+                    "protocolVersion": message["params"]["protocolVersion"],
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "misaddressed", "version": "1"}
+                }
+            }))
+        }
+    }
+
+    /// A server refused before any request is sent was never answered, so
+    /// its kind comes with no status.
+    #[tokio::test]
+    async fn a_server_refused_before_any_request_fails_as_its_kind() {
+        let unreachable = || McpServer::remote(format!("{UNREACHABLE}{MCP_PATH}"));
+
+        assert_failures([
+            Case::new(
+                "an unbound header",
+                unreachable().with_header("Authorization", "Bearer ${TOKEN}"),
+                McpFailure::Unresolved,
+                None,
+            ),
+            Case::new(
+                "an unbound URL",
+                McpServer::remote(format!("{UNREACHABLE}/${{TOKEN}}{MCP_PATH}")),
+                McpFailure::Unresolved,
+                None,
+            ),
+            Case::new(
+                "another scheme",
+                McpServer::remote("ftp://127.0.0.1:1/mcp"),
+                McpFailure::Address,
+                None,
+            ),
+            Case::new(
+                "no URL",
+                McpServer::remote("not a url"),
+                McpFailure::Address,
+                None,
+            ),
+            Case::new(
+                "a header the transport sets",
+                unreachable().with_header("Accept", "text/html"),
+                McpFailure::Header,
+                None,
+            ),
+            Case::new(
+                "a newline in a header",
+                unreachable()
+                    .with_header(KEY_HEADER, "${TOKEN}")
+                    .with_secret("TOKEN", format!("{SECRET}\ninjected: yes")),
+                McpFailure::Header,
+                None,
+            ),
+            Case::new(
+                "headers differing in case",
+                unreachable()
+                    .with_header("X-Key", "first")
+                    .with_header("x-key", "second"),
+                McpFailure::Header,
+                None,
+            ),
+            Case::new(
+                "a proxy that is not a URL",
+                unreachable(),
+                McpFailure::Client,
+                None,
+            )
+            .through(Proxy::new(UNPARSED_PROXY)),
+        ])
+        .await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_command_server_that_does_not_connect_fails_as_its_kind() {
+        let directory = tempfile::tempdir().unwrap();
+
+        assert_failures([
+            Case::new(
+                "a missing binary",
+                McpServer::command(
+                    "/definitely/not/a/real/mcp-server-xyz",
+                    Vec::<String>::new(),
+                ),
+                McpFailure::Spawn,
+                None,
+            ),
+            Case::new(
+                "a server that exits",
+                recorder(":", &directory.path().join("exits")),
+                McpFailure::Closed,
+                None,
+            ),
+            Case::new("a silent server", sleepy(), McpFailure::Timeout, None).within(BRIEF),
+        ])
+        .await;
+    }
+
+    /// Every kind a remote server's answer, or its silence, fails a
+    /// connection with, beside the status of that answer when it was not a
+    /// success, whether the handshake or the tool listing met it.
+    #[tokio::test]
+    async fn a_remote_server_that_does_not_connect_fails_as_its_kind() {
+        let forbidden = mounted(challenged(403)).await;
+        let unauthorized = listing(challenged(401)).await;
+        let unscoped = listing(challenged(403)).await;
+        let limited = mounted(ResponseTemplate::new(429)).await;
+        let erring = mounted(
+            ResponseTemplate::new(500).set_body_json(serde_json::json!({"error": "not JSON-RPC"})),
+        )
+        .await;
+        let missing = listing(ResponseTemplate::new(404)).await;
+        let unframed = mounted(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"answer": "not JSON-RPC"})),
+        )
+        .await;
+        let misaddressed = mounted(Misaddressed).await;
+        let rejecting = listing(Rejecting(200)).await;
+        let refusing = listing(Rejecting(400)).await;
+        let ended = mounted(ResponseTemplate::new(200).set_body_raw("", "text/event-stream")).await;
+        let oversized =
+            mounted(ResponseTemplate::new(400).set_body_string("x".repeat(READABLE_ERROR + 1)))
+                .await;
+        let silent = mounted(ResponseTemplate::new(200).set_delay(PATIENCE)).await;
+
+        assert_failures([
+            Case::new(
+                "a challenged 403 to the handshake",
+                reached(&forbidden),
+                McpFailure::Unauthorized,
+                Some(403),
+            ),
+            Case::new(
+                "a challenged 401 to the listing",
+                reached(&unauthorized),
+                McpFailure::Unauthorized,
+                Some(401),
+            ),
+            Case::new(
+                "a challenged 403 to the listing",
+                reached(&unscoped),
+                McpFailure::Unauthorized,
+                Some(403),
+            ),
+            Case::new("a 429", reached(&limited), McpFailure::Status, Some(429)),
+            Case::new(
+                "a 500 whose JSON is not JSON-RPC",
+                reached(&erring),
+                McpFailure::Status,
+                Some(500),
+            ),
+            Case::new(
+                "a 404 to the listing",
+                reached(&missing),
+                McpFailure::Status,
+                Some(404),
+            ),
+            Case::new(
+                "a 200 whose JSON is not JSON-RPC",
+                reached(&unframed),
+                McpFailure::Protocol,
+                None,
+            ),
+            Case::new(
+                "an answer under another id",
+                reached(&misaddressed),
+                McpFailure::Protocol,
+                None,
+            ),
+            Case::new(
+                "a JSON-RPC error on a 200 to the listing",
+                reached(&rejecting),
+                McpFailure::Rejected,
+                None,
+            ),
+            Case::new(
+                "a JSON-RPC error on a 400 to the listing",
+                reached(&refusing),
+                McpFailure::Rejected,
+                Some(400),
+            ),
+            Case::new(
+                "an empty event stream",
+                reached(&ended),
+                McpFailure::Closed,
+                None,
+            ),
+            Case::new(
+                "a 400 past what the transport reads",
+                reached(&oversized),
+                McpFailure::Oversized,
+                Some(400),
+            ),
+            Case::new(
+                "a refused connection",
+                McpServer::remote(format!("{UNREACHABLE}{MCP_PATH}")),
+                McpFailure::Unreachable,
+                None,
+            ),
+            Case::new(
+                "a server that never answers",
+                reached(&silent),
+                McpFailure::Timeout,
+                None,
+            )
+            .within(BRIEF),
+        ])
+        .await;
+    }
+
+    /// Words a failure's text is made of, which a header's secret bound to
+    /// one takes out of it wherever they stand.
+    const SPELLED: [&str; 3] = ["server", "response", "Transport"];
+
+    /// Whatever a bound secret takes out of a failure's text, the failure
+    /// keeps the kind and status it has with nothing bound.
+    #[tokio::test]
+    async fn a_kind_never_changes_with_what_a_bound_secret_spells() {
+        let unavailable = mounted(ResponseTemplate::new(503)).await;
+        let refused = mounted(ResponseTemplate::new(400)).await;
+        let unauthorized = mounted(challenged(401)).await;
+        let unframed =
+            mounted(ResponseTemplate::new(200).set_body_raw("<html></html>", "text/html")).await;
+        let rejecting = mounted(Rejecting(400)).await;
+        let elsewhere = MockServer::start().await;
+        let redirecting = mounted(
+            ResponseTemplate::new(307)
+                .insert_header("Location", format!("{}{MCP_PATH}", elsewhere.uri())),
+        )
+        .await;
+        let baselines = [
+            (reached(&unavailable), McpFailure::Status, Some(503)),
+            (reached(&refused), McpFailure::Status, Some(400)),
+            (reached(&unauthorized), McpFailure::Unauthorized, Some(401)),
+            (reached(&unframed), McpFailure::Protocol, None),
+            (reached(&rejecting), McpFailure::Rejected, Some(400)),
+            (reached(&redirecting), McpFailure::Redirect, Some(307)),
+            (
+                McpServer::remote(format!("{UNREACHABLE}{MCP_PATH}")),
+                McpFailure::Unreachable,
+                None,
+            ),
+        ];
+
+        assert_failures(baselines.into_iter().flat_map(|(server, failure, status)| {
+            let bound = SPELLED.map(|word| {
+                Case::new(
+                    word,
+                    server
+                        .clone()
+                        .with_header(KEY_HEADER, "${TOKEN}")
+                        .with_secret("TOKEN", word),
+                    failure,
+                    status,
+                )
+            });
+            iter::once(Case::new("nothing bound", server, failure, status)).chain(bound)
+        }))
+        .await;
+    }
+
+    /// What the transport writes of a 400 up to the first word of its body,
+    /// bound below as a segment of the server's path.
+    const STATUS_TEXT: &str = "0 Bad Request: refused";
+
+    /// A bound path segment takes the status out of the failure's text, and
+    /// whether the body goes on as the segment does changes nothing.
+    #[tokio::test]
+    async fn a_status_keeps_its_kind_when_a_bound_path_segment_spells_its_text() {
+        let agreeing =
+            mounted(ResponseTemplate::new(400).set_body_string("refused, as asked")).await;
+        let differing = mounted(ResponseTemplate::new(400).set_body_string("declined")).await;
+        let segmented = |server: &MockServer| {
+            McpServer::remote(format!("{}/${{SEGMENT}}{MCP_PATH}", server.uri()))
+                .with_secret("SEGMENT", STATUS_TEXT)
+        };
+
+        let (_, outcome) = reconnected(&segmented(&agreeing)).await;
+        assert!(
+            failure(&outcome).contains(abnegate_secret::REDACTED),
+            "the segment never reached the failure's text, so nothing was taken out of it: {outcome:?}"
+        );
+        assert_failures([
+            Case::new(
+                "the body agreeing",
+                segmented(&agreeing),
+                McpFailure::Status,
+                Some(400),
+            ),
+            Case::new(
+                "the body differing",
+                segmented(&differing),
+                McpFailure::Status,
+                Some(400),
+            ),
+            Case::new(
+                "nothing bound",
+                reached(&agreeing),
+                McpFailure::Status,
+                Some(400),
+            ),
+        ])
+        .await;
+    }
+
+    /// A refusal's body is the server's own words, and some read as another
+    /// failure's text.
+    #[tokio::test]
+    async fn a_status_keeps_its_kind_whatever_its_body_says() {
+        for body in [
+            abnegate_secret::REDACTED,
+            "HTTP 200",
+            "Auth required",
+            "refused a redirect to http://x",
+            "handshake timed out",
+            "JSON-RPC error: ",
+        ] {
+            let outcome = answering(ResponseTemplate::new(400).set_body_string(body)).await;
+
+            assert_eq!(
+                cause(&outcome),
+                (McpFailure::Status, Some(400)),
+                "{body}: {outcome:?}"
+            );
+        }
+    }
+
+    /// Answers 200 under a content type that echoes the request's
+    /// [`KEY_HEADER`].
+    struct Typed;
+
+    impl Respond for Typed {
+        fn respond(&self, request: &Request) -> ResponseTemplate {
+            let echoed = request
+                .headers
+                .get(KEY_HEADER)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default();
+            ResponseTemplate::new(200).set_body_raw("{}", &format!("text/{echoed}"))
+        }
+    }
+
+    /// A content type that echoes a bound secret costs the transport's error
+    /// its kind before the session sees it.
+    #[tokio::test]
+    async fn a_success_whose_content_type_echoes_a_secret_has_no_status() {
+        let outcome = reconnected(&keyed(&mounted(Typed).await)).await.1;
+
+        assert_eq!(cause(&outcome), (McpFailure::Protocol, None), "{outcome:?}");
+    }
+
+    /// A target no name server knows, so only a proxy can reach it.
+    const PROXIED: &str = "http://mcp.invalid/mcp";
+
+    /// `proxy`, through which every host is reached.
+    fn routed(proxy: &str) -> Proxy {
+        Proxy::new(proxy).with_bypass(Vec::<String>::new())
+    }
+
+    /// A proxy's own answer to a request it forwards is the answer the
+    /// client sees, and is named as a server's would be.
+    #[tokio::test]
+    async fn a_failure_through_the_proxy_fails_as_its_kind() {
+        let unavailable = mounted(ResponseTemplate::new(503)).await;
+        let unauthenticated = mounted(ResponseTemplate::new(407)).await;
+        let unauthorized = mounted(challenged(401)).await;
+        let idle = MockServer::start().await;
+        let target = || McpServer::remote(PROXIED);
+
+        assert_failures([
+            Case::new("a 503", target(), McpFailure::Status, Some(503))
+                .through(routed(&unavailable.uri())),
+            Case::new("a 407", target(), McpFailure::Status, Some(407))
+                .through(routed(&unauthenticated.uri())),
+            Case::new(
+                "a challenged 401",
+                target(),
+                McpFailure::Unauthorized,
+                Some(401),
+            )
+            .through(routed(&unauthorized.uri())),
+            Case::new(
+                "a proxy that refuses its connection",
+                target(),
+                McpFailure::Unreachable,
+                None,
+            )
+            .through(routed(UNREACHABLE)),
+            Case::new(
+                "a metadata target",
+                McpServer::remote("http://169.254.169.254/mcp"),
+                McpFailure::Metadata,
+                None,
+            )
+            .through(routed(&idle.uri())),
+        ])
+        .await;
+        assert!(
+            requests(&idle).await.is_empty(),
+            "a metadata target was sent to the proxy"
+        );
+    }
+
+    /// The end of a request's head.
+    const HEAD_END: &[u8] = b"\r\n\r\n";
+
+    /// How a request for a tunnel begins.
+    const TUNNEL: &[u8] = b"CONNECT ";
+
+    const TUNNEL_REFUSAL: &[u8] = b"HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"proxy\"\r\nContent-Length: 0\r\n\r\n";
+
+    /// A proxy that refuses every tunnel it is asked for with a 407, and
+    /// whether it has been asked for one.
+    async fn tunnel_refusing() -> (Proxy, Arc<AtomicBool>) {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("a port for the proxy");
+        let address = listener.local_addr().expect("the proxy's address");
+        let asked = Arc::new(AtomicBool::new(false));
+        let tunnelled = asked.clone();
+        tokio::spawn(async move {
+            while let Ok((client, _)) = listener.accept().await {
+                tokio::spawn(refuse_tunnel(client, tunnelled.clone()));
+            }
+        });
+        (routed(&format!("http://{address}")), asked)
+    }
+
+    /// Read the head `client` sends, set `asked` when it asks for a tunnel,
+    /// and refuse it.
+    async fn refuse_tunnel(mut client: TcpStream, asked: Arc<AtomicBool>) -> io::Result<()> {
+        let mut head = Vec::new();
+        let mut buffer = [0; 1024];
+        while !head
+            .windows(HEAD_END.len())
+            .any(|window| window == HEAD_END)
+        {
+            let read = client.read(&mut buffer).await?;
+            if read == 0 {
+                return Ok(());
+            }
+            head.extend_from_slice(&buffer[..read]);
+        }
+        if head.starts_with(TUNNEL) {
+            asked.store(true, Ordering::Relaxed);
+        }
+        client.write_all(TUNNEL_REFUSAL).await
+    }
+
+    /// An `https` server behind a proxy is reached through a tunnel, and the
+    /// proxy's refusal to open one is met while connecting, before any
+    /// request the client could see answered.
+    #[tokio::test]
+    async fn a_tunnel_the_proxy_refuses_is_unreachable() {
+        let (proxy, asked) = tunnel_refusing().await;
+
+        let outcome = McpHub::new()
+            .reconnect_within(
+                "docs",
+                &McpServer::remote("https://mcp.invalid/mcp"),
+                &proxy,
+                LIMIT,
+            )
+            .await;
+
+        assert!(
+            asked.load(Ordering::Relaxed),
+            "the proxy was never asked for a tunnel: {outcome:?}"
+        );
+        assert_eq!(
+            cause(&outcome),
+            (McpFailure::Unreachable, None),
+            "{outcome:?}"
+        );
     }
 
     /// Removing a server while it connected used to be undone once the
