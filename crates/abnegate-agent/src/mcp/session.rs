@@ -33,6 +33,7 @@ use super::McpFailure;
 use super::McpServer;
 use super::cause::Cause;
 use super::name::unique_qualified_tool_name;
+use super::posted::Posted;
 use super::remote::Remote;
 use super::scrubber::Scrubber;
 use super::server_process::ServerProcess;
@@ -154,6 +155,7 @@ impl McpSession {
         let scrubber = Scrubber::new(server, &endpoint);
         let client = Remote::new(proxy, scrubber.clone())
             .map_err(|message| failed(&message, McpFailure::Client))?;
+        let posted = client.posted();
         let transport = StreamableHttpClientTransport::with_client(
             client,
             StreamableHttpClientTransportConfig::with_uri(String::from(url))
@@ -164,9 +166,10 @@ impl McpSession {
                 .serve(transport)
                 .await
                 .map_err(|error| {
-                    Unconnected::handshake(name, error.to_string(), Cause::initialize(&error))
+                    let cause = Cause::initialize(&error, Posted::read(&posted));
+                    Unconnected::handshake(name, error.to_string(), cause)
                 })?;
-            Self::listed(name, server, client, None).await
+            Self::listed(name, server, client, None, Some(posted.as_ref())).await
         };
         let result = tokio::time::timeout(limit, connected)
             .await
@@ -237,26 +240,33 @@ impl McpSession {
             .serve(transport)
             .await
             .map_err(|error| {
-                Unconnected::handshake(name, error.to_string(), Cause::initialize(&error))
+                let cause = Cause::initialize(&error, Posted::default());
+                Unconnected::handshake(name, error.to_string(), cause)
             })?;
 
-        Self::listed(name, &server, client, Some(process)).await
+        Self::listed(name, &server, client, Some(process), None).await
     }
 
     /// The session for `server`, whose handshake `client` has completed, with
     /// the tools its server lists that `server` [allows](McpServer::allows),
     /// as a CLI allows them.
+    ///
+    /// `posted` is where a remote server's client keeps what became of its
+    /// last request, read only once the listing has failed; a session over
+    /// anything else has none.
     pub(super) async fn listed(
         name: &str,
         server: &McpServer,
         client: Client,
         process: Option<ServerProcess>,
+        posted: Option<&std::sync::Mutex<Posted>>,
     ) -> Result<Self, Unconnected> {
         let remote_tools = client
             .list_all_tools()
             .await
             .map_err(|error| {
-                Unconnected::handshake(name, error.to_string(), Cause::service(&error))
+                let posted = posted.map(Posted::read).unwrap_or_default();
+                Unconnected::handshake(name, error.to_string(), Cause::service(&error, posted))
             })?
             .into_iter()
             .filter(|tool| server.allows(&tool.name))

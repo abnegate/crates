@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::error::Error;
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use abnegate_exec::Proxy;
 use abnegate_http::metadata::MetadataResolver;
@@ -11,11 +12,14 @@ use reqwest::header::HeaderName;
 use reqwest::header::HeaderValue;
 use reqwest::redirect::Policy;
 use rmcp::model::ClientJsonRpcMessage;
+use rmcp::model::ClientNotification;
 use rmcp::transport::common::client_side_sse::BoxedSseResponse;
 use rmcp::transport::streamable_http_client::StreamableHttpClient;
 use rmcp::transport::streamable_http_client::StreamableHttpError;
 use rmcp::transport::streamable_http_client::StreamableHttpPostResponse;
 
+use super::cause::Cause;
+use super::posted::Posted;
 use super::redirect::MAXIMUM_REDIRECTS;
 use super::redirect::Redirect;
 use super::scrubber::Scrubber;
@@ -36,10 +40,15 @@ type Failure = StreamableHttpError<reqwest::Error>;
 /// text scrubbed of the server's secrets, a redirect's location and a
 /// server's own words included, since the transport logs some of them
 /// itself before any caller sees them.
+///
+/// That rewriting can cost an error its kind, so what became of the last
+/// [recorded](recorded) request is kept first, as a [`Posted`] every clone
+/// shares with whoever asked for [`posted`](Self::posted).
 #[derive(Clone)]
 pub(super) struct Remote {
     client: reqwest::Client,
     scrubber: Scrubber,
+    posted: Arc<Mutex<Posted>>,
 }
 
 impl Remote {
@@ -61,12 +70,45 @@ impl Remote {
         };
         builder
             .build()
-            .map(|client| Self { client, scrubber })
+            .map(|client| Self {
+                client,
+                scrubber,
+                posted: Arc::default(),
+            })
             .map_err(|error| format!("{CLIENT_FAILED}: {}", error.without_url()))
+    }
+
+    /// Where this client keeps what became of the last [recorded](recorded)
+    /// request it sent, to be read once a request the session waited on has
+    /// failed, never before.
+    pub(super) fn posted(&self) -> Arc<Mutex<Posted>> {
+        self.posted.clone()
     }
 }
 
 impl Remote {
+    /// The answer `post` gets, its error [unlocated](Self::unlocated).
+    ///
+    /// When `recorded`, what became of the request before it is forgotten
+    /// as it is sent, and what became of this one is kept as it finishes,
+    /// taken from the error before that is rewritten. Any other message
+    /// leaves what is kept alone, so one sent beside the request a session
+    /// waits on never stands in for what became of that request.
+    async fn sent(
+        &self,
+        recorded: bool,
+        post: impl Future<Output = Result<StreamableHttpPostResponse, Failure>> + Send,
+    ) -> Result<StreamableHttpPostResponse, Failure> {
+        if recorded {
+            Posted::default().write(&self.posted);
+        }
+        let result = post.await;
+        if recorded {
+            outcome(&result).write(&self.posted);
+        }
+        result.map_err(|error| self.unlocated(error))
+    }
+
     /// `error` with no URL or secret in it: a refused redirect becomes the
     /// [`Redirect`] that refused it, any other client error drops the URL it
     /// names, and an error whose text holds a secret becomes that text
@@ -110,10 +152,11 @@ impl StreamableHttpClient for Remote {
         auth_header: Option<String>,
         custom_headers: HashMap<HeaderName, HeaderValue>,
     ) -> Result<StreamableHttpPostResponse, Failure> {
-        self.client
-            .post_message(uri, message, session_id, auth_header, custom_headers)
-            .await
-            .map_err(|error| self.unlocated(error))
+        let recorded = recorded(&message);
+        let post = self
+            .client
+            .post_message(uri, message, session_id, auth_header, custom_headers);
+        self.sent(recorded, post).await
     }
 
     async fn post_message_with_max_sse_event_size(
@@ -125,17 +168,16 @@ impl StreamableHttpClient for Remote {
         custom_headers: HashMap<HeaderName, HeaderValue>,
         max_sse_event_size: usize,
     ) -> Result<StreamableHttpPostResponse, Failure> {
-        self.client
-            .post_message_with_max_sse_event_size(
-                uri,
-                message,
-                session_id,
-                auth_header,
-                custom_headers,
-                max_sse_event_size,
-            )
-            .await
-            .map_err(|error| self.unlocated(error))
+        let recorded = recorded(&message);
+        let post = self.client.post_message_with_max_sse_event_size(
+            uri,
+            message,
+            session_id,
+            auth_header,
+            custom_headers,
+            max_sse_event_size,
+        );
+        self.sent(recorded, post).await
     }
 
     async fn delete_session(
@@ -188,6 +230,35 @@ impl StreamableHttpClient for Remote {
     }
 }
 
+/// Whether `message` is one a connecting session waits on, whose fate is
+/// therefore kept: a request, or the notification that ends the handshake.
+/// Those are sent one at a time while a session connects. A response, an
+/// error, a cancellation or any other notification goes out beside them.
+fn recorded(message: &ClientJsonRpcMessage) -> bool {
+    match message {
+        ClientJsonRpcMessage::Request(_) => true,
+        ClientJsonRpcMessage::Notification(notification) => matches!(
+            notification.notification,
+            ClientNotification::InitializedNotification(_)
+        ),
+        ClientJsonRpcMessage::Response(_) | ClientJsonRpcMessage::Error(_) => false,
+    }
+}
+
+/// What became of the request `result` answers.
+fn outcome(result: &Result<StreamableHttpPostResponse, Failure>) -> Posted {
+    match result {
+        Ok(_) => Posted::default(),
+        Err(error) => {
+            let Cause { failure, status } = Cause::transport(error);
+            Posted {
+                failure: Some(failure),
+                status,
+            }
+        }
+    }
+}
+
 /// Follow a 307 or 308, which keep the method and body, while it stays on
 /// the origin first requested, for at most [`MAXIMUM_REDIRECTS`] hops, and
 /// refuse any other with the [`Redirect`] that says why: where it pointed,
@@ -221,4 +292,337 @@ fn redirects() -> Policy {
         );
         attempt.follow()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::Ipv4Addr;
+
+    use serde_json::json;
+    use tokio::net::TcpListener;
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::any;
+
+    use super::*;
+    use crate::mcp::McpFailure;
+    use crate::mcp::McpServer;
+
+    const MCP_PATH: &str = "/mcp";
+
+    const SESSION: &str = "session";
+
+    /// What a refused request answered 503 leaves behind.
+    const UNAVAILABLE: Posted = Posted {
+        failure: Some(McpFailure::Status),
+        status: Some(503),
+    };
+
+    fn message(json: serde_json::Value) -> ClientJsonRpcMessage {
+        serde_json::from_value(json).expect("a client message")
+    }
+
+    fn request() -> ClientJsonRpcMessage {
+        message(json!({"jsonrpc": "2.0", "id": 1, "method": "ping"}))
+    }
+
+    fn initialized() -> ClientJsonRpcMessage {
+        message(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+    }
+
+    fn response() -> ClientJsonRpcMessage {
+        message(json!({"jsonrpc": "2.0", "id": 1, "result": {}}))
+    }
+
+    fn rejection() -> ClientJsonRpcMessage {
+        message(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": {"code": -32603, "message": "no"}
+        }))
+    }
+
+    fn cancellation() -> ClientJsonRpcMessage {
+        message(json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/cancelled",
+            "params": {"requestId": 1}
+        }))
+    }
+
+    fn changed() -> ClientJsonRpcMessage {
+        message(json!({"jsonrpc": "2.0", "method": "notifications/roots/list_changed"}))
+    }
+
+    /// Every message a session sends beside the request it waits on.
+    fn beside() -> [ClientJsonRpcMessage; 4] {
+        [response(), rejection(), cancellation(), changed()]
+    }
+
+    fn remote() -> Remote {
+        Remote::new(&Proxy::default(), Scrubber::default()).expect("a client")
+    }
+
+    fn address(server: &MockServer) -> Arc<str> {
+        format!("{}{MCP_PATH}", server.uri()).into()
+    }
+
+    /// Have `server` answer everything with `template` from now on.
+    async fn answering(server: &MockServer, template: ResponseTemplate) {
+        server.reset().await;
+        Mock::given(any())
+            .respond_with(template)
+            .mount(server)
+            .await;
+    }
+
+    async fn post(
+        remote: &Remote,
+        server: &MockServer,
+        message: ClientJsonRpcMessage,
+    ) -> Result<StreamableHttpPostResponse, Failure> {
+        remote
+            .post_message(address(server), message, None, None, HashMap::new())
+            .await
+    }
+
+    /// Leave [`UNAVAILABLE`] behind in what `remote` keeps.
+    async fn refuse(remote: &Remote, server: &MockServer) {
+        answering(server, ResponseTemplate::new(503)).await;
+        post(remote, server, request())
+            .await
+            .expect_err("a 503 fails the request");
+        assert_eq!(Posted::read(&remote.posted()), UNAVAILABLE);
+    }
+
+    fn challenged() -> ResponseTemplate {
+        ResponseTemplate::new(401).insert_header("WWW-Authenticate", "Bearer realm=\"mcp\"")
+    }
+
+    fn redirecting() -> ResponseTemplate {
+        ResponseTemplate::new(302).insert_header("Location", "/elsewhere")
+    }
+
+    #[test]
+    fn only_a_request_and_the_end_of_the_handshake_are_recorded() {
+        assert!(matches!(request(), ClientJsonRpcMessage::Request(_)));
+        assert!(matches!(response(), ClientJsonRpcMessage::Response(_)));
+        assert!(matches!(rejection(), ClientJsonRpcMessage::Error(_)));
+        for notification in [initialized(), cancellation(), changed()] {
+            assert!(
+                matches!(notification, ClientJsonRpcMessage::Notification(_)),
+                "{notification:?}"
+            );
+        }
+
+        assert!(recorded(&request()));
+        assert!(recorded(&initialized()));
+        for message in beside() {
+            assert!(!recorded(&message), "{message:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_request_that_fails_leaves_why_and_one_answered_forgets_it() {
+        let server = MockServer::start().await;
+        let remote = remote();
+        refuse(&remote, &server).await;
+
+        answering(&server, ResponseTemplate::new(202)).await;
+        post(&remote, &server, request())
+            .await
+            .expect("a 202 is an answer");
+
+        assert_eq!(Posted::read(&remote.posted()), Posted::default());
+    }
+
+    #[tokio::test]
+    async fn the_end_of_the_handshake_is_recorded_as_a_request_is() {
+        let server = MockServer::start().await;
+        let remote = remote();
+
+        answering(&server, challenged()).await;
+        post(&remote, &server, initialized())
+            .await
+            .expect_err("a challenge fails the notification");
+        assert_eq!(
+            Posted::read(&remote.posted()),
+            Posted {
+                failure: Some(McpFailure::Unauthorized),
+                status: Some(401)
+            }
+        );
+
+        answering(&server, ResponseTemplate::new(202)).await;
+        post(&remote, &server, initialized())
+            .await
+            .expect("a 202 is an answer");
+        assert_eq!(Posted::read(&remote.posted()), Posted::default());
+    }
+
+    /// A response, an error, a cancellation or another notification goes out
+    /// beside the request a session waits on, so neither sending one nor its
+    /// answer may stand in for what became of that request.
+    #[tokio::test]
+    async fn a_message_sent_beside_a_request_leaves_what_was_posted_alone() {
+        let server = MockServer::start().await;
+        let remote = remote();
+        refuse(&remote, &server).await;
+
+        for status in [202, 500] {
+            answering(&server, ResponseTemplate::new(status)).await;
+            for message in beside() {
+                let sent = format!("{message:?}");
+                let result = post(&remote, &server, message).await;
+
+                assert_eq!(result.is_ok(), status == 202, "{sent} answered {status}");
+                assert_eq!(
+                    Posted::read(&remote.posted()),
+                    UNAVAILABLE,
+                    "{sent} answered {status}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn the_size_limited_post_records_as_the_plain_one_does() {
+        let server = MockServer::start().await;
+        let remote = remote();
+        let post = |message: ClientJsonRpcMessage| {
+            remote.post_message_with_max_sse_event_size(
+                address(&server),
+                message,
+                None,
+                None,
+                HashMap::new(),
+                usize::MAX,
+            )
+        };
+
+        answering(&server, ResponseTemplate::new(503)).await;
+        post(request()).await.expect_err("a 503 fails the request");
+        assert_eq!(Posted::read(&remote.posted()), UNAVAILABLE);
+
+        answering(&server, ResponseTemplate::new(500)).await;
+        for message in beside() {
+            post(message).await.expect_err("a 500 fails the message");
+            assert_eq!(Posted::read(&remote.posted()), UNAVAILABLE);
+        }
+
+        answering(&server, ResponseTemplate::new(202)).await;
+        post(request()).await.expect("a 202 is an answer");
+        assert_eq!(Posted::read(&remote.posted()), Posted::default());
+    }
+
+    /// The background stream and the session's deletion are no request a
+    /// session waits on, and a refusal either meets must never be read as
+    /// why that request failed.
+    #[tokio::test]
+    async fn a_stream_or_a_deletion_never_touches_what_was_posted() {
+        let server = MockServer::start().await;
+        let remote = remote();
+
+        for seeded in [false, true] {
+            let kept = if seeded {
+                refuse(&remote, &server).await;
+                UNAVAILABLE
+            } else {
+                Posted::default()
+            };
+            for template in [ResponseTemplate::new(500), redirecting(), challenged()] {
+                answering(&server, template).await;
+                let stream = remote
+                    .get_stream(
+                        address(&server),
+                        Some(SESSION.into()),
+                        None,
+                        None,
+                        HashMap::new(),
+                    )
+                    .await;
+                let limited = remote
+                    .get_stream_with_max_sse_event_size(
+                        address(&server),
+                        Some(SESSION.into()),
+                        None,
+                        None,
+                        HashMap::new(),
+                        usize::MAX,
+                    )
+                    .await;
+                let deleted = remote
+                    .delete_session(address(&server), SESSION.into(), None, HashMap::new())
+                    .await;
+
+                assert!(stream.is_err() && limited.is_err() && deleted.is_err());
+                assert_eq!(Posted::read(&remote.posted()), kept);
+            }
+        }
+    }
+
+    /// A request still in flight has no fate yet, and the one before it is
+    /// no longer what the session waits on.
+    #[tokio::test]
+    async fn a_request_forgets_the_one_before_it_as_it_is_sent() {
+        let server = MockServer::start().await;
+        let remote = remote();
+        refuse(&remote, &server).await;
+        let silent = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("a listener");
+        let unanswered: Arc<str> = format!(
+            "http://{}{MCP_PATH}",
+            silent.local_addr().expect("an address")
+        )
+        .into();
+        let sender = remote.clone();
+        let sending = tokio::spawn(async move {
+            sender
+                .post_message(unanswered, request(), None, None, HashMap::new())
+                .await
+        });
+
+        let _held = silent.accept().await.expect("the request's connection");
+
+        assert_eq!(Posted::read(&remote.posted()), Posted::default());
+        sending.abort();
+    }
+
+    /// An error whose text holds a bound secret, and a refused redirect, are
+    /// both handed on as an unexpected response, with nothing left of what
+    /// they were but what was kept before that.
+    #[tokio::test]
+    async fn what_was_posted_is_taken_before_the_error_is_rewritten() {
+        let server = MockServer::start().await;
+        let bound =
+            McpServer::remote(address(&server).to_string()).with_secret("TOKEN", "HTTP 503");
+        let endpoint = bound.endpoint().expect("an endpoint");
+        let remote =
+            Remote::new(&Proxy::default(), Scrubber::new(&bound, &endpoint)).expect("a client");
+        let cases = [
+            (ResponseTemplate::new(503), UNAVAILABLE),
+            (
+                redirecting(),
+                Posted {
+                    failure: Some(McpFailure::Redirect),
+                    status: None,
+                },
+            ),
+        ];
+
+        for (template, kept) in cases {
+            answering(&server, template).await;
+            let error = post(&remote, &server, request())
+                .await
+                .expect_err("the request fails");
+
+            assert!(
+                matches!(error, StreamableHttpError::UnexpectedServerResponse(_)),
+                "{error:?}"
+            );
+            assert_eq!(Posted::read(&remote.posted()), kept);
+        }
+    }
 }

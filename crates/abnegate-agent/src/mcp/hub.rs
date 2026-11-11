@@ -856,7 +856,7 @@ mod tests {
             .serve((client_from_server, client_to_server))
             .await
             .expect("client serve");
-        let session = McpSession::listed("pair", server, client, None)
+        let session = McpSession::listed("pair", server, client, None, None)
             .await
             .expect("listed");
         let hub = McpHub::with_sessions([session]);
@@ -2303,6 +2303,183 @@ mod tests {
         for leaked in ["user", "hunter2", "key=", "abc123"] {
             assert!(!error.contains(leaked), "{leaked} reached {error}");
         }
+    }
+
+    /// The kind and status `outcome` failed with.
+    fn cause(outcome: &McpOutcome) -> (McpFailure, Option<u16>) {
+        match outcome {
+            McpOutcome::Failed {
+                failure, status, ..
+            } => (*failure, *status),
+            other => panic!("expected a failure, got {other:?}"),
+        }
+    }
+
+    /// A 401 that says how to authenticate, which is what tells a refusal
+    /// to authorize from any other answer.
+    fn challenged() -> ResponseTemplate {
+        ResponseTemplate::new(401).insert_header("WWW-Authenticate", "Bearer realm=\"mcp\"")
+    }
+
+    /// A refused redirect reaches the session as text, where it reads as
+    /// any other answer the client did not expect.
+    #[tokio::test]
+    async fn a_cross_origin_redirect_fails_as_a_redirect() {
+        let first = MockServer::start().await;
+        let second = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(
+                ResponseTemplate::new(307)
+                    .insert_header("Location", format!("{}{MCP_PATH}", second.uri())),
+            )
+            .mount(&first)
+            .await;
+
+        let (_, outcome) = reconnected(&reached(&first)).await;
+
+        assert_eq!(cause(&outcome).0, McpFailure::Redirect, "{outcome:?}");
+    }
+
+    #[tokio::test]
+    async fn a_redirect_that_changes_the_method_fails_as_a_redirect() {
+        let server = MockServer::start().await;
+        Mock::given(path(MCP_PATH))
+            .respond_with(ResponseTemplate::new(302).insert_header("Location", "/mcp/"))
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        serve(&server, "/mcp/", Streamable::default(), None).await;
+
+        let (_, outcome) = reconnected(&reached(&server)).await;
+
+        assert_eq!(cause(&outcome).0, McpFailure::Redirect, "{outcome:?}");
+    }
+
+    #[tokio::test]
+    async fn a_redirect_past_the_hop_limit_fails_as_a_redirect() {
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(Hopping)
+            .mount(&server)
+            .await;
+
+        let (_, outcome) = reconnected(&McpServer::remote(format!("{}/hop/0", server.uri()))).await;
+
+        assert_eq!(cause(&outcome).0, McpFailure::Redirect, "{outcome:?}");
+    }
+
+    /// A failure whose text holds a bound secret is rewritten before the
+    /// session sees it, and a secret may be bound to anything, the very
+    /// words of the failure included.
+    #[tokio::test]
+    async fn a_failing_status_keeps_its_kind_when_a_bound_secret_spells_it() {
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+
+        for server in [
+            reached(&server),
+            reached(&server).with_secret("TOKEN", "HTTP 503"),
+        ] {
+            let (_, outcome) = reconnected(&server).await;
+
+            assert_eq!(
+                cause(&outcome),
+                (McpFailure::Status, Some(503)),
+                "{outcome:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_challenge_keeps_its_kind_when_a_bound_secret_spells_it() {
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(challenged())
+            .mount(&server)
+            .await;
+
+        for server in [
+            reached(&server),
+            reached(&server).with_secret("TOKEN", "Auth required"),
+        ] {
+            let (_, outcome) = reconnected(&server).await;
+
+            assert_eq!(
+                cause(&outcome),
+                (McpFailure::Unauthorized, Some(401)),
+                "{outcome:?}"
+            );
+        }
+    }
+
+    /// The listing's own failure is what the outcome names, though the
+    /// background stream met a refused redirect while the listing was still
+    /// unanswered, and though a bound secret costs that failure its text.
+    #[tokio::test]
+    async fn a_refused_redirect_never_names_another_failure() {
+        let listing = "tools/list";
+        let server = MockServer::start().await;
+        let elsewhere = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(307)
+                    .insert_header("Location", format!("{}{MCP_PATH}", elsewhere.uri())),
+            )
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::body_string_contains(listing))
+            .respond_with(ResponseTemplate::new(503))
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        streamable(&server, None).await;
+        let (relayed, engaged) = relayed(&server, listing, "fail to get common stream").await;
+        let relayed = relayed.with_secret("TOKEN", "HTTP 503");
+
+        let ((_, outcome), logs) = crate::test_support::captured_logs(reconnected(&relayed)).await;
+
+        assert!(
+            engaged.load(Ordering::Relaxed),
+            "the relay never held the answer to {listing} back, so nothing ordered it after the refused redirect"
+        );
+        assert!(
+            logs.contains("refused a redirect to"),
+            "the background stream met its redirect first: {logs}"
+        );
+        assert_eq!(
+            cause(&outcome),
+            (McpFailure::Status, Some(503)),
+            "{outcome:?}"
+        );
+    }
+
+    /// The transport drops why the notification that ends the handshake
+    /// failed, and tells the session only that its channel closed.
+    #[tokio::test]
+    async fn a_challenge_to_the_end_of_the_handshake_is_unauthorized() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::body_string_contains(
+                "notifications/initialized",
+            ))
+            .respond_with(challenged())
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        streamable(&server, None).await;
+
+        let (_, outcome) = reconnected(&reached(&server)).await;
+
+        assert_eq!(
+            cause(&outcome),
+            (McpFailure::Unauthorized, Some(401)),
+            "{outcome:?}"
+        );
     }
 
     /// Removing a server while it connected used to be undone once the

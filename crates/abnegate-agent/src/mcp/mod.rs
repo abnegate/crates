@@ -107,6 +107,7 @@ mod guidance;
 mod hub;
 mod name;
 mod outcome;
+mod posted;
 #[cfg(test)]
 mod recorder;
 mod redirect;
