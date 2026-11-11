@@ -85,6 +85,7 @@ fn refused(error: Option<&(dyn Error + 'static)>) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::fmt;
     use std::io;
     use std::net::Ipv4Addr;
@@ -94,6 +95,8 @@ mod tests {
 
     use reqwest::header::HeaderValue;
     use reqwest::header::LOCATION;
+    use rmcp::model::ClientJsonRpcMessage;
+    use rmcp::transport::streamable_http_client::StreamableHttpClient;
     use serde_json::json;
     use tokio::io::AsyncReadExt;
     use tokio::io::AsyncWriteExt;
@@ -102,7 +105,11 @@ mod tests {
     use tokio::task::JoinSet;
 
     use super::*;
+    use crate::mcp::McpFailure;
+    use crate::mcp::cause::Cause;
     use crate::mcp::fixture::MCP_PATH;
+
+    const SESSION: &str = "session";
 
     /// The policies that must retry alike: the HTTP client's own, and the
     /// one that stands in for it.
@@ -310,6 +317,14 @@ mod tests {
         match stream {
             0 => Reply::Reset(Reason::REFUSED_STREAM),
             _ => Reply::Answer(StatusCode::OK),
+        }
+    }
+
+    /// Refuse the first two streams, and answer any after them `status`.
+    fn refused_twice(stream: usize, status: StatusCode) -> Reply {
+        match stream {
+            0 | 1 => Reply::Reset(Reason::REFUSED_STREAM),
+            _ => Reply::Answer(status),
         }
     }
 
@@ -521,6 +536,65 @@ mod tests {
         assert_eq!(status.expect("an answer"), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(observed, None);
         assert_eq!(server.streams(), 3);
+    }
+
+    /// With nothing observed of the last attempt's answer, the cause of the
+    /// error the transport made of it has only the status that error's own
+    /// kind implies, and an answer the transport has no kind for has none.
+    #[tokio::test]
+    async fn an_answer_to_the_attempt_after_the_last_retry_has_only_the_status_its_kind_implies() {
+        let ended: [(Script, Cause); 5] = [
+            (
+                |stream| refused_twice(stream, StatusCode::SERVICE_UNAVAILABLE),
+                Cause {
+                    failure: McpFailure::Status,
+                    status: Some(503),
+                },
+            ),
+            (
+                |stream| refused_twice(stream, StatusCode::TOO_MANY_REQUESTS),
+                Cause {
+                    failure: McpFailure::Status,
+                    status: Some(429),
+                },
+            ),
+            (
+                |stream| refused_twice(stream, StatusCode::NOT_FOUND),
+                Cause {
+                    failure: McpFailure::Status,
+                    status: Some(404),
+                },
+            ),
+            (
+                |stream| refused_twice(stream, StatusCode::UNAUTHORIZED),
+                Cause::of(McpFailure::Protocol),
+            ),
+            (
+                |stream| refused_twice(stream, StatusCode::FORBIDDEN),
+                Cause::of(McpFailure::Protocol),
+            ),
+        ];
+
+        for (script, cause) in ended {
+            let server = serving(None, script).await;
+            let message: ClientJsonRpcMessage =
+                serde_json::from_value(json!({"jsonrpc": "2.0", "id": 1, "method": "ping"}))
+                    .expect("a client message");
+
+            let (result, observed) = answered(client(Policy::Replica).post_message(
+                server.url.as_str().into(),
+                message,
+                Some(SESSION.into()),
+                None,
+                HashMap::new(),
+            ))
+            .await;
+
+            let error = result.expect_err("the answer fails the request");
+            assert_eq!(observed, None, "{error:?}");
+            assert_eq!(Cause::transport(&error, observed), cause, "{error:?}");
+            assert_eq!(server.streams(), 3, "{error:?}");
+        }
     }
 
     /// Each hop of a followed redirect is an attempt of its own, so the
