@@ -29,12 +29,15 @@ use tokio::sync::Mutex;
 
 use super::McpEndpoint;
 use super::McpError;
+use super::McpFailure;
 use super::McpServer;
+use super::cause::Cause;
 use super::name::unique_qualified_tool_name;
 use super::remote::Remote;
 use super::scrubber::Scrubber;
 use super::server_process::ServerProcess;
 use super::tool::McpTool;
+use super::unconnected::Unconnected;
 use crate::tool::Tool;
 
 /// Most of a server's stderr logged, after which the rest is read and
@@ -105,13 +108,14 @@ impl McpSession {
         server: &McpServer,
         proxy: &Proxy,
         limit: Duration,
-    ) -> Result<Self, McpError> {
+    ) -> Result<Self, Unconnected> {
         match tokio::time::timeout(limit, Self::handshake(name, server, proxy)).await {
             Ok(result) => result,
-            Err(_) => Err(McpError::Handshake {
-                server: name.to_string(),
-                message: TIMED_OUT.to_string(),
-            }),
+            Err(_) => Err(Unconnected::handshake(
+                name,
+                TIMED_OUT.to_string(),
+                Cause::of(McpFailure::Timeout),
+            )),
         }
     }
 
@@ -132,23 +136,24 @@ impl McpSession {
         server: &McpServer,
         proxy: &Proxy,
         limit: Duration,
-    ) -> Result<Self, McpError> {
-        let failed = |message: &str| McpError::Transport {
-            server: name.to_string(),
-            message: message.to_string(),
-        };
-        let endpoint = server.endpoint().ok_or_else(|| failed(UNRESOLVED))?;
+    ) -> Result<Self, Unconnected> {
+        let failed =
+            |message: &str, failure: McpFailure| Unconnected::transport(name, message, failure);
+        let endpoint = server
+            .endpoint()
+            .ok_or_else(|| failed(UNRESOLVED, McpFailure::Unresolved))?;
         let url = Url::parse(&endpoint.url)
             .ok()
             .filter(|url| SCHEMES.contains(&url.scheme()))
-            .ok_or_else(|| failed(INVALID_URL))?;
+            .ok_or_else(|| failed(INVALID_URL, McpFailure::Address))?;
         if is_url(&url) {
-            return Err(failed(METADATA_URL));
+            return Err(failed(METADATA_URL, McpFailure::Metadata));
         }
-        let headers =
-            headers(&endpoint).map_err(|header| failed(&format!("invalid header `{header}`")))?;
+        let headers = headers(&endpoint)
+            .map_err(|header| failed(&format!("invalid header `{header}`"), McpFailure::Header))?;
         let scrubber = Scrubber::new(server, &endpoint);
-        let client = Remote::new(proxy, scrubber.clone()).map_err(|message| failed(&message))?;
+        let client = Remote::new(proxy, scrubber.clone())
+            .map_err(|message| failed(&message, McpFailure::Client))?;
         let transport = StreamableHttpClientTransport::with_client(
             client,
             StreamableHttpClientTransportConfig::with_uri(String::from(url))
@@ -158,26 +163,29 @@ impl McpSession {
             let client = Self::configuration()
                 .serve(transport)
                 .await
-                .map_err(|error| McpError::Handshake {
-                    server: name.to_string(),
-                    message: error.to_string(),
+                .map_err(|error| {
+                    Unconnected::handshake(name, error.to_string(), Cause::initialize(&error))
                 })?;
             Self::listed(name, server, client, None).await
         };
         let result = tokio::time::timeout(limit, connected)
             .await
             .unwrap_or_else(|_| {
-                Err(McpError::Handshake {
-                    server: name.to_string(),
-                    message: TIMED_OUT.to_string(),
-                })
+                Err(Unconnected::handshake(
+                    name,
+                    TIMED_OUT.to_string(),
+                    Cause::of(McpFailure::Timeout),
+                ))
             });
         match result {
             Ok(mut session) => {
                 session.scrubber = scrubber;
                 Ok(session)
             }
-            Err(error) => Err(scrubbed_error(error, &scrubber)),
+            Err(Unconnected { error, cause }) => Err(Unconnected {
+                error: scrubbed_error(error, &scrubber),
+                cause,
+            }),
         }
     }
 
@@ -186,13 +194,13 @@ impl McpSession {
     /// given the server's environment policy, and then `proxy` on top of it.
     /// Its stderr is logged, up to a bound, rather than written over this
     /// process's own.
-    async fn handshake(name: &str, server: &McpServer, proxy: &Proxy) -> Result<Self, McpError> {
+    async fn handshake(name: &str, server: &McpServer, proxy: &Proxy) -> Result<Self, Unconnected> {
         let server = server.expanded(&|variable| std::env::var(variable).ok());
         let Some(program) = &server.command else {
-            return Err(McpError::Spawn {
-                server: name.to_string(),
-                source: io::Error::new(io::ErrorKind::InvalidInput, "no command to launch"),
-            });
+            return Err(Unconnected::spawn(
+                name,
+                io::Error::new(io::ErrorKind::InvalidInput, "no command to launch"),
+            ));
         };
         let mut command = Command::new(program);
         command
@@ -207,10 +215,9 @@ impl McpSession {
         if let Some(directory) = &server.working_directory {
             command.current_dir(directory);
         }
-        let mut child = command.spawn().map_err(|source| McpError::Spawn {
-            server: name.to_string(),
-            source,
-        })?;
+        let mut child = command
+            .spawn()
+            .map_err(|source| Unconnected::spawn(name, source))?;
         let (stdin, stdout, stderr) =
             (child.stdin.take(), child.stdout.take(), child.stderr.take());
         let process = ServerProcess::new(child);
@@ -218,10 +225,10 @@ impl McpSession {
             tokio::spawn(log_stderr(name.to_string(), stderr));
         }
         let (Some(stdin), Some(stdout)) = (stdin, stdout) else {
-            return Err(McpError::Spawn {
-                server: name.to_string(),
-                source: io::Error::other("the server was started without its pipes"),
-            });
+            return Err(Unconnected::spawn(
+                name,
+                io::Error::other("the server was started without its pipes"),
+            ));
         };
 
         let transport =
@@ -229,9 +236,8 @@ impl McpSession {
         let client = Self::configuration()
             .serve(transport)
             .await
-            .map_err(|error| McpError::Handshake {
-                server: name.to_string(),
-                message: error.to_string(),
+            .map_err(|error| {
+                Unconnected::handshake(name, error.to_string(), Cause::initialize(&error))
             })?;
 
         Self::listed(name, &server, client, Some(process)).await
@@ -245,13 +251,12 @@ impl McpSession {
         server: &McpServer,
         client: Client,
         process: Option<ServerProcess>,
-    ) -> Result<Self, McpError> {
+    ) -> Result<Self, Unconnected> {
         let remote_tools = client
             .list_all_tools()
             .await
-            .map_err(|error| McpError::Handshake {
-                server: name.to_string(),
-                message: error.to_string(),
+            .map_err(|error| {
+                Unconnected::handshake(name, error.to_string(), Cause::service(&error))
             })?
             .into_iter()
             .filter(|tool| server.allows(&tool.name))
@@ -366,9 +371,13 @@ async fn log_stderr(server: String, mut stderr: ChildStderr) {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
+    use std::net::Ipv4Addr;
+    use std::os::unix::ffi::OsStringExt;
     use std::path::Path;
 
     use abnegate_exec::PROXY_URL_VARIABLE;
+    use tokio::net::TcpListener;
 
     use super::*;
     use crate::mcp::recorder::LIMIT;
@@ -413,7 +422,13 @@ mod tests {
             LIMIT,
         )
         .await;
-        assert!(matches!(result, Err(McpError::Handshake { .. })));
+        assert!(matches!(
+            result,
+            Err(Unconnected {
+                error: McpError::Handshake { .. },
+                ..
+            })
+        ));
         let output = std::fs::read_to_string(path).unwrap();
         for key in [
             "HTTP_PROXY",
@@ -454,7 +469,13 @@ mod tests {
         let result =
             McpSession::connect_with_timeout("directory", &server, &Proxy::default(), LIMIT).await;
 
-        assert!(matches!(result, Err(McpError::Handshake { .. })));
+        assert!(matches!(
+            result,
+            Err(Unconnected {
+                error: McpError::Handshake { .. },
+                ..
+            })
+        ));
         assert_eq!(
             std::fs::read_to_string(path).unwrap().trim_end(),
             start.path().canonicalize().unwrap().to_string_lossy()
@@ -474,8 +495,10 @@ mod tests {
         assert!(
             matches!(
                 &result,
-                Err(McpError::Spawn { server, source })
-                    if server == "remote" && source.kind() == io::ErrorKind::InvalidInput
+                Err(Unconnected {
+                    error: McpError::Spawn { server, source },
+                    ..
+                }) if server == "remote" && source.kind() == io::ErrorKind::InvalidInput
             ),
             "{:?}",
             result.err()
@@ -492,7 +515,13 @@ mod tests {
 
         let result =
             McpSession::connect_with_timeout("helper", &server, &Proxy::default(), LIMIT).await;
-        assert!(matches!(result, Err(McpError::Handshake { .. })));
+        assert!(matches!(
+            result,
+            Err(Unconnected {
+                error: McpError::Handshake { .. },
+                ..
+            })
+        ));
 
         let pid: i32 = std::fs::read_to_string(&pid_file)
             .expect("the server started its helper")
@@ -712,5 +741,136 @@ done"#;
             eventually(|| state(server).is_none()).await,
             "dropping the session never reaped the server"
         );
+    }
+
+    /// A stdio server that completes the handshake and then answers its
+    /// tool listing with a JSON-RPC error.
+    fn rejecting(path: &Path) -> McpServer {
+        const SCRIPT: &str = r#"while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"rejecting","version":"1"}}}\n' "$id" ;;
+    *'"method":"tools/list"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32601,"message":"no tools here"}}\n' "$id" ;;
+  esac
+done"#;
+        scripted(SCRIPT, path)
+    }
+
+    /// Why `result` is not a session.
+    fn cause(result: Result<McpSession, Unconnected>) -> Cause {
+        result.err().expect("the server is not connected").cause
+    }
+
+    #[tokio::test]
+    async fn a_command_server_that_does_not_connect_names_why() {
+        const BRIEF: Duration = Duration::from_millis(50);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("unused");
+        let cases = [
+            (
+                McpServer::remote("https://example.com/mcp"),
+                LIMIT,
+                McpFailure::Spawn,
+            ),
+            (
+                McpServer::command("/definitely/not/a/real/mcp-server", Vec::<String>::new()),
+                LIMIT,
+                McpFailure::Spawn,
+            ),
+            (recorder(":", &path), LIMIT, McpFailure::Closed),
+            (rejecting(&path), LIMIT, McpFailure::Rejected),
+            (
+                McpServer::command("/bin/sleep", ["60"]),
+                BRIEF,
+                McpFailure::Timeout,
+            ),
+        ];
+
+        for (server, limit, failure) in cases {
+            let result =
+                McpSession::connect_with_timeout("docs", &server, &Proxy::default(), limit).await;
+
+            assert_eq!(cause(result), Cause::of(failure), "{server:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_remote_server_refused_before_any_request_names_why() {
+        let cases = [
+            (
+                McpServer::remote("https://example.com/${TOKEN}"),
+                McpFailure::Unresolved,
+            ),
+            (
+                McpServer::remote("ftp://example.com/mcp"),
+                McpFailure::Address,
+            ),
+            (McpServer::remote("not a url"), McpFailure::Address),
+            (
+                McpServer::remote("http://169.254.169.254/mcp"),
+                McpFailure::Metadata,
+            ),
+            (
+                McpServer::remote("https://example.com/mcp").with_header("Accept", "text/html"),
+                McpFailure::Header,
+            ),
+        ];
+
+        for (server, failure) in cases {
+            let result =
+                McpSession::connect_remote("docs", &server, &Proxy::default(), LIMIT).await;
+
+            assert_eq!(cause(result), Cause::of(failure), "{server:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_proxy_that_is_not_a_url_leaves_no_client_to_connect_with() {
+        let proxy = Proxy::new(OsString::from_vec(vec![0xff]));
+
+        let result = McpSession::connect_remote(
+            "docs",
+            &McpServer::remote("https://example.com/mcp"),
+            &proxy,
+            LIMIT,
+        )
+        .await;
+
+        assert_eq!(cause(result), Cause::of(McpFailure::Client));
+    }
+
+    /// The transport hands the session its own typed error, which is where
+    /// the kind is read: nothing listens on port 1.
+    #[tokio::test]
+    async fn a_remote_server_that_refuses_its_connection_is_unreachable() {
+        let result = McpSession::connect_remote(
+            "docs",
+            &McpServer::remote("http://127.0.0.1:1/mcp"),
+            &Proxy::default(),
+            LIMIT,
+        )
+        .await;
+
+        assert_eq!(cause(result), Cause::of(McpFailure::Unreachable));
+    }
+
+    #[tokio::test]
+    async fn a_remote_server_that_never_answers_timed_out() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("a listener");
+        let url = format!("http://{}/mcp", listener.local_addr().expect("an address"));
+
+        let result = McpSession::connect_remote(
+            "docs",
+            &McpServer::remote(url),
+            &Proxy::default(),
+            Duration::from_millis(50),
+        )
+        .await;
+
+        assert_eq!(cause(result), Cause::of(McpFailure::Timeout));
     }
 }

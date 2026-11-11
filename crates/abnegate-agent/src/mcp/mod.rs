@@ -99,7 +99,9 @@
 //!
 //! [`ToolRegistry`]: crate::tool::ToolRegistry
 
+mod cause;
 mod error;
+mod failure;
 mod format;
 mod guidance;
 mod hub;
@@ -114,6 +116,7 @@ mod scrubber;
 mod server_process;
 mod session;
 mod tool;
+mod unconnected;
 
 pub use abnegate_agent_cli::AgentKind;
 pub use abnegate_agent_cli::mcp::DEFAULT_PREFIX;
@@ -123,6 +126,7 @@ pub use abnegate_agent_cli::mcp::McpEndpoint;
 pub use abnegate_agent_cli::mcp::McpServer;
 pub use abnegate_agent_cli::mcp::McpTransport;
 pub use error::McpError;
+pub use failure::McpFailure;
 pub use format::format_call_result;
 pub use guidance::Guidance;
 pub use guidance::guidance;

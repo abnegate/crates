@@ -11,11 +11,13 @@ use abnegate_exec::Proxy;
 use futures::future::join_all;
 
 use super::McpConfig;
+use super::McpFailure;
 use super::McpOutcome;
 use super::McpServer;
 use super::McpTransport;
 use super::name::cli_name;
 use super::session::McpSession;
+use super::unconnected::Unconnected;
 use crate::tool::Tool;
 
 /// Bound for `initialize` and `tools/list` so one silent child cannot stall
@@ -313,12 +315,16 @@ fn launchable(name: &str, server: &McpServer) -> Result<(), McpOutcome> {
         tracing::warn!(server = %name, "skipping an MCP server: {}", INVALID);
         return Err(McpOutcome::Failed {
             error: INVALID.to_string(),
+            failure: McpFailure::Invalid,
+            status: None,
         });
     }
     if matches!(server.transport, Some(McpTransport::Sse)) {
         tracing::warn!(server = %name, "skipping an MCP server: {}", SSE_UNSUPPORTED);
         return Err(McpOutcome::Failed {
             error: SSE_UNSUPPORTED.to_string(),
+            failure: McpFailure::Unsupported,
+            status: None,
         });
     }
     Ok(())
@@ -338,10 +344,12 @@ async fn start(
         Some(_) => McpSession::connect_with_timeout(name, &server, proxy, limit).await,
         None => McpSession::connect_remote(name, &server, proxy, limit).await,
     };
-    connected.map_err(|error| {
+    connected.map_err(|Unconnected { error, cause }| {
         tracing::warn!(error = %error, "MCP server unavailable");
         McpOutcome::Failed {
             error: error.to_string(),
+            failure: cause.failure,
+            status: cause.status,
         }
     })
 }
@@ -893,7 +901,7 @@ mod tests {
         assert!(
             matches!(
                 hub.outcome("missing"),
-                Some(McpOutcome::Failed { ref error })
+                Some(McpOutcome::Failed { ref error, .. })
                     if error.contains("failed to start MCP server 'missing'")
             ),
             "{:?}",
@@ -901,9 +909,11 @@ mod tests {
         );
     }
 
-    fn failed(error: &str) -> McpOutcome {
+    fn failed(error: &str, failure: McpFailure, status: Option<u16>) -> McpOutcome {
         McpOutcome::Failed {
             error: error.to_string(),
+            failure,
+            status,
         }
     }
 
@@ -942,11 +952,14 @@ mod tests {
         assert!(
             matches!(
                 &outcomes["remote"],
-                McpOutcome::Failed { error } if error.starts_with("MCP handshake failed for 'remote'")
+                McpOutcome::Failed { error, .. } if error.starts_with("MCP handshake failed for 'remote'")
             ),
             "a remote server that refuses its connection failed: {outcomes:?}"
         );
-        assert_eq!(outcomes["ambiguous"], failed(INVALID));
+        assert_eq!(
+            outcomes["ambiguous"],
+            failed(INVALID, McpFailure::Invalid, None)
+        );
         assert!(hub.is_empty());
     }
 
@@ -1646,7 +1659,7 @@ mod tests {
 
     fn failure(outcome: &McpOutcome) -> &str {
         match outcome {
-            McpOutcome::Failed { error } => error,
+            McpOutcome::Failed { error, .. } => error,
             other => panic!("expected a failure, got {other:?}"),
         }
     }
@@ -1725,7 +1738,9 @@ mod tests {
         assert_eq!(
             outcome,
             failed(
-                "MCP transport failed for 'docs': refusing a link-local or cloud metadata address"
+                "MCP transport failed for 'docs': refusing a link-local or cloud metadata address",
+                McpFailure::Metadata,
+                None
             ),
             "refused as a transport failure, before any client is built"
         );
@@ -1738,7 +1753,10 @@ mod tests {
 
         let (_, outcome) = reconnected(&reached(&server).with_transport(McpTransport::Sse)).await;
 
-        assert_eq!(outcome, failed(SSE_UNSUPPORTED));
+        assert_eq!(
+            outcome,
+            failed(SSE_UNSUPPORTED, McpFailure::Unsupported, None)
+        );
         assert!(requests(&server).await.is_empty(), "a request was sent");
     }
 
