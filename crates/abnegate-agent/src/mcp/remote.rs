@@ -119,9 +119,9 @@ impl Remote {
         post: impl Future<Output = Result<StreamableHttpPostResponse, Failure>> + Send,
     ) -> Result<StreamableHttpPostResponse, Failure> {
         let request = recorded.then(|| {
-            let request = Reading::locked(&self.reading).sent();
+            let mut reading = Reading::locked(&self.reading);
             Posted::default().write(&self.posted);
-            request
+            reading.sent()
         });
         let (result, answer) = answered(post).await;
         let Some(request) = request else {
