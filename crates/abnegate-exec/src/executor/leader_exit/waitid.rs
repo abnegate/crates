@@ -21,10 +21,12 @@ impl Probe {
     /// The status the child exited with, or `None` while it runs.
     pub(super) fn exit(&mut self) -> io::Result<Option<ExitStatus>> {
         if self.status.is_none() {
-            self.status = super::reported(waitid(
-                Id::Pid(self.pid),
-                WaitPidFlag::WEXITED | WaitPidFlag::WNOHANG | WaitPidFlag::WNOWAIT,
-            )?);
+            self.status = super::reported(super::uninterrupted(|| {
+                waitid(
+                    Id::Pid(self.pid),
+                    WaitPidFlag::WEXITED | WaitPidFlag::WNOHANG | WaitPidFlag::WNOWAIT,
+                )
+            })?);
         }
         Ok(self.status)
     }

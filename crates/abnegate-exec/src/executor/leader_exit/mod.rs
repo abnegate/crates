@@ -19,6 +19,7 @@ use std::os::unix::process::ExitStatusExt;
 use std::process::ExitStatus;
 use std::time::Duration;
 
+use nix::errno::Errno;
 #[cfg(any(target_os = "linux", target_os = "android", target_os = "freebsd"))]
 use nix::sys::wait::WaitStatus;
 use nix::unistd::Pid;
@@ -81,6 +82,18 @@ impl LeaderExit {
     }
 }
 
+/// What `call` returns once no signal interrupts it. A signal handled on
+/// the calling thread can interrupt even a check that never blocks, as macOS
+/// does a `kevent` with a zero timeout.
+fn uninterrupted<T>(mut call: impl FnMut() -> nix::Result<T>) -> nix::Result<T> {
+    loop {
+        match call() {
+            Err(Errno::EINTR) => {}
+            result => return result,
+        }
+    }
+}
+
 /// The exit `status` a `waitid` reported, or `None` while the child runs.
 #[cfg(any(target_os = "linux", target_os = "android", target_os = "freebsd"))]
 fn reported(status: WaitStatus) -> Option<ExitStatus> {
@@ -105,7 +118,13 @@ fn signalled(signal: i32, dumped: bool) -> ExitStatus {
 #[cfg(test)]
 mod tests {
     use std::process::Child;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
 
+    use nix::sys::pthread::pthread_kill;
+    use nix::sys::pthread::pthread_self;
     use nix::sys::signal::Signal as Kill;
     use nix::sys::signal::kill;
 
@@ -119,6 +138,10 @@ mod tests {
     /// How many short-lived children a race test watches, so at least one
     /// is caught part way through its exit.
     const ATTEMPTS: usize = 300;
+
+    /// How many signals a test lands on a thread that keeps checking on a
+    /// child, so at least one lands part way through a check.
+    const INTERRUPTIONS: usize = 20_000;
 
     fn pid(child: &Child) -> Pid {
         Pid::from_raw(i32::try_from(child.id()).unwrap())
@@ -217,6 +240,38 @@ mod tests {
             assert_eq!(status.ok().and_then(|status| status.code()), Some(3));
             assert_eq!(reaped.code(), Some(3));
         }
+    }
+
+    /// A loaded host's `SIGCHLD`s land on the thread checking on a child,
+    /// and each one handled part way through a check interrupts it.
+    #[tokio::test]
+    async fn a_check_a_signal_interrupts_is_repeated() {
+        let mut child = exits_on_close();
+        let mut probe = LeaderExit::watch(pid(&child)).unwrap().probe;
+        let checker = pthread_self();
+        let sent = Arc::new(AtomicUsize::new(0));
+        let finished = Arc::new(AtomicBool::new(false));
+        let interrupter = std::thread::spawn({
+            let sent = Arc::clone(&sent);
+            let finished = Arc::clone(&finished);
+            move || {
+                while !finished.load(Ordering::Relaxed) {
+                    pthread_kill(checker, Kill::SIGCHLD).expect("the checker is signalled");
+                    sent.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        });
+
+        let mut failed = None;
+        while failed.is_none() && sent.load(Ordering::Relaxed) < INTERRUPTIONS {
+            failed = probe.exit().err();
+        }
+
+        finished.store(true, Ordering::Relaxed);
+        interrupter.join().expect("the interrupter finishes");
+        drop(child.stdin.take());
+        assert_eq!(child.wait().expect("the child is reaped").code(), Some(3));
+        assert!(failed.is_none(), "a signal failed a check: {failed:?}");
     }
 
     #[tokio::test]

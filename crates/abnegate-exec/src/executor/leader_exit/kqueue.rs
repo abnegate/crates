@@ -38,7 +38,8 @@ impl Probe {
             0,
             0,
         );
-        let registered = match queue.kevent(&[registration], &mut [], None) {
+        let added = super::uninterrupted(|| queue.kevent(&[registration], &mut [], None));
+        let registered = match added {
             Ok(_) => true,
             Err(Errno::ESRCH) => false,
             Err(errno) => return Err(errno.into()),
@@ -73,7 +74,7 @@ impl Probe {
             0,
             0,
         )];
-        if self.queue.kevent(&[], &mut events, Some(IMMEDIATELY))? == 0 {
+        if super::uninterrupted(|| self.queue.kevent(&[], &mut events, Some(IMMEDIATELY)))? == 0 {
             return Ok(None);
         }
         let status = i32::try_from(events[0].data()).map_err(io::Error::other)?;
@@ -103,10 +104,12 @@ fn exiting(pid: Pid) -> io::Result<Option<ExitStatus>> {
     use nix::sys::wait::WaitPidFlag;
     use nix::sys::wait::waitid;
 
-    Ok(super::reported(waitid(
-        Id::Pid(pid),
-        WaitPidFlag::WEXITED | WaitPidFlag::WNOHANG | WaitPidFlag::WNOWAIT,
-    )?))
+    Ok(super::reported(super::uninterrupted(|| {
+        waitid(
+            Id::Pid(pid),
+            WaitPidFlag::WEXITED | WaitPidFlag::WNOHANG | WaitPidFlag::WNOWAIT,
+        )
+    })?))
 }
 
 /// The status of a child that is exiting, read without reaping it, or `None`
@@ -121,18 +124,17 @@ fn exiting(pid: Pid) -> io::Result<Option<ExitStatus>> {
     let id = libc::id_t::try_from(pid.as_raw()).map_err(io::Error::other)?;
     // SAFETY: siginfo_t holds only integers and a pointer, all valid zeroed.
     let mut information: libc::siginfo_t = unsafe { std::mem::zeroed() };
-    // SAFETY: `information` is valid for waitid to write one siginfo_t.
-    let result = unsafe {
-        libc::waitid(
-            libc::P_PID,
-            id,
-            &raw mut information,
-            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
-        )
-    };
-    if result == -1 {
-        return Err(io::Error::last_os_error());
-    }
+    super::uninterrupted(|| {
+        // SAFETY: `information` is valid for waitid to write one siginfo_t.
+        Errno::result(unsafe {
+            libc::waitid(
+                libc::P_PID,
+                id,
+                &raw mut information,
+                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            )
+        })
+    })?;
     Ok(match information.si_code {
         libc::CLD_EXITED => Some(super::exited(information.si_status)),
         libc::CLD_KILLED => Some(super::signalled(information.si_status, false)),
