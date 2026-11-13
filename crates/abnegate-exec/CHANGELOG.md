@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4](https://github.com/abnegate/crates/compare/abnegate-exec/v0.2.3...abnegate-exec/v0.2.4) - 2026-11-13
+
+### Added
+
+- *(exec)* start tool commands and jobs at a configured niceness ([#92](https://github.com/abnegate/crates/pull/92))
+
 ## [0.2.3](https://github.com/abnegate/crates/compare/abnegate-exec/v0.2.2...abnegate-exec/v0.2.3) - 2026-11-13
 
 ### Added
