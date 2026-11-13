@@ -1614,3 +1614,24 @@ async fn a_job_is_routed_through_its_context_proxy_or_else_the_environments() {
 
     Jobs::kill_session(session).await;
 }
+
+/// A background job ran at its host's priority, so a build or a test suite it
+/// started contended with the host's own work.
+#[tokio::test]
+async fn a_job_starts_at_the_contexts_niceness() {
+    let cwd = directory();
+    let session = task();
+    let context = context(session, cwd.path()).with_niceness(crate::tool::Niceness::LOWEST);
+    let started = Jobs::spawn(&JobCommand::shell("ps -o nice= -p $$"), &context)
+        .await
+        .expect("the job starts");
+
+    let status = settles(session, &started.id).await;
+    let tail = Jobs::read(session, &started.id, 0, 500)
+        .await
+        .expect("its own session reads it");
+    Jobs::kill_session(session).await;
+
+    assert_eq!(status, JobStatus::Exited(0), "{}", tail.output);
+    assert_eq!(tail.output.trim(), "19");
+}

@@ -115,6 +115,9 @@ impl CommandExecutor {
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .kill_on_drop(true);
+            if let Some(niceness) = self.config.niceness {
+                niceness.apply(process);
+            }
         };
 
         // A job that asked to be confined never runs unconfined: an unproven
@@ -396,6 +399,22 @@ mod tests {
                     .with_read_roots([root])
                     .with_write_roots([root]),
             )
+    }
+
+    /// The nice value a shell started from `executor` reports for itself.
+    async fn nice_value(executor: &CommandExecutor) -> String {
+        let run = run(executor, shell("nice", "ps -o nice= -p $$")).await;
+        assert_eq!(run.exit(), Some((Some(0), None)), "{:?}", run.stderr());
+        String::from_utf8(run.stdout()).unwrap().trim().to_string()
+    }
+
+    #[tokio::test]
+    async fn a_command_starts_at_the_configured_niceness() {
+        let executor = CommandExecutor::with_config(
+            ExecutorConfig::default().with_niceness(crate::Niceness::LOWEST),
+        );
+
+        assert_eq!(nice_value(&executor).await, "19");
     }
 
     fn environment_listing(environment: HashMap<String, String>) -> RunStart {

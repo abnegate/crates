@@ -3,6 +3,7 @@ use std::time::Duration;
 use crate::proxy::Proxy;
 
 use super::environment_policy::EnvironmentPolicy;
+use super::niceness::Niceness;
 
 /// How long a command may run when its `RunStart` sets no timeout: five
 /// minutes
@@ -50,6 +51,11 @@ pub struct ExecutorConfig {
     /// command reaches no network and never sees it. Defaults to
     /// [`Proxy::from_environment`], read when the config is built.
     pub proxy: Proxy,
+
+    /// The nice value every command starts at, and so the whole tree it
+    /// starts in turn. Nothing by default, which leaves each at the
+    /// executor's own priority.
+    pub niceness: Option<Niceness>,
 }
 
 impl Default for ExecutorConfig {
@@ -61,6 +67,7 @@ impl Default for ExecutorConfig {
             grace_period: GRACE_PERIOD,
             environment: EnvironmentPolicy::default(),
             proxy: Proxy::from_environment(),
+            niceness: None,
         }
     }
 }
@@ -109,6 +116,12 @@ impl ExecutorConfig {
         self.proxy = proxy;
         self
     }
+
+    /// Start every command, and everything it starts, at `niceness`.
+    pub fn with_niceness(mut self, niceness: Niceness) -> Self {
+        self.niceness = Some(niceness);
+        self
+    }
 }
 
 #[cfg(test)]
@@ -122,6 +135,7 @@ mod tests {
         assert_eq!(config.timeout, Duration::from_secs(300));
         assert_eq!(config.output_limit, DEFAULT_OUTPUT_LIMIT);
         assert_eq!(config.buffer_size, DEFAULT_BUFFER_SIZE);
+        assert_eq!(config.niceness, None);
     }
 
     #[test]
@@ -129,10 +143,12 @@ mod tests {
         let config = ExecutorConfig::new()
             .with_timeout(Duration::from_secs(60))
             .with_output_limit(1024)
-            .with_buffer_size(512);
+            .with_buffer_size(512)
+            .with_niceness(Niceness::LOWEST);
 
         assert_eq!(config.timeout, Duration::from_secs(60));
         assert_eq!(config.output_limit, 1024);
         assert_eq!(config.buffer_size, 512);
+        assert_eq!(config.niceness, Some(Niceness::LOWEST));
     }
 }
