@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use abnegate_exec::GroupRegistry;
+use abnegate_exec::Niceness;
 use abnegate_llm::Credential;
 use abnegate_llm::ProviderError;
 use abnegate_llm::ReasoningEffort;
@@ -608,6 +609,11 @@ pub struct CliSettings {
     /// Each run holds its own reference, so a registry outlives every run
     /// still registered in it however the host lets go of it.
     pub registry: Option<Arc<GroupRegistry>>,
+    /// The nice value the agent starts at, which every process it starts
+    /// inherits, so a host that shares its CPUs with its agents keeps its
+    /// own share of them however much the agents build and test. `None`
+    /// leaves the agent at the host's own.
+    pub niceness: Option<Niceness>,
 }
 
 impl Default for CliSettings {
@@ -646,6 +652,7 @@ impl Default for CliSettings {
             cleanup: Cleanup::default(),
             marker: None,
             registry: None,
+            niceness: None,
         }
     }
 }
@@ -654,6 +661,12 @@ impl CliSettings {
     /// Run `executable` instead of the agent's own command name.
     pub fn with_executable(mut self, executable: impl Into<PathBuf>) -> Self {
         self.executable = Some(executable.into());
+        self
+    }
+
+    /// Start the agent, and everything it starts, at `niceness`.
+    pub fn with_niceness(mut self, niceness: Niceness) -> Self {
+        self.niceness = Some(niceness);
         self
     }
 
@@ -1240,6 +1253,7 @@ mod tests {
     use std::time::Duration;
 
     use abnegate_exec::GroupRegistry;
+    use abnegate_exec::Niceness;
     use abnegate_llm::Credential;
     use abnegate_llm::ProviderError;
     use abnegate_llm::ReasoningEffort;
@@ -1260,6 +1274,13 @@ mod tests {
     use crate::session::Session;
 
     #[test]
+    fn with_niceness_sets_the_agents_nice_value() {
+        let settings = CliSettings::default().with_niceness(Niceness::LOWEST);
+
+        assert_eq!(settings.niceness, Some(Niceness::LOWEST));
+    }
+
+    #[test]
     fn defaults_inherit_the_hosts_session_and_directory() {
         let settings = CliSettings::default();
 
@@ -1275,6 +1296,7 @@ mod tests {
         assert!(!settings.refuse_credentials);
         assert!(settings.arguments.is_empty());
         assert!(settings.session.is_none());
+        assert!(settings.niceness.is_none());
         assert!(settings.sandbox.is_none());
         assert!(settings.effort.is_none());
         assert!(settings.schema.is_none());
