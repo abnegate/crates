@@ -1,3 +1,5 @@
+use crate::pull_request::MakeLatest;
+
 /// A release to create: the tag it is published under and what it says.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -16,12 +18,15 @@ pub struct ReleaseRequest {
     pub draft: bool,
     /// Whether it is marked as not ready for production.
     pub prerelease: bool,
+    /// Whether it is marked as the repository's latest release, or `None`
+    /// for GitHub's own default.
+    pub make_latest: Option<MakeLatest>,
 }
 
 impl ReleaseRequest {
     /// A published release under `tag`, from the default branch if the tag
-    /// does not exist yet, untitled, with no notes, and no prerelease, until
-    /// the `with_*` methods say otherwise.
+    /// does not exist yet, untitled, with no notes, no prerelease, and marked
+    /// latest as GitHub decides, until the `with_*` methods say otherwise.
     pub fn new(tag: impl Into<String>) -> Self {
         Self {
             tag: tag.into(),
@@ -30,6 +35,7 @@ impl ReleaseRequest {
             body: None,
             draft: false,
             prerelease: false,
+            make_latest: None,
         }
     }
 
@@ -68,6 +74,13 @@ impl ReleaseRequest {
         self.prerelease = prerelease;
         self
     }
+
+    /// Whether to mark it as the repository's latest release.
+    #[must_use]
+    pub fn with_make_latest(mut self, make_latest: MakeLatest) -> Self {
+        self.make_latest = Some(make_latest);
+        self
+    }
 }
 
 #[cfg(test)]
@@ -84,6 +97,7 @@ mod tests {
         assert_eq!(request.body, None);
         assert!(!request.draft);
         assert!(!request.prerelease);
+        assert_eq!(request.make_latest, None);
     }
 
     #[test]
@@ -93,7 +107,8 @@ mod tests {
             .with_name("Version 1.2")
             .with_body("Adds basket totals.")
             .with_draft(true)
-            .with_prerelease(true);
+            .with_prerelease(true)
+            .with_make_latest(MakeLatest::False);
 
         assert_eq!(
             built,
@@ -103,6 +118,7 @@ mod tests {
                 body: Some("Adds basket totals.".to_string()),
                 draft: true,
                 prerelease: true,
+                make_latest: Some(MakeLatest::False),
                 ..ReleaseRequest::new("v1.2.0")
             }
         );

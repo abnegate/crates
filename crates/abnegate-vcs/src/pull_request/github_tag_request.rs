@@ -1,4 +1,6 @@
+use crate::pull_request::TagRequest;
 use crate::pull_request::github_tagger::GitHubTagger;
+use crate::tag_name::TagName;
 use serde::Serialize;
 
 /// The kind of object an annotated tag this crate creates points at.
@@ -16,20 +18,15 @@ pub(super) struct GitHubTagRequest<'a> {
 }
 
 impl<'a> GitHubTagRequest<'a> {
-    /// The tag `tag` on the commit `object`, carrying `message`, signed by
-    /// `tagger`.
-    pub(super) fn on_commit(
-        tag: &'a str,
-        message: &'a str,
-        object: &'a str,
-        tagger: GitHubTagger<'a>,
-    ) -> Self {
+    /// The tag `request` describes, named `tag`, the name it gives once held
+    /// to git's rules, on its commit.
+    pub(super) fn under(tag: &'a TagName, request: &'a TagRequest) -> Self {
         Self {
-            tag,
-            message,
-            object,
+            tag: tag.as_str(),
+            message: &request.message,
+            object: request.commit.as_str(),
             kind: COMMIT,
-            tagger,
+            tagger: GitHubTagger::from(&request.tagger),
         }
     }
 }

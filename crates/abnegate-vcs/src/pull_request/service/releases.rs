@@ -11,6 +11,10 @@ use crate::pull_request::github_release_request::GitHubReleaseRequest;
 use crate::pull_request::github_release_update::GitHubReleaseUpdate;
 use crate::tag_name::TagName;
 
+/// The code GitHub gives the detail of a refusal to create a release under a
+/// tag that already has one.
+const RELEASE_EXISTS: &str = "already_exists";
+
 impl PullRequestService {
     /// Page `page` of `repository`'s releases, most recently published first,
     /// at `per_page` rows a page up to GitHub's hundred.
@@ -38,10 +42,12 @@ impl PullRequestService {
     /// The release published under `tag`.
     ///
     /// The tag is held to git's own rules for a tag name, so `pkg/v1.2.3`,
-    /// `v1.0.0+build` and `+v1` are tags, and it travels as one path segment,
-    /// so a `/` in it is sent as `%2F`. A tag git refuses, such as one that
-    /// is empty, holds `..` or an ASCII control character, or is led by `-`,
-    /// is [`PullRequestError::Parse`] with
+    /// `v1.0.0+build` and `+v1` are tags, and each of its `/`-separated
+    /// components travels as its own path segment, so `pkg/v1.2.3` is asked
+    /// for as `releases/tags/pkg/v1.2.3`, as [`Self::fetch_tag_reference`]
+    /// asks for a tag. A tag git refuses, such as one that is empty, holds
+    /// `..` or an ASCII control character, or is led by `-`, is
+    /// [`PullRequestError::Parse`] with
     /// [`ParseError::Tag`](crate::ParseError::Tag), and nothing is sent. A
     /// tag with no release published under it is
     /// [`PullRequestError::NotFound`].
@@ -52,12 +58,13 @@ impl PullRequestService {
         tag: &str,
     ) -> PullRequestResult<Release> {
         let tag = TagName::parse(tag)?;
+        let segments: Vec<&str> = ["releases", "tags"]
+            .into_iter()
+            .chain(tag.components())
+            .collect();
 
         let release: GitHubRelease = self
-            .get(
-                self.repository_endpoint(repository, &["releases", "tags", tag.as_str()])?,
-                token,
-            )
+            .get(self.repository_endpoint(repository, &segments)?, token)
             .await?;
         Ok(Release::from(release))
     }
@@ -87,7 +94,8 @@ impl PullRequestService {
     /// names, from the pull requests merged since the previous release.
     ///
     /// Nothing is created: the tag need not exist yet, and GitHub reads
-    /// [`NotesRequest::target`] for where it would be created from. The tag
+    /// [`NotesRequest::target`], or the default branch when it is `None`, for
+    /// where it would be created from. The tag
     /// and any previous tag are held to git's own rules for a tag name, and
     /// one git refuses is [`PullRequestError::Parse`] with
     /// [`ParseError::Tag`](crate::ParseError::Tag), and nothing is sent.
@@ -106,7 +114,7 @@ impl PullRequestService {
         let url = self.repository_endpoint(repository, &["releases", "generate-notes"])?;
         let body = GitHubNotesRequest {
             tag_name: tag.as_str(),
-            target_commitish: &request.target,
+            target_commitish: request.target.as_deref(),
             previous_tag_name: previous.as_ref().map(TagName::as_str),
         };
 
@@ -123,22 +131,33 @@ impl PullRequestService {
     /// own rules for a tag name, and one git refuses is
     /// [`PullRequestError::Parse`] with
     /// [`ParseError::Tag`](crate::ParseError::Tag), and nothing is sent. A tag
-    /// that already has a release is [`PullRequestError::Refused`] with
-    /// GitHub's 422.
+    /// that already has a release, which GitHub refuses with a 422 whose
+    /// detail is coded `already_exists`, is
+    /// [`PullRequestError::ReleaseExists`], naming the tag.
     pub async fn create_release(
         &self,
         repository: &Repository,
         token: &SecretValue,
         request: &ReleaseRequest,
     ) -> PullRequestResult<Release> {
-        TagName::parse(&request.tag)?;
+        let tag = TagName::parse(&request.tag)?;
         let url = self.repository_endpoint(repository, &["releases"])?;
-        let body = GitHubReleaseRequest::from(request);
+        let body = GitHubReleaseRequest::under(&tag, request);
 
-        let release: GitHubRelease = self
-            .exchange(self.request(Method::POST, url, token, ACCEPT)?.json(&body))
+        let response = self
+            .sent(self.request(Method::POST, url, token, ACCEPT)?.json(&body))
             .await?;
-        Ok(Release::from(release))
+
+        let status = response.status();
+        if status.is_success() {
+            let release: GitHubRelease = decode(response).await?;
+            return Ok(Release::from(release));
+        }
+        let refusal = explained(response).await?;
+        if status == StatusCode::UNPROCESSABLE_ENTITY && refusal.has_code(RELEASE_EXISTS) {
+            return Err(PullRequestError::ReleaseExists(tag.as_str().to_string()));
+        }
+        Err(unexpected(status, &refusal))
     }
 
     /// Publish the draft release GitHub identifies by `id`, and the release
@@ -170,6 +189,7 @@ impl PullRequestService {
 mod tests {
     use super::*;
     use crate::parse_error::ParseError;
+    use crate::pull_request::MakeLatest;
     use crate::pull_request::service::fixtures::enterprise;
     use crate::pull_request::service::fixtures::project;
     use crate::pull_request::service::fixtures::query_is;
@@ -370,9 +390,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_tag_git_accepts_is_sent_as_one_segment() {
+    async fn a_tag_git_accepts_is_sent_one_path_segment_per_component() {
         for (tag, sent) in [
-            ("pkg/v1.2.3", "pkg%2Fv1.2.3"),
+            ("pkg/v1.2.3", "pkg/v1.2.3"),
+            ("team/pkg/v2", "team/pkg/v2"),
             ("v1.0.0+build", "v1.0.0+build"),
             ("+v1", "+v1"),
             ("@", "@"),
@@ -388,6 +409,12 @@ mod tests {
                 .await;
 
             assert_eq!(fetch(&server, tag).await.unwrap(), release, "{tag}");
+            let requests = server.received_requests().await.unwrap();
+            assert_eq!(
+                requests[0].url.path(),
+                format!("{RELEASES}/tags/{sent}"),
+                "{tag} is never sent with its slash encoded"
+            );
         }
     }
 
@@ -558,7 +585,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn notes_are_written_since_the_release_github_chooses() {
+    async fn notes_are_written_sending_only_the_tag_when_nothing_else_was_set() {
+        let server = MockServer::start().await;
+        writing_notes(&server, NOTES.to_string(), json!({ "tag_name": "v1.2.0" })).await;
+        let service = stand_in(&server).await;
+
+        let notes = notes_for(&service, &NotesRequest::new("v1.2.0"))
+            .await
+            .unwrap();
+
+        assert_eq!(notes, written_notes());
+    }
+
+    #[tokio::test]
+    async fn notes_are_written_from_the_target_asked_for() {
         let server = MockServer::start().await;
         writing_notes(
             &server,
@@ -568,7 +608,7 @@ mod tests {
         .await;
         let service = stand_in(&server).await;
 
-        let notes = notes_for(&service, &NotesRequest::new("v1.2.0", "main"))
+        let notes = notes_for(&service, &NotesRequest::new("v1.2.0").with_target("main"))
             .await
             .unwrap();
 
@@ -589,7 +629,9 @@ mod tests {
         )
         .await;
         let service = stand_in(&server).await;
-        let request = NotesRequest::new("pkg/v1.2.0", "main").with_previous_tag("pkg/v1.1.0");
+        let request = NotesRequest::new("pkg/v1.2.0")
+            .with_target("main")
+            .with_previous_tag("pkg/v1.1.0");
 
         let notes = notes_for(&service, &request).await.unwrap();
 
@@ -599,8 +641,8 @@ mod tests {
     #[tokio::test]
     async fn notes_for_a_tag_git_refuses_are_never_asked_for() {
         for request in [
-            NotesRequest::new("v1..2", "main"),
-            NotesRequest::new("v1.2.0", "main").with_previous_tag("-v1"),
+            NotesRequest::new("v1..2"),
+            NotesRequest::new("v1.2.0").with_previous_tag("-v1"),
         ] {
             let server = MockServer::start().await;
             untouched(&server).await;
@@ -628,9 +670,12 @@ mod tests {
         .await;
         let service = stand_in(&server).await;
 
-        let failure = notes_for(&service, &NotesRequest::new("v1.2.0", "nowhere"))
-            .await
-            .unwrap_err();
+        let failure = notes_for(
+            &service,
+            &NotesRequest::new("v1.2.0").with_target("nowhere"),
+        )
+        .await
+        .unwrap_err();
 
         assert!(
             matches!(failure, PullRequestError::Refused { status: 422, ref message } if message == "Validation Failed; target_commitish is invalid"),
@@ -649,7 +694,7 @@ mod tests {
         .await;
         let service = enterprise(&server).await;
 
-        let notes = notes_for(&service, &NotesRequest::new("v1.2.0", "main"))
+        let notes = notes_for(&service, &NotesRequest::new("v1.2.0").with_target("main"))
             .await
             .unwrap();
 
@@ -734,7 +779,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_release_for_a_tag_that_already_has_one_is_refused_with_its_words() {
+    async fn a_release_for_a_tag_that_already_has_one_is_reported_as_existing() {
         let server = MockServer::start().await;
         answering(
             &server,
@@ -749,14 +794,83 @@ mod tests {
         .await;
         let service = stand_in(&server).await;
 
+        let failure = create(&service, &ReleaseRequest::new("pkg/v1.2.0"))
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(failure, PullRequestError::ReleaseExists(ref tag) if tag == "pkg/v1.2.0"),
+            "{failure:?}"
+        );
+        assert_eq!(
+            failure.to_string(),
+            "A release under the tag pkg/v1.2.0 already exists"
+        );
+    }
+
+    #[tokio::test]
+    async fn another_release_github_will_not_create_is_refused_with_its_words() {
+        let server = MockServer::start().await;
+        answering(
+            &server,
+            "POST",
+            RELEASES.to_string(),
+            422,
+            json!({
+                "message": "Validation Failed",
+                "errors": [{
+                    "resource": "Release",
+                    "code": "invalid",
+                    "field": "target_commitish",
+                    "message": "already_exists is not a branch",
+                }],
+            }),
+        )
+        .await;
+        let service = stand_in(&server).await;
+
         let failure = create(&service, &ReleaseRequest::new("v1.2.0"))
             .await
             .unwrap_err();
 
         assert!(
-            matches!(failure, PullRequestError::Refused { status: 422, .. }),
+            matches!(failure, PullRequestError::Refused { status: 422, ref message } if message == "Validation Failed; already_exists is not a branch"),
             "{failure:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_release_is_created_marked_latest_as_asked() {
+        for (choice, word) in [
+            (MakeLatest::True, "true"),
+            (MakeLatest::False, "false"),
+            (MakeLatest::Legacy, "legacy"),
+        ] {
+            let server = MockServer::start().await;
+            let made = linked(94, "v1.2.0");
+            creating(
+                &server,
+                RELEASES.to_string(),
+                json!({
+                    "tag_name": "v1.2.0",
+                    "draft": false,
+                    "prerelease": false,
+                    "make_latest": word,
+                }),
+                &made,
+            )
+            .await;
+            let service = stand_in(&server).await;
+
+            let created = create(
+                &service,
+                &ReleaseRequest::new("v1.2.0").with_make_latest(choice),
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(created, made, "{word}");
+        }
     }
 
     #[tokio::test]
@@ -867,7 +981,7 @@ mod tests {
                 .await
                 .unwrap_err(),
             service
-                .generate_release_notes(&repository, &empty, &NotesRequest::new("v1.2.0", "main"))
+                .generate_release_notes(&repository, &empty, &NotesRequest::new("v1.2.0"))
                 .await
                 .unwrap_err(),
         ];

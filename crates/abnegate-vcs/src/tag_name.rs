@@ -48,6 +48,13 @@ impl TagName {
     pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// The name's `/`-separated components, none of them empty, `.` or `..`,
+    /// as git's rules for a tag name hold them.
+    #[cfg(feature = "github")]
+    pub(crate) fn components(&self) -> impl Iterator<Item = &str> {
+        self.0.split('/')
+    }
 }
 
 #[cfg(test)]

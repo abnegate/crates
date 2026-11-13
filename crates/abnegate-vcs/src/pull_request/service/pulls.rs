@@ -251,7 +251,7 @@ fn listed(repository: &Repository, pull: GitHubListedPull) -> PullRequestResult<
         base: BranchName::parse(&pull.base.reference)?,
         head_sha: pull.head.sha.as_deref().map(CommitSha::parse).transpose()?,
         updated_at: pull.updated_at,
-        author: pull.user.and_then(|user| user.login),
+        author_login: pull.user.and_then(|user| user.login),
     })
 }
 
@@ -288,7 +288,7 @@ fn detail(pull: GitHubPull) -> PullRequestResult<PullRequestDetail> {
         commits: pull.commits,
         url: pull.html_url,
         updated_at: pull.updated_at,
-        author: pull.user.and_then(|user| user.login),
+        author_login: pull.user.and_then(|user| user.login),
     })
 }
 
@@ -408,7 +408,7 @@ mod tests {
                 commits: 2,
                 url: "https://github.com/acme/project/pull/7".to_string(),
                 updated_at: Some(UPDATED.to_string()),
-                author: Some("octocat".to_string()),
+                author_login: Some("octocat".to_string()),
             }
         );
     }
@@ -478,7 +478,7 @@ mod tests {
             (0, 0, 0, 0)
         );
         assert_eq!(pull.updated_at, None);
-        assert_eq!(pull.author, None);
+        assert_eq!(pull.author_login, None);
         assert_eq!(pull.head_sha, commit('a'));
     }
 
@@ -1180,7 +1180,7 @@ mod tests {
                 .with_draft(true)
                 .with_head_sha(commit('a'))
                 .with_updated_at(UPDATED)
-                .with_author("octocat")
+                .with_author_login("octocat")
             ]
         );
     }
@@ -1200,8 +1200,11 @@ mod tests {
 
         let listed = list(&server, StateFilter::Open, 1, 10).await.unwrap();
 
-        let authors: Vec<Option<String>> =
-            listed.items.into_iter().map(|pull| pull.author).collect();
+        let authors: Vec<Option<String>> = listed
+            .items
+            .into_iter()
+            .map(|pull| pull.author_login)
+            .collect();
         assert_eq!(authors, [None, None, None]);
     }
 

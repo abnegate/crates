@@ -52,7 +52,7 @@ pub struct PullRequestDetail {
     pub updated_at: Option<String>,
     /// The login of the account that opened it, or `None` when GitHub does
     /// not say, as for an account since deleted.
-    pub author: Option<String>,
+    pub author_login: Option<String>,
 }
 
 impl PullRequestDetail {
@@ -93,7 +93,7 @@ impl PullRequestDetail {
             commits: 0,
             url: url.into(),
             updated_at: None,
-            author: None,
+            author_login: None,
         }
     }
 
@@ -184,8 +184,8 @@ impl PullRequestDetail {
 
     /// The login of the account that opened it.
     #[must_use]
-    pub fn with_author(mut self, author: impl Into<String>) -> Self {
-        self.author = Some(author.into());
+    pub fn with_author_login(mut self, author_login: impl Into<String>) -> Self {
+        self.author_login = Some(author_login.into());
         self
     }
 }
@@ -234,7 +234,7 @@ mod tests {
                 commits: 0,
                 url: "https://github.com/acme/project/pull/7".to_string(),
                 updated_at: None,
-                author: None,
+                author_login: None,
             }
         );
     }
@@ -254,7 +254,7 @@ mod tests {
             .with_deletions(14)
             .with_commits(2)
             .with_updated_at("2026-11-06T09:30:00Z")
-            .with_author("octocat");
+            .with_author_login("octocat");
 
         assert_eq!(
             built,
@@ -271,7 +271,7 @@ mod tests {
                 deletions: 14,
                 commits: 2,
                 updated_at: Some("2026-11-06T09:30:00Z".to_string()),
-                author: Some("octocat".to_string()),
+                author_login: Some("octocat".to_string()),
                 ..opened()
             }
         );

@@ -1,5 +1,5 @@
 use crate::commit_sha::CommitSha;
-use crate::pull_request::Commit;
+use crate::pull_request::PullRequestCommit;
 use crate::pull_request::PullRequestResult;
 use crate::pull_request::github_commit_detail::GitHubCommitDetail;
 use crate::pull_request::github_user::GitHubUser;
@@ -23,9 +23,9 @@ pub(super) struct GitHubListedCommit {
 impl GitHubListedCommit {
     /// The commit this row describes; an identifier this crate does not
     /// accept is [`crate::pull_request::PullRequestError::Parse`].
-    pub(super) fn commit(self) -> PullRequestResult<Commit> {
+    pub(super) fn commit(self) -> PullRequestResult<PullRequestCommit> {
         let signature = self.commit.author;
-        Ok(Commit {
+        Ok(PullRequestCommit {
             sha: CommitSha::parse(&self.sha)?,
             message: self.commit.message,
             author_name: signature.as_ref().and_then(|author| author.name.clone()),

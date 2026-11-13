@@ -120,6 +120,11 @@ pub enum PullRequestError {
     #[error("A reference named {0} already exists")]
     ReferenceExists(String),
 
+    /// A release under the tag asked for already exists; the tag is one this
+    /// crate accepted as a tag name.
+    #[error("A release under the tag {0} already exists")]
+    ReleaseExists(String),
+
     /// GitHub will not merge the pull request as it stands, for the reason
     /// given.
     #[error("The pull request cannot be merged: {0}")]

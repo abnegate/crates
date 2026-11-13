@@ -4,7 +4,7 @@ use crate::commit_sha::CommitSha;
 /// wrote it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct Commit {
+pub struct PullRequestCommit {
     /// The commit's full identifier.
     pub sha: CommitSha,
     /// Its whole message, subject and body.
@@ -22,7 +22,7 @@ pub struct Commit {
     pub url: String,
 }
 
-impl Commit {
+impl PullRequestCommit {
     /// The commit `sha`, whose message is `message`, readable at `url`.
     ///
     /// Its author's name, login and time are unknown until the `with_*`
@@ -64,8 +64,8 @@ impl Commit {
 mod tests {
     use super::*;
 
-    fn written() -> Commit {
-        Commit::new(
+    fn written() -> PullRequestCommit {
+        PullRequestCommit::new(
             CommitSha::parse(&"a".repeat(40)).unwrap(),
             "feat: basket totals",
             "https://github.com/acme/project/commit/aaaa",
@@ -92,7 +92,7 @@ mod tests {
 
         assert_eq!(
             built,
-            Commit {
+            PullRequestCommit {
                 author_name: Some("Mona Lisa".to_string()),
                 author_login: Some("octocat".to_string()),
                 authored_at: Some("2026-11-06T09:30:00Z".to_string()),

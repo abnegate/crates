@@ -169,9 +169,6 @@ pub use crate::pull_request::ChecksOutcome;
 pub use crate::pull_request::Collected;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
-pub use crate::pull_request::Commit;
-#[cfg(feature = "github")]
-#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::CommitStatus;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
@@ -215,6 +212,9 @@ pub use crate::pull_request::GitHubBranch;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::GitHubPullRequest;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::GitReference;
 #[cfg(feature = "github-app")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]
 pub use crate::pull_request::Installation;
@@ -259,6 +259,9 @@ pub use crate::pull_request::Label;
 pub use crate::pull_request::ListedPullRequest;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::MakeLatest;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::MergeMethod;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
@@ -277,10 +280,16 @@ pub use crate::pull_request::MergedPullRequest;
 pub use crate::pull_request::NotesRequest;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::ObjectKind;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::Page;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::PullRequestAutomation;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::PullRequestCommit;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::PullRequestDetail;

@@ -32,7 +32,7 @@ pub struct ListedPullRequest {
     pub updated_at: Option<String>,
     /// The login of the account that opened it, or `None` when GitHub does
     /// not say, as for an account since deleted.
-    pub author: Option<String>,
+    pub author_login: Option<String>,
 }
 
 impl ListedPullRequest {
@@ -60,7 +60,7 @@ impl ListedPullRequest {
             base,
             head_sha: None,
             updated_at: None,
-            author: None,
+            author_login: None,
         }
     }
 
@@ -101,8 +101,8 @@ impl ListedPullRequest {
 
     /// The login of the account that opened it.
     #[must_use]
-    pub fn with_author(mut self, author: impl Into<String>) -> Self {
-        self.author = Some(author.into());
+    pub fn with_author_login(mut self, author_login: impl Into<String>) -> Self {
+        self.author_login = Some(author_login.into());
         self
     }
 }
@@ -143,7 +143,7 @@ mod tests {
         assert!(!built.draft);
         assert_eq!(built.head_sha, None);
         assert_eq!(built.updated_at, None);
-        assert_eq!(built.author, None);
+        assert_eq!(built.author_login, None);
     }
 
     #[test]
@@ -154,7 +154,7 @@ mod tests {
             .with_draft(true)
             .with_head_sha(commit())
             .with_updated_at("2026-11-06T09:30:00Z")
-            .with_author("octocat");
+            .with_author_login("octocat");
 
         assert_eq!(
             built,
@@ -164,7 +164,7 @@ mod tests {
                 draft: true,
                 head_sha: Some(commit()),
                 updated_at: Some("2026-11-06T09:30:00Z".to_string()),
-                author: Some("octocat".to_string()),
+                author_login: Some("octocat".to_string()),
                 ..listed()
             }
         );

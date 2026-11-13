@@ -2,9 +2,9 @@ use super::contents::DIFF;
 use super::contents::excerpt;
 use super::*;
 use crate::commit_sha::CommitSha;
-use crate::pull_request::Commit;
 use crate::pull_request::Excerpt;
 use crate::pull_request::Page;
+use crate::pull_request::PullRequestCommit;
 use crate::pull_request::github_listed_commit::GitHubListedCommit;
 
 impl PullRequestService {
@@ -16,14 +16,14 @@ impl PullRequestService {
     /// identifier, link or message is [`PullRequestError::GitHubApi`], and one
     /// whose identifier is not a full commit is [`PullRequestError::Parse`],
     /// never a page without it. A commit whose author no GitHub account
-    /// claims is listed with no [`Commit::author_login`].
+    /// claims is listed with no [`PullRequestCommit::author_login`].
     pub async fn list_commits(
         &self,
         reference: &PullRequestReference,
         token: &SecretValue,
         page: NonZeroU32,
         per_page: NonZeroU8,
-    ) -> PullRequestResult<Page<Commit>> {
+    ) -> PullRequestResult<Page<PullRequestCommit>> {
         let asked = asked(per_page);
         let number = reference.number().to_string();
         let url =
@@ -34,12 +34,12 @@ impl PullRequestService {
         let commits = rows
             .into_iter()
             .map(GitHubListedCommit::commit)
-            .collect::<PullRequestResult<Vec<Commit>>>()?;
+            .collect::<PullRequestResult<Vec<PullRequestCommit>>>()?;
         Ok(Page::after(commits, page, read, asked))
     }
 
-    /// The start of one commit's unified diff against its first parent, read
-    /// no further than `limit` bytes.
+    /// The start of one commit's unified diff, as GitHub writes it, read no
+    /// further than `limit` bytes.
     ///
     /// The excerpt is never longer than `limit` bytes, never ends inside a
     /// character, and says whether the diff went on past what it holds. A
@@ -114,8 +114,8 @@ mod tests {
         })
     }
 
-    fn written(digit: char) -> Commit {
-        Commit::new(
+    fn written(digit: char) -> PullRequestCommit {
+        PullRequestCommit::new(
             commit(digit),
             format!("feat: change {digit}\n\nWhy it changed."),
             link(digit),
@@ -137,7 +137,10 @@ mod tests {
             .await;
     }
 
-    async fn list(service: &PullRequestService, per_page: u8) -> PullRequestResult<Page<Commit>> {
+    async fn list(
+        service: &PullRequestService,
+        per_page: u8,
+    ) -> PullRequestResult<Page<PullRequestCommit>> {
         service
             .list_commits(&seven(service), &token(), page(2), rows(per_page))
             .await
@@ -182,8 +185,9 @@ mod tests {
 
         let mut anonymous = written('a');
         anonymous.author_login = None;
-        let undated = Commit::new(commit('b'), "feat: change b\n\nWhy it changed.", link('b'))
-            .with_author_login("octocat");
+        let undated =
+            PullRequestCommit::new(commit('b'), "feat: change b\n\nWhy it changed.", link('b'))
+                .with_author_login("octocat");
         assert_eq!(listed.items, [anonymous, undated]);
     }
 

@@ -1,18 +1,22 @@
 use super::*;
 use crate::object_id::ObjectId;
 use crate::parse_error::ParseError;
+use crate::pull_request::GitReference;
 use crate::pull_request::Page;
 use crate::pull_request::Tag;
 use crate::pull_request::TagRequest;
 use crate::pull_request::github_object::GitHubObject;
+use crate::pull_request::github_reference::GitHubReference;
 use crate::pull_request::github_reference_request::GitHubReferenceRequest;
 use crate::pull_request::github_tag::GitHubTag;
 use crate::pull_request::github_tag_request::GitHubTagRequest;
-use crate::pull_request::github_tagger::GitHubTagger;
 use crate::tag_name::TagName;
 
 /// What every full git reference name starts with.
 const REFERENCES: &str = "refs/";
+
+/// What every full tag reference name starts with.
+const TAG_REFERENCES: &str = "refs/tags/";
 
 /// What separates the components of a git reference name.
 const COMPONENT: char = '/';
@@ -46,26 +50,30 @@ impl PullRequestService {
         Ok(Page::after(tags, page, read, asked))
     }
 
-    /// Whether `repository` holds the tag `tag`, exactly as named.
+    /// The reference `repository` holds for the tag `tag`, exactly as named,
+    /// or `None` when it holds none.
     ///
-    /// The tag is held to git's own rules for a tag name, and one git refuses
-    /// is [`PullRequestError::Parse`] with
+    /// The reference points at the tag's annotated tag object, or at the
+    /// commit itself when the tag is lightweight, as [`GitReference::kind`]
+    /// says. The tag is held to git's own rules for a tag name, and one git
+    /// refuses is [`PullRequestError::Parse`] with
     /// [`ParseError::Tag`](crate::ParseError::Tag), and nothing is sent. Each
     /// of its `/`-separated components travels as its own path segment, so
     /// `pkg/v1.2.3` is asked for as `git/ref/tags/pkg/v1.2.3`, as GitHub's
     /// references API reads it. GitHub answers a tag it does not hold with a
     /// 404, and a repository the token cannot see with the same 404, so both
-    /// read as `false`.
-    pub async fn tag_exists(
+    /// read as `None`. An answer that names the object by anything but a full
+    /// object name is [`PullRequestError::Parse`].
+    pub async fn fetch_tag_reference(
         &self,
         repository: &Repository,
         token: &SecretValue,
         tag: &str,
-    ) -> PullRequestResult<bool> {
+    ) -> PullRequestResult<Option<GitReference>> {
         let tag = TagName::parse(tag)?;
         let segments: Vec<&str> = ["git", "ref", "tags"]
             .into_iter()
-            .chain(tag.as_str().split(COMPONENT))
+            .chain(tag.components())
             .collect();
         let url = self.repository_endpoint(repository, &segments)?;
 
@@ -73,19 +81,37 @@ impl PullRequestService {
             .sent(self.request(Method::GET, url, token, ACCEPT)?)
             .await?;
         match response.status() {
-            status if status.is_success() => Ok(true),
-            StatusCode::NOT_FOUND => Ok(false),
+            status if status.is_success() => {
+                let reference: GitHubReference = decode(response).await?;
+                reference.reference().map(Some)
+            }
+            StatusCode::NOT_FOUND => Ok(None),
             _ => Err(refusal(response).await),
         }
+    }
+
+    /// Whether `repository` holds the tag `tag`, exactly as named: whether
+    /// [`Self::fetch_tag_reference`] finds a reference for it, held to the
+    /// same rules and answered the same way.
+    pub async fn tag_exists(
+        &self,
+        repository: &Repository,
+        token: &SecretValue,
+        tag: &str,
+    ) -> PullRequestResult<bool> {
+        Ok(self
+            .fetch_tag_reference(repository, token, tag)
+            .await?
+            .is_some())
     }
 
     /// Create an annotated tag object for `request`, and the name GitHub gave
     /// it.
     ///
     /// The object alone names no tag: pass the name this returns to
-    /// [`Self::create_reference`] with `refs/tags/` and the tag's name to
-    /// publish it. The tag is held to git's own rules for a tag name, and one
-    /// git refuses is [`PullRequestError::Parse`] with
+    /// [`Self::create_tag_reference`] with the tag's name to publish it. The
+    /// tag is held to git's own rules for a tag name, and one git refuses is
+    /// [`PullRequestError::Parse`] with
     /// [`ParseError::Tag`](crate::ParseError::Tag), and nothing is sent. An
     /// answer that names the object by anything but a full object name is
     /// [`PullRequestError::Parse`] too.
@@ -97,15 +123,7 @@ impl PullRequestService {
     ) -> PullRequestResult<ObjectId> {
         let tag = TagName::parse(&request.tag)?;
         let url = self.repository_endpoint(repository, &["git", "tags"])?;
-        let body = GitHubTagRequest::on_commit(
-            tag.as_str(),
-            &request.message,
-            request.object.as_str(),
-            GitHubTagger {
-                name: &request.tagger.name,
-                email: &request.tagger.email,
-            },
-        );
+        let body = GitHubTagRequest::under(&tag, request);
 
         let created: GitHubObject = self
             .exchange(self.request(Method::POST, url, token, ACCEPT)?.json(&body))
@@ -113,12 +131,36 @@ impl PullRequestService {
         Ok(ObjectId::parse(&created.sha)?)
     }
 
+    /// Publish the tag `tag` as the reference `refs/tags/<tag>`, pointing at
+    /// `sha`: an annotated tag object [`Self::create_tag`] made, or a commit
+    /// for a lightweight tag.
+    ///
+    /// The tag is held to git's own rules for a tag name, and one git refuses
+    /// is [`PullRequestError::Parse`] with
+    /// [`ParseError::Tag`](crate::ParseError::Tag), and nothing is sent. A
+    /// tag that already exists is [`PullRequestError::ReferenceExists`],
+    /// naming its full reference, whatever it points at.
+    pub async fn create_tag_reference(
+        &self,
+        repository: &Repository,
+        token: &SecretValue,
+        tag: &str,
+        sha: &ObjectId,
+    ) -> PullRequestResult<()> {
+        let tag = TagName::parse(tag)?;
+        let reference = format!("{TAG_REFERENCES}{}", tag.as_str());
+        self.create_reference(repository, token, &reference, sha)
+            .await
+    }
+
     /// Create the git reference `reference`, such as `refs/tags/v1.2.0`,
     /// pointing at `sha`.
     ///
     /// `reference` is the full name: under `refs/`, with a category such as
     /// `tags/` or `heads/` beneath it, and accepted by
-    /// `git check-ref-format`. Any other is [`PullRequestError::Parse`] with
+    /// `git check-ref-format`; under `refs/tags/`, what follows is held to
+    /// git's own rules for a tag name too. Any other is
+    /// [`PullRequestError::Parse`] with
     /// [`ParseError::Reference`](crate::ParseError::Reference), and nothing is
     /// sent. A reference that already exists is
     /// [`PullRequestError::ReferenceExists`], whatever it points at.
@@ -155,16 +197,22 @@ impl PullRequestService {
 }
 
 /// Whether `reference` is a full git reference name: under `refs/`, naming a
-/// category and a name beneath it, and one `git check-ref-format` accepts.
+/// category and a name beneath it, and one `git check-ref-format` accepts;
+/// under `refs/tags/`, naming a tag git accepts.
 fn full_reference(reference: &str) -> bool {
-    reference
+    let named = reference
         .strip_prefix(REFERENCES)
-        .is_some_and(|beneath| beneath.contains(COMPONENT) && !TagName::refuses(beneath))
+        .is_some_and(|beneath| beneath.contains(COMPONENT) && !TagName::refuses(beneath));
+    let tagged = reference
+        .strip_prefix(TAG_REFERENCES)
+        .is_none_or(|tag| TagName::parse(tag).is_ok());
+    named && tagged
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pull_request::ObjectKind;
     use crate::pull_request::Tagger;
     use crate::pull_request::service::fixtures::commit;
     use crate::pull_request::service::fixtures::enterprise;
@@ -357,6 +405,123 @@ mod tests {
         let service = stand_in(&server).await;
 
         assert!(exists(&service, "v1.2.3").await.unwrap());
+    }
+
+    async fn reference_of(
+        server: &MockServer,
+        answer: Value,
+    ) -> PullRequestResult<Option<GitReference>> {
+        Mock::given(method("GET"))
+            .and(path(format!("{TAG_REFERENCE}/pkg/v1.2.3")))
+            .and(header("authorization", "Bearer token"))
+            .and(header("accept", ACCEPT))
+            .respond_with(ResponseTemplate::new(200).set_body_json(answer))
+            .expect(1)
+            .mount(server)
+            .await;
+        let service = stand_in(server).await;
+        service
+            .fetch_tag_reference(&project(&service), &token(), "pkg/v1.2.3")
+            .await
+    }
+
+    #[tokio::test]
+    async fn a_tag_s_reference_names_the_object_it_points_at_and_its_kind() {
+        for (word, kind) in [
+            ("tag", ObjectKind::Tag),
+            ("commit", ObjectKind::Commit),
+            ("submodule", ObjectKind::Unknown),
+        ] {
+            let server = MockServer::start().await;
+
+            let reference = reference_of(
+                &server,
+                json!({
+                    "ref": "refs/tags/pkg/v1.2.3",
+                    "object": { "sha": commit('a').as_str(), "type": word },
+                }),
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(
+                reference,
+                Some(GitReference::new(object('a'), kind)),
+                "{word}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_tag_s_reference_that_names_no_kind_is_of_an_unknown_kind() {
+        let server = MockServer::start().await;
+
+        let reference = reference_of(
+            &server,
+            json!({ "ref": "refs/tags/pkg/v1.2.3", "object": { "sha": commit('a').as_str() } }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            reference,
+            Some(GitReference::new(object('a'), ObjectKind::Unknown))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tag_s_reference_to_anything_but_a_full_object_name_is_refused() {
+        let server = MockServer::start().await;
+
+        let failure = reference_of(
+            &server,
+            json!({ "ref": "refs/tags/pkg/v1.2.3", "object": { "sha": "abc123", "type": "tag" } }),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(failure, PullRequestError::Parse(ParseError::ObjectId(ref value)) if value == "abc123"),
+            "{failure:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tag_s_reference_github_cannot_find_is_none() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!("{TAG_REFERENCE}/v9.9.9")))
+            .respond_with(
+                ResponseTemplate::new(404).set_body_json(json!({ "message": "Not Found" })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+
+        let reference = service
+            .fetch_tag_reference(&project(&service), &token(), "v9.9.9")
+            .await
+            .unwrap();
+
+        assert_eq!(reference, None);
+    }
+
+    #[tokio::test]
+    async fn a_tag_s_reference_is_read_under_an_enterprise_origin_s_path() {
+        let server = MockServer::start().await;
+        reference_answering(&server, format!("/api/v3{TAG_REFERENCE}/pkg/v1.2.3"), 200).await;
+        let service = enterprise(&server).await;
+
+        let reference = service
+            .fetch_tag_reference(&project(&service), &token(), "pkg/v1.2.3")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            reference,
+            Some(GitReference::new(object('a'), ObjectKind::Tag))
+        );
     }
 
     #[tokio::test]
@@ -668,6 +833,8 @@ mod tests {
             "refs//tags/v1",
             "refs/tags/v1.lock",
             "refs/tags/v 1",
+            "refs/tags/-v1",
+            "refs/tags/HEAD",
         ] {
             let server = MockServer::start().await;
             untouched(&server).await;
@@ -697,5 +864,133 @@ mod tests {
         create_reference(&service, "refs/tags/pkg/v1.2.0")
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_reference_outside_tags_is_held_only_to_check_ref_format() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(GIT_REFERENCES))
+            .and(body_json(json!({
+                "ref": "refs/heads/-draft",
+                "sha": commit('f').as_str(),
+            })))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+
+        create_reference(&service, "refs/heads/-draft")
+            .await
+            .unwrap();
+    }
+
+    async fn create_tag_reference(
+        service: &PullRequestService,
+        tag: &str,
+    ) -> PullRequestResult<()> {
+        service
+            .create_tag_reference(&project(service), &token(), tag, &object('f'))
+            .await
+    }
+
+    #[tokio::test]
+    async fn a_tag_is_published_under_refs_tags() {
+        let server = MockServer::start().await;
+        reference_creation(
+            &server,
+            GIT_REFERENCES.to_string(),
+            201,
+            json!({ "ref": "refs/tags/pkg/v1.2.0" }),
+        )
+        .await;
+        let service = stand_in(&server).await;
+
+        create_tag_reference(&service, "pkg/v1.2.0").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_tag_already_published_is_reported_by_its_full_reference() {
+        let server = MockServer::start().await;
+        reference_creation(
+            &server,
+            GIT_REFERENCES.to_string(),
+            422,
+            json!({ "message": "Reference already exists" }),
+        )
+        .await;
+        let service = stand_in(&server).await;
+
+        let failure = create_tag_reference(&service, "pkg/v1.2.0")
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(failure, PullRequestError::ReferenceExists(ref name) if name == "refs/tags/pkg/v1.2.0"),
+            "{failure:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tag_git_refuses_is_never_published() {
+        for tag in ["", "-v1", "HEAD", "v1..2", "pkg//v1", "v1/"] {
+            let server = MockServer::start().await;
+            untouched(&server).await;
+            let service = stand_in(&server).await;
+
+            let failure = create_tag_reference(&service, tag).await.unwrap_err();
+
+            assert!(
+                matches!(failure, PullRequestError::Parse(ParseError::Tag(ref refused)) if refused == tag),
+                "{tag:?}: {failure:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_tag_is_published_under_an_enterprise_origin_s_path() {
+        let server = MockServer::start().await;
+        reference_creation(
+            &server,
+            format!("/api/v3{GIT_REFERENCES}"),
+            201,
+            json!({ "ref": "refs/tags/pkg/v1.2.0" }),
+        )
+        .await;
+        let service = enterprise(&server).await;
+
+        create_tag_reference(&service, "pkg/v1.2.0").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_tag_write_without_a_token_is_never_sent_under_anonymous_reads() {
+        let server = MockServer::start().await;
+        untouched(&server).await;
+        let service = stand_in(&server).await.with_anonymous_reads();
+        let repository = project(&service);
+        let empty = SecretValue::new("");
+
+        let failures = [
+            service
+                .create_tag(&repository, &empty, &tagging())
+                .await
+                .unwrap_err(),
+            service
+                .create_reference(&repository, &empty, "refs/tags/v1.2.0", &object('f'))
+                .await
+                .unwrap_err(),
+            service
+                .create_tag_reference(&repository, &empty, "v1.2.0", &object('f'))
+                .await
+                .unwrap_err(),
+        ];
+
+        for failure in failures {
+            assert!(
+                matches!(failure, PullRequestError::AuthenticationRequired),
+                "{failure:?}"
+            );
+        }
     }
 }
