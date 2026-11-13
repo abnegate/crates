@@ -45,7 +45,10 @@
 //! - `github`: `pull_request`, which opens, reads, checks, reviews and merges
 //!   pull requests on GitHub or a GitHub Enterprise install, sets them to
 //!   merge once they are ready and moves them in and out of draft, reads back
-//!   how each one was received, lists a repository's branches, each named by
+//!   how each one was received, lists a repository's workflow runs and reads
+//!   a job's log from its start with `fetch_job_log` or from its end, where a
+//!   failure is, with `fetch_job_log_tail`, each within a byte limit, lists a
+//!   repository's branches, each named by
 //!   a [`RemoteBranchName`] as GitHub spells it, reads a repository's tree
 //!   at a branch, tag or commit with `fetch_tree_at` and a file there with
 //!   `fetch_contents`, and creates repositories there and registers their
