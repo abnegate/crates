@@ -594,6 +594,9 @@ impl CliProvider {
         if let Some(marker) = marker {
             marker.apply(&mut command);
         }
+        if let Some(niceness) = self.settings.niceness {
+            niceness.apply(&mut command);
+        }
 
         // The agent leads its own group so that stopping the run reaches the
         // language servers, searches and builds it forked, not just itself.
@@ -699,6 +702,7 @@ mod tests {
     use std::time::Instant;
 
     use abnegate_exec::DEFAULT_ENVIRONMENT;
+    use abnegate_exec::Niceness;
     use abnegate_llm::Completion;
     use abnegate_llm::CompletionProvider;
     use abnegate_llm::CompletionRequest;
@@ -2251,6 +2255,25 @@ echo '{"type":"result","subtype":"success","is_error":false}'
             completion.message.content.as_deref(),
             Some("ENG-42|from-the-credential")
         );
+    }
+
+    #[tokio::test]
+    async fn a_lowered_agent_and_the_commands_it_runs_start_at_its_nice_value() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let script = r#"
+own=$(ps -o nice= -p $$ | tr -d ' ')
+build=$(sh -c 'ps -o nice= -p $$' | tr -d ' ')
+printf '{"type":"assistant","message":{"content":[{"type":"text","text":"%s|%s"}]}}\n' "$own" "$build"
+echo '{"type":"result","subtype":"success","is_error":false}'
+"#;
+        let settings = settings(&directory, script).with_niceness(Niceness::LOWEST);
+        let provider = CliProvider::agent(AgentKind::Claude, settings);
+
+        let completion = run(&provider, &[Message::user("hi")])
+            .await
+            .expect("an answer");
+
+        assert_eq!(completion.message.content.as_deref(), Some("19|19"));
     }
 
     fn variables(path: &Path) -> Vec<String> {
