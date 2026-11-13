@@ -98,12 +98,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             unnamed,
-            ChangedFile {
-                filename: "src/cart.ts".to_string(),
-                status: FileStatus::Unknown,
-                additions: 3,
-                deletions: 1,
-            },
+            ChangedFile::new("src/cart.ts", FileStatus::Unknown, 3, 1),
             "a file GitHub gives no status for reads as unknown rather than failing the listing"
         );
 

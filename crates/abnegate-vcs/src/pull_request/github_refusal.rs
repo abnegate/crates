@@ -7,36 +7,53 @@ const MESSAGE: &str = "message";
 /// The field GitHub lists a refusal's details under.
 const ERRORS: &str = "errors";
 
-/// What GitHub said in refusing a request: its message and each detail listed
-/// under `errors`, and nothing else its answer carried.
+/// The field GitHub names the kind of a detail's failure in, such as
+/// `already_exists`.
+const CODE: &str = "code";
+
+/// What GitHub said in refusing a request: its message, each detail listed
+/// under `errors`, and the code each detail names, and nothing else its
+/// answer carried.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct GitHubRefusal {
     message: Option<String>,
     errors: Vec<String>,
+    codes: Vec<String>,
 }
 
 impl GitHubRefusal {
     /// GitHub's words in an error body. A detail is either an object carrying
-    /// a message or a bare string; a body that is not GitHub's JSON says
-    /// nothing.
+    /// a message, a code or both, or a bare string; a body that is not
+    /// GitHub's JSON says nothing.
     pub(super) fn parse(body: &[u8]) -> Self {
         let Ok(Value::Object(answer)) = serde_json::from_slice::<Value>(body) else {
             return Self::default();
         };
+        let details = answer.get(ERRORS).and_then(Value::as_array);
         Self {
             message: answer
                 .get(MESSAGE)
                 .and_then(Value::as_str)
                 .map(str::to_string),
-            errors: answer
-                .get(ERRORS)
-                .and_then(Value::as_array)
+            errors: details
                 .into_iter()
                 .flatten()
                 .filter_map(detail)
                 .map(str::to_string)
                 .collect(),
+            codes: details
+                .into_iter()
+                .flatten()
+                .filter_map(|entry| entry.get(CODE).and_then(Value::as_str))
+                .map(str::to_string)
+                .collect(),
         }
+    }
+
+    /// Whether any of GitHub's details names `code`, exactly as GitHub
+    /// spells it.
+    pub(super) fn has_code(&self, code: &str) -> bool {
+        self.codes.iter().any(|named| named == code)
     }
 
     /// Whether GitHub's message or any of its details contains `words`, in
@@ -95,6 +112,16 @@ mod tests {
         assert!(
             !refusal.mentions("missing_field"),
             "a detail's code is not something GitHub said"
+        );
+        assert!(refusal.has_code("missing_field"));
+        assert!(refusal.has_code("custom"));
+        assert!(
+            !refusal.has_code("missing"),
+            "a code is matched whole, never in part"
+        );
+        assert!(
+            !refusal.has_code("Validation Failed"),
+            "GitHub's words are not a code"
         );
         assert!(
             !refusal.mentions("docs.github.com"),

@@ -37,6 +37,12 @@ pub(super) async fn stand_in(server: &MockServer) -> PullRequestService {
     PullRequestService::standing_in_for("github.com", &server.uri()).unwrap()
 }
 
+/// A stand-in for a GitHub Enterprise install on `server`, which serves its
+/// REST API under `/api/v3`.
+pub(super) async fn enterprise(server: &MockServer) -> PullRequestService {
+    PullRequestService::standing_in_for("github.com", &format!("{}/api/v3", server.uri())).unwrap()
+}
+
 pub(super) fn seven(service: &PullRequestService) -> PullRequestReference {
     service
         .pull_request("https://github.com/acme/project/pull/7")

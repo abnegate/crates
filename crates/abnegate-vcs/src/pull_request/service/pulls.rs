@@ -251,6 +251,7 @@ fn listed(repository: &Repository, pull: GitHubListedPull) -> PullRequestResult<
         base: BranchName::parse(&pull.base.reference)?,
         head_sha: pull.head.sha.as_deref().map(CommitSha::parse).transpose()?,
         updated_at: pull.updated_at,
+        author_login: pull.user.and_then(|user| user.login),
     })
 }
 
@@ -287,6 +288,7 @@ fn detail(pull: GitHubPull) -> PullRequestResult<PullRequestDetail> {
         commits: pull.commits,
         url: pull.html_url,
         updated_at: pull.updated_at,
+        author_login: pull.user.and_then(|user| user.login),
     })
 }
 
@@ -342,6 +344,7 @@ mod tests {
             "deletions": 14,
             "commits": 2,
             "updated_at": UPDATED,
+            "user": { "login": "octocat" },
         })
     }
 
@@ -362,12 +365,7 @@ mod tests {
     }
 
     fn changed(filename: &str, status: FileStatus, additions: u32) -> ChangedFile {
-        ChangedFile {
-            filename: filename.to_string(),
-            status,
-            additions,
-            deletions: 1,
-        }
+        ChangedFile::new(filename, status, additions, 1)
     }
 
     #[tokio::test]
@@ -410,6 +408,7 @@ mod tests {
                 commits: 2,
                 url: "https://github.com/acme/project/pull/7".to_string(),
                 updated_at: Some(UPDATED.to_string()),
+                author_login: Some("octocat".to_string()),
             }
         );
     }
@@ -456,6 +455,7 @@ mod tests {
             "deletions",
             "commits",
             "updated_at",
+            "user",
         ] {
             fields.remove(optional);
         }
@@ -478,6 +478,7 @@ mod tests {
             (0, 0, 0, 0)
         );
         assert_eq!(pull.updated_at, None);
+        assert_eq!(pull.author_login, None);
         assert_eq!(pull.head_sha, commit('a'));
     }
 
@@ -603,8 +604,8 @@ mod tests {
         assert_eq!(files.len(), 101);
         assert_eq!(
             files[0],
-            changed("src/basket.rs", FileStatus::Renamed, 0),
-            "a renamed file is listed under its new name"
+            changed("src/basket.rs", FileStatus::Renamed, 0).with_previous_filename("src/cart.rs"),
+            "a renamed file is listed under its new name, and says its old one"
         );
         assert_eq!(
             files[1],
@@ -1158,6 +1159,7 @@ mod tests {
     async fn a_listed_pull_request_is_read_whole() {
         let mut drafted = row(12, "closed", "acme:task/one", "main");
         drafted["draft"] = json!(true);
+        drafted["user"] = json!({ "login": "octocat" });
         let server = listing(vec![drafted]).await;
         let service = stand_in(&server).await;
 
@@ -1178,8 +1180,32 @@ mod tests {
                 .with_draft(true)
                 .with_head_sha(commit('a'))
                 .with_updated_at(UPDATED)
+                .with_author_login("octocat")
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn a_listed_pull_request_with_no_account_behind_it_has_no_author() {
+        let mut ghost = row(2, "open", "acme:task/two", "main");
+        ghost["user"] = Value::Null;
+        let mut nameless = row(3, "open", "acme:task/three", "main");
+        nameless["user"] = json!({});
+        let server = listing(vec![
+            row(1, "open", "acme:task/one", "main"),
+            ghost,
+            nameless,
+        ])
+        .await;
+
+        let listed = list(&server, StateFilter::Open, 1, 10).await.unwrap();
+
+        let authors: Vec<Option<String>> = listed
+            .items
+            .into_iter()
+            .map(|pull| pull.author_login)
+            .collect();
+        assert_eq!(authors, [None, None, None]);
     }
 
     #[tokio::test]
@@ -1287,5 +1313,59 @@ mod tests {
             .unwrap();
 
         assert_eq!(files, Page::new(Vec::new(), None));
+    }
+
+    #[tokio::test]
+    async fn a_files_page_carries_each_diff_and_former_name_github_sends() {
+        let hunk = "@@ -1,2 +1,2 @@\n-let cart = [];\n+let basket = [];\n";
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(FILES))
+            .and(query_is(&[("per_page", "3"), ("page", "1")]))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                {
+                    "filename": "src/basket.rs",
+                    "previous_filename": "src/cart.rs",
+                    "status": "renamed",
+                    "additions": 1,
+                    "deletions": 1,
+                    "patch": hunk,
+                },
+                {
+                    "filename": "assets/logo.png",
+                    "status": "added",
+                    "additions": 0,
+                    "deletions": 0,
+                },
+                {
+                    "filename": "src/lib.rs",
+                    "status": "modified",
+                    "additions": 1,
+                    "deletions": 1,
+                    "patch": null,
+                    "previous_filename": null,
+                },
+            ])))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+
+        let files = service
+            .list_files(&seven(&service), &token(), page(1), rows(3))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            files.items,
+            [
+                ChangedFile::new("src/basket.rs", FileStatus::Renamed, 1, 1)
+                    .with_patch(hunk)
+                    .with_previous_filename("src/cart.rs"),
+                ChangedFile::new("assets/logo.png", FileStatus::Added, 0, 0),
+                ChangedFile::new("src/lib.rs", FileStatus::Modified, 1, 1),
+            ],
+            "a binary file comes with no diff, and only a renamed one names its old path"
+        );
     }
 }

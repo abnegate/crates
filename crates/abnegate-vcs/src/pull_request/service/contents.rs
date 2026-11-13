@@ -10,8 +10,9 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use std::str;
 
-/// The media type GitHub answers with a pull request's unified diff in.
-const DIFF: &str = "application/vnd.github.diff";
+/// The media type GitHub answers with a pull request's or a commit's unified
+/// diff in.
+pub(super) const DIFF: &str = "application/vnd.github.diff";
 
 /// The media type GitHub describes a directory's entries in, whatever was
 /// asked for. A file asked for raw never comes back in it, even one that holds
@@ -146,7 +147,7 @@ fn listing(headers: &HeaderMap) -> bool {
 }
 
 /// The first `limit` bytes of an answer's body, read no further, as text.
-async fn excerpt(response: Response, limit: usize) -> PullRequestResult<Excerpt> {
+pub(super) async fn excerpt(response: Response, limit: usize) -> PullRequestResult<Excerpt> {
     let (prefix, truncated) = read_prefix(response, limit).await?;
     Ok(cut(prefix, truncated, limit))
 }
