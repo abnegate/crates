@@ -1,7 +1,14 @@
 use super::*;
+use crate::pull_request::GeneratedNotes;
+use crate::pull_request::NotesRequest;
 use crate::pull_request::Page;
 use crate::pull_request::Release;
+use crate::pull_request::ReleaseRequest;
+use crate::pull_request::github_generated_notes::GitHubGeneratedNotes;
+use crate::pull_request::github_notes_request::GitHubNotesRequest;
 use crate::pull_request::github_release::GitHubRelease;
+use crate::pull_request::github_release_request::GitHubReleaseRequest;
+use crate::pull_request::github_release_update::GitHubReleaseUpdate;
 use crate::tag_name::TagName;
 
 impl PullRequestService {
@@ -54,12 +61,116 @@ impl PullRequestService {
             .await?;
         Ok(Release::from(release))
     }
+
+    /// The release GitHub identifies by `id`, as [`Release::id`] names it,
+    /// draft or published.
+    ///
+    /// A draft is found only by a token that can push to the repository. An
+    /// identifier no release has is [`PullRequestError::NotFound`].
+    pub async fn fetch_release_by_id(
+        &self,
+        repository: &Repository,
+        token: &SecretValue,
+        id: u64,
+    ) -> PullRequestResult<Release> {
+        let id = id.to_string();
+        let release: GitHubRelease = self
+            .get(
+                self.repository_endpoint(repository, &["releases", &id])?,
+                token,
+            )
+            .await?;
+        Ok(Release::from(release))
+    }
+
+    /// Release notes GitHub writes for a release under the tag `request`
+    /// names, from the pull requests merged since the previous release.
+    ///
+    /// Nothing is created: the tag need not exist yet, and GitHub reads
+    /// [`NotesRequest::target`] for where it would be created from. The tag
+    /// and any previous tag are held to git's own rules for a tag name, and
+    /// one git refuses is [`PullRequestError::Parse`] with
+    /// [`ParseError::Tag`](crate::ParseError::Tag), and nothing is sent.
+    pub async fn generate_release_notes(
+        &self,
+        repository: &Repository,
+        token: &SecretValue,
+        request: &NotesRequest,
+    ) -> PullRequestResult<GeneratedNotes> {
+        let tag = TagName::parse(&request.tag)?;
+        let previous = request
+            .previous_tag
+            .as_deref()
+            .map(TagName::parse)
+            .transpose()?;
+        let url = self.repository_endpoint(repository, &["releases", "generate-notes"])?;
+        let body = GitHubNotesRequest {
+            tag_name: tag.as_str(),
+            target_commitish: &request.target,
+            previous_tag_name: previous.as_ref().map(TagName::as_str),
+        };
+
+        let notes: GitHubGeneratedNotes = self
+            .exchange(self.request(Method::POST, url, token, ACCEPT)?.json(&body))
+            .await?;
+        Ok(GeneratedNotes::from(notes))
+    }
+
+    /// Create the release `request` describes, and the release GitHub made.
+    ///
+    /// GitHub creates the tag from [`ReleaseRequest::target`], or from the
+    /// default branch, when it does not exist yet. The tag is held to git's
+    /// own rules for a tag name, and one git refuses is
+    /// [`PullRequestError::Parse`] with
+    /// [`ParseError::Tag`](crate::ParseError::Tag), and nothing is sent. A tag
+    /// that already has a release is [`PullRequestError::Refused`] with
+    /// GitHub's 422.
+    pub async fn create_release(
+        &self,
+        repository: &Repository,
+        token: &SecretValue,
+        request: &ReleaseRequest,
+    ) -> PullRequestResult<Release> {
+        TagName::parse(&request.tag)?;
+        let url = self.repository_endpoint(repository, &["releases"])?;
+        let body = GitHubReleaseRequest::from(request);
+
+        let release: GitHubRelease = self
+            .exchange(self.request(Method::POST, url, token, ACCEPT)?.json(&body))
+            .await?;
+        Ok(Release::from(release))
+    }
+
+    /// Publish the draft release GitHub identifies by `id`, and the release
+    /// it now is.
+    ///
+    /// GitHub creates its tag then if it does not exist yet. Publishing a
+    /// release that is already published leaves it as it is. An identifier
+    /// no release has is [`PullRequestError::NotFound`].
+    pub async fn publish_release(
+        &self,
+        repository: &Repository,
+        token: &SecretValue,
+        id: u64,
+    ) -> PullRequestResult<Release> {
+        let id = id.to_string();
+        let url = self.repository_endpoint(repository, &["releases", &id])?;
+
+        let release: GitHubRelease = self
+            .exchange(
+                self.request(Method::PATCH, url, token, ACCEPT)?
+                    .json(&GitHubReleaseUpdate { draft: false }),
+            )
+            .await?;
+        Ok(Release::from(release))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::parse_error::ParseError;
+    use crate::pull_request::service::fixtures::enterprise;
     use crate::pull_request::service::fixtures::project;
     use crate::pull_request::service::fixtures::query_is;
     use crate::pull_request::service::fixtures::stand_in;
@@ -70,6 +181,7 @@ mod tests {
     use wiremock::MockServer;
     use wiremock::ResponseTemplate;
     use wiremock::matchers::any;
+    use wiremock::matchers::body_json;
     use wiremock::matchers::header;
     use wiremock::matchers::method;
     use wiremock::matchers::path;
@@ -113,6 +225,8 @@ mod tests {
             "published_at": release.published_at,
             "draft": release.draft,
             "prerelease": release.prerelease,
+            "body": release.body,
+            "target_commitish": release.target,
         })
     }
 
@@ -306,6 +420,462 @@ mod tests {
             assert!(
                 matches!(failure, PullRequestError::Parse(ParseError::Tag(ref refused)) if refused == tag),
                 "{tag:?}: {failure:?}"
+            );
+        }
+    }
+
+    const NOTES: &str = "/repos/acme/project/releases/generate-notes";
+
+    /// A mock that answers anything, and that no request may reach.
+    async fn untouched(server: &MockServer) {
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(server)
+            .await;
+    }
+
+    fn noted(id: u64) -> Release {
+        published(id)
+            .with_body("## What's Changed\n* Basket totals")
+            .with_target("main")
+    }
+
+    fn missing() -> ResponseTemplate {
+        ResponseTemplate::new(404).set_body_json(json!({ "message": "Not Found" }))
+    }
+
+    async fn answering(server: &MockServer, verb: &str, route: String, status: u16, answer: Value) {
+        Mock::given(method(verb))
+            .and(path(route))
+            .and(header("authorization", "Bearer token"))
+            .and(header("accept", ACCEPT))
+            .respond_with(ResponseTemplate::new(status).set_body_json(answer))
+            .expect(1)
+            .mount(server)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn a_release_is_read_with_its_notes_and_target() {
+        let server = MockServer::start().await;
+        let release = noted(3);
+        listing(&server, "5", vec![described(&release)]).await;
+
+        let listed = list(&server, 5).await.unwrap();
+
+        assert_eq!(listed.items, [release]);
+    }
+
+    #[tokio::test]
+    async fn a_release_is_found_by_its_identifier() {
+        let server = MockServer::start().await;
+        let draft = noted(91).with_draft(true);
+        answering(
+            &server,
+            "GET",
+            format!("{RELEASES}/91"),
+            200,
+            described(&draft),
+        )
+        .await;
+        let service = stand_in(&server).await;
+
+        let found = service
+            .fetch_release_by_id(&project(&service), &token(), 91)
+            .await
+            .unwrap();
+
+        assert_eq!(found, draft);
+    }
+
+    #[tokio::test]
+    async fn an_identifier_no_release_has_is_not_found() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!("{RELEASES}/404")))
+            .respond_with(missing())
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+
+        let failure = service
+            .fetch_release_by_id(&project(&service), &token(), 404)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(failure, PullRequestError::NotFound), "{failure:?}");
+    }
+
+    #[tokio::test]
+    async fn a_release_is_found_by_its_identifier_under_an_enterprise_origin_s_path() {
+        let server = MockServer::start().await;
+        answering(
+            &server,
+            "GET",
+            format!("/api/v3{RELEASES}/7"),
+            200,
+            described(&noted(7)),
+        )
+        .await;
+        let service = enterprise(&server).await;
+
+        let found = service
+            .fetch_release_by_id(&project(&service), &token(), 7)
+            .await
+            .unwrap();
+
+        assert_eq!(found, noted(7));
+    }
+
+    async fn notes_for(
+        service: &PullRequestService,
+        request: &NotesRequest,
+    ) -> PullRequestResult<GeneratedNotes> {
+        service
+            .generate_release_notes(&project(service), &token(), request)
+            .await
+    }
+
+    async fn writing_notes(server: &MockServer, route: String, sent: Value) {
+        Mock::given(method("POST"))
+            .and(path(route))
+            .and(header("authorization", "Bearer token"))
+            .and(header("accept", ACCEPT))
+            .and(body_json(sent))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "name": "v1.2.0",
+                "body": "## What's Changed\n* Basket totals",
+            })))
+            .expect(1)
+            .mount(server)
+            .await;
+    }
+
+    fn written_notes() -> GeneratedNotes {
+        GeneratedNotes::new("v1.2.0", "## What's Changed\n* Basket totals")
+    }
+
+    #[tokio::test]
+    async fn notes_are_written_since_the_release_github_chooses() {
+        let server = MockServer::start().await;
+        writing_notes(
+            &server,
+            NOTES.to_string(),
+            json!({ "tag_name": "v1.2.0", "target_commitish": "main" }),
+        )
+        .await;
+        let service = stand_in(&server).await;
+
+        let notes = notes_for(&service, &NotesRequest::new("v1.2.0", "main"))
+            .await
+            .unwrap();
+
+        assert_eq!(notes, written_notes());
+    }
+
+    #[tokio::test]
+    async fn notes_are_written_since_the_release_asked_for() {
+        let server = MockServer::start().await;
+        writing_notes(
+            &server,
+            NOTES.to_string(),
+            json!({
+                "tag_name": "pkg/v1.2.0",
+                "target_commitish": "main",
+                "previous_tag_name": "pkg/v1.1.0",
+            }),
+        )
+        .await;
+        let service = stand_in(&server).await;
+        let request = NotesRequest::new("pkg/v1.2.0", "main").with_previous_tag("pkg/v1.1.0");
+
+        let notes = notes_for(&service, &request).await.unwrap();
+
+        assert_eq!(notes, written_notes());
+    }
+
+    #[tokio::test]
+    async fn notes_for_a_tag_git_refuses_are_never_asked_for() {
+        for request in [
+            NotesRequest::new("v1..2", "main"),
+            NotesRequest::new("v1.2.0", "main").with_previous_tag("-v1"),
+        ] {
+            let server = MockServer::start().await;
+            untouched(&server).await;
+            let service = stand_in(&server).await;
+
+            let failure = notes_for(&service, &request).await.unwrap_err();
+
+            assert!(
+                matches!(failure, PullRequestError::Parse(ParseError::Tag(_))),
+                "{request:?}: {failure:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn notes_github_will_not_write_are_refused_with_its_words() {
+        let server = MockServer::start().await;
+        answering(
+            &server,
+            "POST",
+            NOTES.to_string(),
+            422,
+            json!({ "message": "Validation Failed", "errors": ["target_commitish is invalid"] }),
+        )
+        .await;
+        let service = stand_in(&server).await;
+
+        let failure = notes_for(&service, &NotesRequest::new("v1.2.0", "nowhere"))
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(failure, PullRequestError::Refused { status: 422, ref message } if message == "Validation Failed; target_commitish is invalid"),
+            "{failure:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn notes_are_written_under_an_enterprise_origin_s_path() {
+        let server = MockServer::start().await;
+        writing_notes(
+            &server,
+            format!("/api/v3{NOTES}"),
+            json!({ "tag_name": "v1.2.0", "target_commitish": "main" }),
+        )
+        .await;
+        let service = enterprise(&server).await;
+
+        let notes = notes_for(&service, &NotesRequest::new("v1.2.0", "main"))
+            .await
+            .unwrap();
+
+        assert_eq!(notes, written_notes());
+    }
+
+    async fn create(
+        service: &PullRequestService,
+        request: &ReleaseRequest,
+    ) -> PullRequestResult<Release> {
+        service
+            .create_release(&project(service), &token(), request)
+            .await
+    }
+
+    async fn creating(server: &MockServer, route: String, sent: Value, answer: &Release) {
+        Mock::given(method("POST"))
+            .and(path(route))
+            .and(header("authorization", "Bearer token"))
+            .and(header("accept", ACCEPT))
+            .and(body_json(sent))
+            .respond_with(ResponseTemplate::new(201).set_body_json(described(answer)))
+            .expect(1)
+            .mount(server)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn a_release_is_created_sending_only_what_was_set() {
+        let server = MockServer::start().await;
+        let made = linked(95, "v1.2.0").with_target("main");
+        creating(
+            &server,
+            RELEASES.to_string(),
+            json!({ "tag_name": "v1.2.0", "draft": false, "prerelease": false }),
+            &made,
+        )
+        .await;
+        let service = stand_in(&server).await;
+
+        let created = create(&service, &ReleaseRequest::new("v1.2.0"))
+            .await
+            .unwrap();
+
+        assert_eq!(created, made);
+    }
+
+    #[tokio::test]
+    async fn a_draft_release_is_created_with_everything_it_was_given() {
+        let server = MockServer::start().await;
+        let made = linked(96, "pkg/v1.2.0")
+            .with_name("Version 1.2")
+            .with_body("Adds basket totals.")
+            .with_target("release/1.2")
+            .with_draft(true)
+            .with_prerelease(true);
+        creating(
+            &server,
+            RELEASES.to_string(),
+            json!({
+                "tag_name": "pkg/v1.2.0",
+                "target_commitish": "release/1.2",
+                "name": "Version 1.2",
+                "body": "Adds basket totals.",
+                "draft": true,
+                "prerelease": true,
+            }),
+            &made,
+        )
+        .await;
+        let service = stand_in(&server).await;
+        let request = ReleaseRequest::new("pkg/v1.2.0")
+            .with_target("release/1.2")
+            .with_name("Version 1.2")
+            .with_body("Adds basket totals.")
+            .with_draft(true)
+            .with_prerelease(true);
+
+        let created = create(&service, &request).await.unwrap();
+
+        assert_eq!(created, made);
+    }
+
+    #[tokio::test]
+    async fn a_release_for_a_tag_that_already_has_one_is_refused_with_its_words() {
+        let server = MockServer::start().await;
+        answering(
+            &server,
+            "POST",
+            RELEASES.to_string(),
+            422,
+            json!({
+                "message": "Validation Failed",
+                "errors": [{ "resource": "Release", "code": "already_exists", "field": "tag_name" }],
+            }),
+        )
+        .await;
+        let service = stand_in(&server).await;
+
+        let failure = create(&service, &ReleaseRequest::new("v1.2.0"))
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(failure, PullRequestError::Refused { status: 422, .. }),
+            "{failure:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_release_under_a_tag_git_refuses_is_never_sent() {
+        let server = MockServer::start().await;
+        untouched(&server).await;
+        let service = stand_in(&server).await;
+
+        let failure = create(&service, &ReleaseRequest::new("HEAD"))
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(failure, PullRequestError::Parse(ParseError::Tag(ref refused)) if refused == "HEAD"),
+            "{failure:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_release_is_created_under_an_enterprise_origin_s_path() {
+        let server = MockServer::start().await;
+        let made = linked(97, "v1.2.0");
+        creating(
+            &server,
+            format!("/api/v3{RELEASES}"),
+            json!({ "tag_name": "v1.2.0", "draft": false, "prerelease": false }),
+            &made,
+        )
+        .await;
+        let service = enterprise(&server).await;
+
+        let created = create(&service, &ReleaseRequest::new("v1.2.0"))
+            .await
+            .unwrap();
+
+        assert_eq!(created, made);
+    }
+
+    async fn publish(service: &PullRequestService, id: u64) -> PullRequestResult<Release> {
+        service
+            .publish_release(&project(service), &token(), id)
+            .await
+    }
+
+    async fn publishing(server: &MockServer, route: String, answer: &Release) {
+        Mock::given(method("PATCH"))
+            .and(path(route))
+            .and(header("authorization", "Bearer token"))
+            .and(header("accept", ACCEPT))
+            .and(body_json(json!({ "draft": false })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(described(answer)))
+            .expect(1)
+            .mount(server)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn a_draft_is_published_by_its_identifier() {
+        let server = MockServer::start().await;
+        let release = noted(98);
+        publishing(&server, format!("{RELEASES}/98"), &release).await;
+        let service = stand_in(&server).await;
+
+        assert_eq!(publish(&service, 98).await.unwrap(), release);
+    }
+
+    #[tokio::test]
+    async fn publishing_an_identifier_no_release_has_is_not_found() {
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path(format!("{RELEASES}/404")))
+            .respond_with(missing())
+            .expect(1)
+            .mount(&server)
+            .await;
+        let service = stand_in(&server).await;
+
+        let failure = publish(&service, 404).await.unwrap_err();
+
+        assert!(matches!(failure, PullRequestError::NotFound), "{failure:?}");
+    }
+
+    #[tokio::test]
+    async fn a_draft_is_published_under_an_enterprise_origin_s_path() {
+        let server = MockServer::start().await;
+        let release = noted(99);
+        publishing(&server, format!("/api/v3{RELEASES}/99"), &release).await;
+        let service = enterprise(&server).await;
+
+        assert_eq!(publish(&service, 99).await.unwrap(), release);
+    }
+
+    #[tokio::test]
+    async fn a_release_write_without_a_token_is_never_sent_under_anonymous_reads() {
+        let server = MockServer::start().await;
+        untouched(&server).await;
+        let service = stand_in(&server).await.with_anonymous_reads();
+        let repository = project(&service);
+        let empty = SecretValue::new("");
+
+        let failures = [
+            service
+                .create_release(&repository, &empty, &ReleaseRequest::new("v1.2.0"))
+                .await
+                .unwrap_err(),
+            service
+                .publish_release(&repository, &empty, 1)
+                .await
+                .unwrap_err(),
+            service
+                .generate_release_notes(&repository, &empty, &NotesRequest::new("v1.2.0", "main"))
+                .await
+                .unwrap_err(),
+        ];
+
+        for failure in failures {
+            assert!(
+                matches!(failure, PullRequestError::AuthenticationRequired),
+                "{failure:?}"
             );
         }
     }

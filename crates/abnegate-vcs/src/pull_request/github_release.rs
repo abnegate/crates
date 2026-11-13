@@ -5,8 +5,8 @@ use serde::Deserialize;
 ///
 /// What GitHub sends on every release is required, so an answer that leaves
 /// any of it out is unreadable rather than a release with something made up
-/// in its place. Its title and publication time may be `null`, and are read
-/// as not said.
+/// in its place. Its title, publication time, notes and target may be `null`,
+/// and are read as not said.
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct GitHubRelease {
     id: u64,
@@ -18,6 +18,10 @@ pub(super) struct GitHubRelease {
     published_at: Option<String>,
     draft: bool,
     prerelease: bool,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    target_commitish: Option<String>,
 }
 
 impl From<GitHubRelease> for Release {
@@ -30,6 +34,8 @@ impl From<GitHubRelease> for Release {
             published_at: release.published_at,
             draft: release.draft,
             prerelease: release.prerelease,
+            body: release.body,
+            target: release.target_commitish,
         }
     }
 }

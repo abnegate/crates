@@ -30,6 +30,9 @@ pub struct ListedPullRequest {
     /// When it last changed, as GitHub's ISO 8601 timestamp, or `None` when
     /// GitHub does not say.
     pub updated_at: Option<String>,
+    /// The login of the account that opened it, or `None` when GitHub does
+    /// not say, as for an account since deleted.
+    pub author: Option<String>,
 }
 
 impl ListedPullRequest {
@@ -37,8 +40,8 @@ impl ListedPullRequest {
     /// addresses as `node_id`, merging `head` into `base`, and readable at
     /// `url`.
     ///
-    /// It is open, untitled, no draft, and its head commit and last change
-    /// are unknown, until the `with_*` methods say otherwise.
+    /// It is open, untitled, no draft, and its head commit, last change and
+    /// author are unknown, until the `with_*` methods say otherwise.
     pub fn new(
         reference: PullRequestReference,
         node_id: impl Into<String>,
@@ -57,6 +60,7 @@ impl ListedPullRequest {
             base,
             head_sha: None,
             updated_at: None,
+            author: None,
         }
     }
 
@@ -92,6 +96,13 @@ impl ListedPullRequest {
     #[must_use]
     pub fn with_updated_at(mut self, updated_at: impl Into<String>) -> Self {
         self.updated_at = Some(updated_at.into());
+        self
+    }
+
+    /// The login of the account that opened it.
+    #[must_use]
+    pub fn with_author(mut self, author: impl Into<String>) -> Self {
+        self.author = Some(author.into());
         self
     }
 }
@@ -132,6 +143,7 @@ mod tests {
         assert!(!built.draft);
         assert_eq!(built.head_sha, None);
         assert_eq!(built.updated_at, None);
+        assert_eq!(built.author, None);
     }
 
     #[test]
@@ -141,7 +153,8 @@ mod tests {
             .with_state(PullRequestState::Closed)
             .with_draft(true)
             .with_head_sha(commit())
-            .with_updated_at("2026-11-06T09:30:00Z");
+            .with_updated_at("2026-11-06T09:30:00Z")
+            .with_author("octocat");
 
         assert_eq!(
             built,
@@ -151,6 +164,7 @@ mod tests {
                 draft: true,
                 head_sha: Some(commit()),
                 updated_at: Some("2026-11-06T09:30:00Z".to_string()),
+                author: Some("octocat".to_string()),
                 ..listed()
             }
         );

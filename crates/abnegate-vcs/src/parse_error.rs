@@ -16,6 +16,12 @@ pub enum ParseError {
     #[error("Invalid object name: {0:?}")]
     ObjectId(String),
 
+    /// Not a full git reference name: one that is not under `refs/`, names no
+    /// category beneath it, such as `tags/`, or that `git check-ref-format`
+    /// refuses.
+    #[error("Invalid git reference: {0:?}")]
+    Reference(String),
+
     /// Not a GitLab project: empty, with an empty, `.` or `..` segment, or
     /// with an ASCII control character.
     #[error("Invalid GitLab project: {0:?}")]

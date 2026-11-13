@@ -1,5 +1,6 @@
 use crate::pull_request::PullRequestState;
 use crate::pull_request::github_listed_branch::GitHubListedBranch;
+use crate::pull_request::github_user::GitHubUser;
 use serde::Deserialize;
 use std::num::NonZeroU64;
 
@@ -19,4 +20,6 @@ pub(super) struct GitHubListedPull {
     pub(super) merged_at: Option<String>,
     #[serde(default)]
     pub(super) updated_at: Option<String>,
+    #[serde(default)]
+    pub(super) user: Option<GitHubUser>,
 }

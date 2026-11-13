@@ -169,6 +169,9 @@ pub use crate::pull_request::ChecksOutcome;
 pub use crate::pull_request::Collected;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::Commit;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::CommitStatus;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
@@ -203,6 +206,9 @@ pub use crate::pull_request::FileStatus;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::FoundPullRequest;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::GeneratedNotes;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::GitHubBranch;
@@ -268,6 +274,9 @@ pub use crate::pull_request::MergeableState;
 pub use crate::pull_request::MergedPullRequest;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::NotesRequest;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::Page;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
@@ -301,6 +310,9 @@ pub use crate::pull_request::RegisteredApplication;
 pub use crate::pull_request::Release;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::ReleaseRequest;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::Repository;
 #[cfg(feature = "github-app")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]
@@ -332,6 +344,15 @@ pub use crate::pull_request::StateFilter;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::SubmittedReview;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::Tag;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::TagRequest;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::Tagger;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::ThreadComment;

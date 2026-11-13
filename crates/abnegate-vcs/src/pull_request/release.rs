@@ -16,6 +16,11 @@ pub struct Release {
     pub draft: bool,
     /// Whether it is marked as not ready for production.
     pub prerelease: bool,
+    /// Its notes, in Markdown, or `None` when it has none.
+    pub body: Option<String>,
+    /// The branch or commit its tag was, or will be, created from, or `None`
+    /// when GitHub does not say.
+    pub target: Option<String>,
 }
 
 impl Release {
@@ -30,6 +35,8 @@ impl Release {
             published_at: None,
             draft: false,
             prerelease: false,
+            body: None,
+            target: None,
         }
     }
 
@@ -59,5 +66,47 @@ impl Release {
     pub fn with_prerelease(mut self, prerelease: bool) -> Self {
         self.prerelease = prerelease;
         self
+    }
+
+    /// Its notes, in Markdown.
+    #[must_use]
+    pub fn with_body(mut self, body: impl Into<String>) -> Self {
+        self.body = Some(body.into());
+        self
+    }
+
+    /// The branch or commit its tag was, or will be, created from.
+    #[must_use]
+    pub fn with_target(mut self, target: impl Into<String>) -> Self {
+        self.target = Some(target.into());
+        self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_builder_sets_its_own_field_and_no_other() {
+        let base = Release::new(
+            7,
+            "v1.0.0",
+            "https://github.com/acme/project/releases/v1.0.0",
+        );
+
+        let built = base
+            .clone()
+            .with_body("Adds basket totals.")
+            .with_target("main");
+
+        assert_eq!(
+            built,
+            Release {
+                body: Some("Adds basket totals.".to_string()),
+                target: Some("main".to_string()),
+                ..base
+            }
+        );
     }
 }

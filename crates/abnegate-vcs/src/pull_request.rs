@@ -3,13 +3,16 @@
 //!
 //! Only the `github` feature builds this module. [`PullRequestService`] opens a
 //! pull request when a task completes with code changes; reads it back with
-//! its files, its diff and the checks on its head; takes part in its review
+//! its files, its diff, its commits and the checks on its head; takes part in
+//! its review
 //! through conversation comments, reviews and review threads; moves it in and
 //! out of draft; sets it to merge once it is ready; merges it; and reads back
 //! when it merged, how many rounds of review it took, who approved it, and
 //! what the reviewers actually said. It also creates a repository for a new
-//! project and reads a file from one, and registers, re-signs and removes the
-//! webhooks a repository delivers its events through. It talks to GitHub's
+//! project and reads a file from one; lists its tags and creates annotated
+//! ones; lists, drafts, writes the notes for and publishes its releases; and
+//! registers, re-signs and removes the webhooks a repository delivers its
+//! events through. It talks to GitHub's
 //! REST API, and to its GraphQL API for review threads, an administrator's
 //! merge, auto-merge, drafts and a repository's merge settings. It addresses
 //! GitHub's own API by default and a GitHub Enterprise origin when one is
@@ -26,7 +29,7 @@
 //! origin, as path segments or as a query value, and a segment that is
 //! empty, `.` or `..` is refused before anything is sent.
 //!
-//! Five values a caller passes as plain text are held to rules before they
+//! Six values a caller passes as plain text are held to rules before they
 //! travel:
 //!
 //! - the ref [`PullRequestService::resolve_commit`] resolves, held to git's
@@ -40,6 +43,10 @@
 //! - the tag [`PullRequestService::fetch_release`] reads, held to git's rules
 //!   for a tag name, `HEAD` refused, travels as one path segment the same
 //!   way;
+//! - the tag [`PullRequestService::tag_exists`] looks for, held to the same
+//!   rules, travels as one path segment for each of its `/`-separated
+//!   components, as GitHub's references API reads it, so none of them is
+//!   empty, `.` or `..`;
 //! - the fork owner [`PullRequestService::find_pull_request`] and
 //!   [`PullRequestService::create_pull_request_from`] take, held to a
 //!   [`Repository`] owner's rules, travels with the head branch as the
@@ -89,6 +96,7 @@ mod check_run;
 mod checks_outcome;
 mod collected;
 mod comment_request;
+mod commit;
 mod commit_status;
 mod contents;
 mod create_request;
@@ -104,6 +112,7 @@ mod error;
 mod excerpt;
 mod file_status;
 mod found;
+mod generated_notes;
 mod github_branch;
 mod github_check_conclusion;
 mod github_check_run;
@@ -113,6 +122,7 @@ mod github_check_status;
 mod github_combined_status;
 mod github_comment;
 mod github_commit;
+mod github_commit_detail;
 mod github_commit_status;
 mod github_commit_status_record;
 mod github_contents;
@@ -120,6 +130,7 @@ mod github_contents_answer;
 mod github_created_repository;
 mod github_deployment;
 mod github_deployment_status;
+mod github_generated_notes;
 mod github_identified;
 mod github_issue;
 mod github_issue_comment;
@@ -128,18 +139,28 @@ mod github_issue_request;
 mod github_issue_row;
 mod github_label;
 mod github_listed_branch;
+mod github_listed_commit;
 mod github_listed_pull;
 mod github_merge;
+mod github_notes_request;
+mod github_object;
 mod github_pull;
 mod github_pull_request;
 mod github_pull_request_detail;
+mod github_reference_request;
 mod github_refusal;
 mod github_release;
+mod github_release_request;
+mod github_release_update;
 mod github_repository_branch;
 mod github_repository_name;
 mod github_review;
 mod github_review_comment;
+mod github_signature;
 mod github_status_state;
+mod github_tag;
+mod github_tag_request;
+mod github_tagger;
 mod github_tree;
 mod github_tree_entry;
 mod github_user;
@@ -178,12 +199,14 @@ mod merge_settings;
 mod mergeability;
 mod mergeable_state;
 mod merged;
+mod notes_request;
 mod origin;
 mod page;
 mod rate_limit;
 mod reception;
 mod reference;
 mod release;
+mod release_request;
 mod repository;
 mod repository_detail;
 mod repository_request;
@@ -199,6 +222,9 @@ mod service;
 mod state;
 mod state_filter;
 mod submitted_review;
+mod tag;
+mod tag_request;
+mod tagger;
 mod thread_comment;
 mod tree;
 mod webhook_configuration;
@@ -245,6 +271,7 @@ pub use crate::pull_request::changed_file::ChangedFile;
 pub use crate::pull_request::check_run::CheckRun;
 pub use crate::pull_request::checks_outcome::ChecksOutcome;
 pub use crate::pull_request::collected::Collected;
+pub use crate::pull_request::commit::Commit;
 pub use crate::pull_request::commit_status::CommitStatus;
 pub use crate::pull_request::contents::Contents;
 pub use crate::pull_request::created::CreatedPullRequest;
@@ -260,6 +287,7 @@ pub use crate::pull_request::error::PullRequestResult;
 pub use crate::pull_request::excerpt::Excerpt;
 pub use crate::pull_request::file_status::FileStatus;
 pub use crate::pull_request::found::FoundPullRequest;
+pub use crate::pull_request::generated_notes::GeneratedNotes;
 pub use crate::pull_request::github_branch::GitHubBranch;
 pub use crate::pull_request::github_pull_request::GitHubPullRequest;
 pub use crate::pull_request::issue::Issue;
@@ -276,12 +304,14 @@ pub use crate::pull_request::merge_settings::MergeSettings;
 pub use crate::pull_request::mergeability::Mergeability;
 pub use crate::pull_request::mergeable_state::MergeableState;
 pub use crate::pull_request::merged::MergedPullRequest;
+pub use crate::pull_request::notes_request::NotesRequest;
 pub use crate::pull_request::page::Page;
 pub use crate::pull_request::rate_limit::RateLimit;
 pub use crate::pull_request::reception::PullRequestReception;
 pub use crate::pull_request::reception::minutes_between;
 pub use crate::pull_request::reference::PullRequestReference;
 pub use crate::pull_request::release::Release;
+pub use crate::pull_request::release_request::ReleaseRequest;
 pub use crate::pull_request::repository::Repository;
 pub use crate::pull_request::review_comment::ReviewComment;
 pub use crate::pull_request::review_event::ReviewEvent;
@@ -295,6 +325,9 @@ pub use crate::pull_request::service::PullRequestService;
 pub use crate::pull_request::state::PullRequestState;
 pub use crate::pull_request::state_filter::StateFilter;
 pub use crate::pull_request::submitted_review::SubmittedReview;
+pub use crate::pull_request::tag::Tag;
+pub use crate::pull_request::tag_request::TagRequest;
+pub use crate::pull_request::tagger::Tagger;
 pub use crate::pull_request::thread_comment::ThreadComment;
 pub use crate::pull_request::tree::Tree;
 pub use crate::pull_request::webhook_event::WebhookEvent;

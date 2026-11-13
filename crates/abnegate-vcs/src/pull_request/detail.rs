@@ -50,6 +50,9 @@ pub struct PullRequestDetail {
     /// When it last changed, as GitHub's ISO 8601 timestamp, or `None` when
     /// GitHub does not say.
     pub updated_at: Option<String>,
+    /// The login of the account that opened it, or `None` when GitHub does
+    /// not say, as for an account since deleted.
+    pub author: Option<String>,
 }
 
 impl PullRequestDetail {
@@ -58,9 +61,9 @@ impl PullRequestDetail {
     /// `head_sha` into `base`, and readable at `url`.
     ///
     /// It is open, has no body, is no draft, has not merged, has no merge
-    /// commit, changes nothing, has no recorded last change, and GitHub has
-    /// yet to work out whether it merges or what stands in its way, until the
-    /// `with_*` methods say otherwise.
+    /// commit, changes nothing, has no recorded last change or author, and
+    /// GitHub has yet to work out whether it merges or what stands in its
+    /// way, until the `with_*` methods say otherwise.
     pub fn new(
         node_id: impl Into<String>,
         number: NonZeroU64,
@@ -90,6 +93,7 @@ impl PullRequestDetail {
             commits: 0,
             url: url.into(),
             updated_at: None,
+            author: None,
         }
     }
 
@@ -177,6 +181,13 @@ impl PullRequestDetail {
         self.updated_at = Some(updated_at.into());
         self
     }
+
+    /// The login of the account that opened it.
+    #[must_use]
+    pub fn with_author(mut self, author: impl Into<String>) -> Self {
+        self.author = Some(author.into());
+        self
+    }
 }
 
 #[cfg(test)]
@@ -223,6 +234,7 @@ mod tests {
                 commits: 0,
                 url: "https://github.com/acme/project/pull/7".to_string(),
                 updated_at: None,
+                author: None,
             }
         );
     }
@@ -241,7 +253,8 @@ mod tests {
             .with_additions(120)
             .with_deletions(14)
             .with_commits(2)
-            .with_updated_at("2026-11-06T09:30:00Z");
+            .with_updated_at("2026-11-06T09:30:00Z")
+            .with_author("octocat");
 
         assert_eq!(
             built,
@@ -258,6 +271,7 @@ mod tests {
                 deletions: 14,
                 commits: 2,
                 updated_at: Some("2026-11-06T09:30:00Z".to_string()),
+                author: Some("octocat".to_string()),
                 ..opened()
             }
         );
