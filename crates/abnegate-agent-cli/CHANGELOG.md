@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3](https://github.com/abnegate/crates/compare/abnegate-agent-cli/v0.2.2...abnegate-agent-cli/v0.2.3) - 2026-11-13
+
+### Added
+
+- *(agent-cli)* start agents at a lower cpu priority ([#88](https://github.com/abnegate/crates/pull/88))
+
 ## [0.2.2](https://github.com/abnegate/crates/compare/abnegate-agent-cli/v0.2.1...abnegate-agent-cli/v0.2.2) - 2026-11-12
 
 ### Other
