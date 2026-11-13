@@ -42,11 +42,15 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 const READ_BUFFER_BYTES: usize = 8 * 1024;
 
 /// `program`, set to see the context's environment and nothing else, with the
-/// context's proxy applied last so no tool can route around it.
+/// context's proxy applied last so no tool can route around it, and started
+/// at the context's niceness.
 pub(crate) fn command(program: &str, context: &ToolContext) -> Command {
     let mut command = Command::new(program);
     context.environment.apply(&mut command);
     context.route(&mut command);
+    if let Some(niceness) = context.niceness {
+        niceness.apply(&mut command);
+    }
     command
 }
 
@@ -177,6 +181,20 @@ mod tests {
         let mut command = Command::new("sh");
         command.arg("-c").arg(line);
         command
+    }
+
+    /// A tool's command ran at its host's priority, so a build or a test
+    /// suite it started contended with the host's own work.
+    #[tokio::test]
+    async fn a_command_starts_at_the_contexts_niceness() {
+        let context = ToolContext::default().with_niceness(crate::tool::Niceness::LOWEST);
+        let mut niced = command("sh", &context);
+        niced.args(["-c", "ps -o nice= -p $$"]);
+
+        let finished = run(niced, TIMEOUT).await.expect("the command finishes");
+
+        assert!(finished.status.success(), "{}", finished.stderr);
+        assert_eq!(finished.stdout.trim(), "19");
     }
 
     /// `sleep` holds the pipe `sh` handed it, so waiting for the pipe to

@@ -5,6 +5,7 @@ use std::time::Duration;
 use tokio::process::Command;
 
 use super::EnvironmentPolicy;
+use super::Niceness;
 use super::Proxy;
 use super::PublicWeb;
 use super::Session;
@@ -82,6 +83,10 @@ pub struct ToolContext {
     /// then routes only as its own environment says: through whatever proxy
     /// variables that names or inherits, and directly when it names none.
     pub proxy: Option<Proxy>,
+    /// The nice value every child a tool starts, a background job's
+    /// included, is started at, and so everything that child starts in turn.
+    /// Nothing by default, which leaves each at this process's own priority.
+    pub niceness: Option<Niceness>,
 }
 
 impl ToolContext {
@@ -194,6 +199,20 @@ impl ToolContext {
         self
     }
 
+    /// The same context, starting every child a tool starts at `niceness`.
+    ///
+    /// ```
+    /// use abnegate_agent::ToolContext;
+    /// use abnegate_agent::tool::Niceness;
+    ///
+    /// let context = ToolContext::default().with_niceness(Niceness::LOWEST);
+    /// assert_eq!(context.niceness, Some(Niceness::LOWEST));
+    /// ```
+    pub fn with_niceness(mut self, niceness: Niceness) -> Self {
+        self.niceness = Some(niceness);
+        self
+    }
+
     /// Lay this context's proxy over `command`, or the one this process's
     /// environment names when it has none of its own.
     pub(crate) fn route(&self, command: &mut Command) {
@@ -224,6 +243,7 @@ impl Default for ToolContext {
             application: Application::default(),
             public_web: None,
             proxy: None,
+            niceness: None,
         }
     }
 }
@@ -322,6 +342,11 @@ mod tests {
     #[test]
     fn the_default_context_leaves_the_proxy_to_the_environment() {
         assert!(ToolContext::default().proxy.is_none());
+    }
+
+    #[test]
+    fn the_default_context_leaves_children_at_this_processs_priority() {
+        assert!(ToolContext::default().niceness.is_none());
     }
 
     #[test]
