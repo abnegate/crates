@@ -6,6 +6,8 @@ use crate::pull_request::JobLogError;
 use crate::pull_request::WorkflowJob;
 use crate::pull_request::WorkflowRun;
 use crate::pull_request::WorkflowRunFilter;
+use crate::pull_request::content_range::BYTES_UNIT;
+use crate::pull_request::content_range::ContentRange;
 use crate::pull_request::github_workflow_job::GitHubWorkflowJob;
 use crate::pull_request::github_workflow_run::GitHubWorkflowRun;
 use crate::pull_request::github_workflow_runs::GitHubWorkflowRuns;
@@ -23,12 +25,6 @@ const LOG_HOSTS: &[&str] = &[
 
 /// The only scheme a job log is followed to off the origin.
 const SECURE_SCHEME: &str = "https";
-
-/// What a `Content-Range` that counts bytes starts with.
-const BYTES_UNIT: &str = "bytes ";
-
-/// What a `Content-Range` names a total it does not know by.
-const UNKNOWN_TOTAL: &str = "*";
 
 /// The bits of a UTF-8 byte that say whether it continues a character.
 const CONTINUATION_MASK: u8 = 0b1100_0000;
@@ -158,18 +154,27 @@ impl PullRequestService {
     /// failed, which a long log's first bytes never reach.
     ///
     /// The log is asked for, redirected, timed and refused as
-    /// [`Self::fetch_job_log`] says, and errs as it does. Where the log is
-    /// stored, it is asked for its last `limit` bytes alone, with
-    /// `Range: bytes=-{limit}`. A store that answers with them, as 206, is
-    /// read as it answers: the log began before them unless the answer's
-    /// `Content-Range` places them at its first byte and counts no more than
-    /// arrived, and an answer without a `Content-Range` that says so is taken
-    /// to have begun before them. A store that ignores the range, or a log
-    /// GitHub answers with itself, is read to its end keeping only its last
-    /// `limit` bytes, and no more than twice `limit` is held at once. A
-    /// store that finds no range it can answer, as 416, as it does for a log
-    /// with no bytes, holds an empty log. A `limit` of zero asks for no
-    /// range and reads the log only to say whether it held anything.
+    /// [`Self::fetch_job_log`] says, and errs as it does. The request to the
+    /// target of GitHub's redirect asks for the last `limit` bytes alone,
+    /// with `Range: bytes=-{limit}`, which a store such as S3 answers with
+    /// them; a log GitHub answers with itself, unredirected, is asked for
+    /// with no range. GitHub's own store ignores that range and answers with
+    /// the whole log. When it says how long the log is and that it serves
+    /// ranges of bytes, that answer is left unread and the log is asked for
+    /// again, without the token and in what is left of the same time, from
+    /// `limit` bytes before its end, with `Range: bytes={start}-`. A log
+    /// whose store says neither is read to its end, keeping only its last
+    /// `limit` bytes and never holding more than twice `limit`.
+    ///
+    /// A part of the log a store answers with, as 206, is its end when its
+    /// `Content-Range` spans exactly the bytes that arrived and ends where
+    /// the log does, and the log began before it unless it starts at the
+    /// first byte; a part that is not is taken to follow more of the log. A
+    /// store that refuses the range as 416 with a `Content-Range` of
+    /// `bytes */0` holds an empty log, and any other 416 is
+    /// [`JobLogError::Refused`]. A `limit` of zero asks for no range and
+    /// says only whether the log held anything, from the length the answer
+    /// gives where it gives one.
     ///
     /// The bytes start at a character: those of a UTF-8 character the cut
     /// fell inside are left out, so a log that began before them comes back
@@ -215,10 +220,9 @@ impl PullRequestService {
     }
 
     /// The `end` of the log stored at `target`, up to `limit` bytes, asked
-    /// for without the token and with what is left of the time before
-    /// `deadline`; none left is [`JobLogError::Unreachable`], unsent. A
-    /// target on this service's origin is asked under the API version this
-    /// service names, if any, and one anywhere else under none.
+    /// for as [`Self::download`] says. A store that ignores the range the
+    /// end is asked for by, but gives the log's length and serves ranges of
+    /// bytes, is asked again from `limit` bytes before its end.
     async fn stored(
         &self,
         target: Url,
@@ -226,6 +230,40 @@ impl PullRequestService {
         limit: usize,
         end: LogEnd,
     ) -> PullRequestResult<JobLog> {
+        let range = end.range(limit);
+        let stored = self
+            .download(target.clone(), deadline, range.as_deref())
+            .await?;
+        let status = stored.status();
+        if range.is_some()
+            && status == StatusCode::RANGE_NOT_SATISFIABLE
+            && ContentRange::unsatisfied(stored.headers()) == Some(0)
+        {
+            return Ok(JobLog::new(Vec::new(), false));
+        }
+        let stored = served(stored)?;
+        let resumed = match range.and_then(|_| resumable(&stored, limit)) {
+            Some(start) => {
+                drop(stored);
+                let range = format!("{BYTES_UNIT}={start}-");
+                served(self.download(target, deadline, Some(&range)).await?)?
+            }
+            None => stored,
+        };
+        logged(resumed, limit, end).await
+    }
+
+    /// The answer of the store at `target` to a request for the log, which
+    /// carries `range` if any, with no token, in what is left of the time
+    /// before `deadline`; none left is [`JobLogError::Unreachable`], unsent.
+    /// A target on this service's origin is asked under the API version this
+    /// service names, if any, and one anywhere else under none.
+    async fn download(
+        &self,
+        target: Url,
+        deadline: Option<Instant>,
+        range: Option<&str>,
+    ) -> Result<Response, JobLogError> {
         let left = match deadline {
             Some(deadline) => remaining(deadline).ok_or(JobLogError::Unreachable)?,
             None => self.timeout,
@@ -239,21 +277,42 @@ impl PullRequestService {
             Some(version) => request.header(API_VERSION, version),
             None => request,
         };
-        let range = end.range(limit);
-        let request = match &range {
-            Some(range) => request.header(header::RANGE, range.as_str()),
+        let request = match range {
+            Some(range) => request.header(header::RANGE, range),
             None => request,
         };
-        let stored = request.send().await.map_err(|_| JobLogError::Unreachable)?;
-        let status = stored.status();
-        if range.is_some() && status == StatusCode::RANGE_NOT_SATISFIABLE {
-            return Ok(JobLog::new(Vec::new(), false));
-        }
-        if !status.is_success() {
-            return Err(JobLogError::Refused(status.as_u16()).into());
-        }
-        logged(stored, limit, end).await
+        request.send().await.map_err(|_| JobLogError::Unreachable)
     }
+}
+
+/// `stored`, when it is a success; any other status is
+/// [`JobLogError::Refused`].
+fn served(stored: Response) -> Result<Response, JobLogError> {
+    match stored.status().is_success() {
+        true => Ok(stored),
+        false => Err(JobLogError::Refused(stored.status().as_u16())),
+    }
+}
+
+/// Where the last `limit` bytes of the whole log `stored` answered with
+/// start, when it says the log is longer than that and that it serves ranges
+/// of bytes.
+fn resumable(stored: &Response, limit: usize) -> Option<u64> {
+    let whole = stored.status() == StatusCode::OK;
+    let length = stored.content_length()?;
+    let ranged = stored
+        .headers()
+        .get(header::ACCEPT_RANGES)
+        .and_then(|accepted| accepted.to_str().ok())
+        .is_some_and(|accepted| {
+            accepted
+                .split(',')
+                .any(|unit| unit.trim().eq_ignore_ascii_case(BYTES_UNIT))
+        });
+    (whole && ranged)
+        .then(|| length.checked_sub(counted(limit)))
+        .flatten()
+        .filter(|start| *start > 0)
 }
 
 /// Whether a walk that read `read` rows reached every one GitHub `counted`:
@@ -319,25 +378,46 @@ async fn logged(response: Response, limit: usize, end: LogEnd) -> PullRequestRes
 /// arrived than `limit`, or a partial answer's `Content-Range` does not
 /// place what arrived as the whole log.
 async fn read_tail(mut response: Response, limit: usize) -> PullRequestResult<(Vec<u8>, bool)> {
+    if limit == 0 {
+        return Ok((Vec::new(), held_any(response).await?));
+    }
     let partial = response.status() == StatusCode::PARTIAL_CONTENT;
-    let range = partial.then(|| content_range(response.headers()));
+    let range = ContentRange::of(response.headers());
     let mut tail = Vec::new();
     let mut arrived: u64 = 0;
     while let Some(chunk) = response.chunk().await? {
-        arrived = arrived.saturating_add(bytes(chunk.len()));
+        arrived = arrived.saturating_add(counted(chunk.len()));
         keep_last(&mut tail, &chunk, limit);
     }
     tail.drain(..tail.len().saturating_sub(limit));
-    let overflowed = arrived > bytes(limit);
-    let truncated = overflowed || range.is_some_and(|range| !whole(range, arrived));
+    let overflowed = arrived > counted(limit);
+    let followed = partial
+        && range
+            .and_then(|range| range.began_before(arrived))
+            .unwrap_or(true);
+    let truncated = overflowed || followed;
     if truncated {
         from_character(&mut tail);
     }
     Ok((tail, truncated))
 }
 
-/// `length` bytes as a count a `Content-Range` compares with.
-fn bytes(length: usize) -> u64 {
+/// Whether the log `response` carries holds any bytes, as its length says
+/// where it gives one, and otherwise as far as its first that arrive.
+async fn held_any(mut response: Response) -> PullRequestResult<bool> {
+    if let Some(length) = response.content_length() {
+        return Ok(length > 0);
+    }
+    while let Some(chunk) = response.chunk().await? {
+        if !chunk.is_empty() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// `length`, a count of bytes in memory, as a count of bytes on the wire.
+fn counted(length: usize) -> u64 {
     u64::try_from(length).unwrap_or(u64::MAX)
 }
 
@@ -347,6 +427,7 @@ fn bytes(length: usize) -> u64 {
 fn keep_last(tail: &mut Vec<u8>, chunk: &[u8], limit: usize) {
     if chunk.len() >= limit {
         tail.clear();
+        tail.reserve_exact(limit);
         tail.extend_from_slice(&chunk[chunk.len() - limit..]);
         return;
     }
@@ -359,27 +440,6 @@ fn keep_last(tail: &mut Vec<u8>, chunk: &[u8], limit: usize) {
         .min(bound);
     tail.reserve_exact(wanted - tail.len());
     tail.extend_from_slice(chunk);
-}
-
-/// The first byte and the total a `Content-Range` of
-/// `bytes {first}-{last}/{total}` names, the total `None` when it is `*`;
-/// `None` for no header or one that names no single range of bytes.
-fn content_range(headers: &HeaderMap) -> Option<(u64, Option<u64>)> {
-    let range = headers.get(header::CONTENT_RANGE)?.to_str().ok()?;
-    let (span, total) = range.strip_prefix(BYTES_UNIT)?.split_once('/')?;
-    let (first, _) = span.split_once('-')?;
-    let total = match total {
-        UNKNOWN_TOTAL => None,
-        total => Some(total.parse().ok()?),
-    };
-    Some((first.parse().ok()?, total))
-}
-
-/// Whether a partial answer whose `Content-Range` read as `range` carried
-/// the whole log in the `arrived` bytes: they start at its first byte and it
-/// counts no more of them.
-fn whole(range: Option<(u64, Option<u64>)>, arrived: u64) -> bool {
-    range.is_some_and(|(first, total)| first == 0 && total.is_none_or(|total| total <= arrived))
 }
 
 /// `tail` from its first UTF-8 character, without the up to three
@@ -1118,6 +1178,11 @@ mod tests {
         format!("bytes=-{limit}")
     }
 
+    /// The `Range` the log is asked for again by, from `start` to its end.
+    fn resumed(start: usize) -> String {
+        format!("bytes={start}-")
+    }
+
     /// A store's answer with the last `limit` bytes of `log` alone.
     fn partial(log: &[u8], limit: usize) -> ResponseTemplate {
         let first = log.len() - limit;
@@ -1129,9 +1194,16 @@ mod tests {
             .set_body_bytes(last(log, limit))
     }
 
-    /// A store on `server` that answers a request for the last `limit`
-    /// bytes, without the token, with `answer`.
-    async fn storing_tail(server: &MockServer, limit: usize, answer: ResponseTemplate) {
+    /// A store's answer with the whole of `log`, which says that it serves
+    /// ranges of bytes, as GitHub's own store answers a suffix range.
+    fn whole_offering_ranges(log: &[u8]) -> ResponseTemplate {
+        ResponseTemplate::new(200)
+            .insert_header("accept-ranges", "bytes")
+            .set_body_bytes(log.to_vec())
+    }
+
+    /// A store on `server` that refuses any request carrying the token.
+    async fn refusing_the_token(server: &MockServer) {
         Mock::given(method("GET"))
             .and(path(STORED_LOG))
             .and(header_exists("authorization"))
@@ -1140,6 +1212,13 @@ mod tests {
             .expect(0)
             .mount(server)
             .await;
+    }
+
+    /// A store on `server` that answers a request for the last `limit`
+    /// bytes, without the token, with `answer`, as one that honours a
+    /// suffix range does.
+    async fn storing_tail(server: &MockServer, limit: usize, answer: ResponseTemplate) {
+        refusing_the_token(server).await;
         Mock::given(method("GET"))
             .and(path(STORED_LOG))
             .and(query_param("sig", "signed-secret"))
@@ -1148,6 +1227,32 @@ mod tests {
             .expect(1)
             .mount(server)
             .await;
+    }
+
+    /// A store on `server` that keeps `log` as GitHub's own store does: it
+    /// answers a request for the last `limit` bytes with the whole log, and
+    /// one from `limit` bytes before its end with those bytes alone.
+    async fn storing_as_github_does(server: &MockServer, log: &[u8], limit: usize) {
+        storing_tail(server, limit, whole_offering_ranges(log)).await;
+        Mock::given(method("GET"))
+            .and(path(STORED_LOG))
+            .and(query_param("sig", "signed-secret"))
+            .and(header("range", resumed(log.len() - limit).as_str()))
+            .respond_with(partial(log, limit))
+            .expect(1)
+            .mount(server)
+            .await;
+    }
+
+    /// The requests that reached the store on `server`, in order.
+    async fn downloads(server: &MockServer) -> Vec<wiremock::Request> {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|request| request.url.path() == STORED_LOG)
+            .collect()
     }
 
     /// A request for job 9's log at `route` that carries the token and no
@@ -1171,7 +1276,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_tail_the_store_answers_as_a_range_is_the_end_of_the_log_and_truncated() {
+    async fn a_tail_from_a_store_that_ignores_a_suffix_range_is_asked_for_again_from_its_start() {
+        let server = MockServer::start().await;
+        let log = numbered(LONG_LOG_BYTES);
+        redirecting_unranged(&server, JOB_LOG).await;
+        storing_as_github_does(&server, &log, LIMIT).await;
+
+        let read = tail(&stand_in(&server).await, LIMIT).await.unwrap();
+
+        assert_eq!(read, JobLog::new(last(&log, LIMIT), true));
+        let downloads = downloads(&server).await;
+        let ranges: Vec<&str> = downloads
+            .iter()
+            .map(|request| request.headers["range"].to_str().unwrap())
+            .collect();
+        assert_eq!(
+            ranges,
+            [ranged(LIMIT), resumed(LONG_LOG_BYTES - LIMIT)],
+            "the suffix first, then from where the last bytes start"
+        );
+        assert!(
+            downloads
+                .iter()
+                .all(|request| !request.headers.contains_key("authorization")),
+            "neither download carries the token"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tail_from_a_store_that_honours_a_suffix_range_is_read_as_it_answers() {
         let server = MockServer::start().await;
         let log = numbered(LONG_LOG_BYTES);
         redirecting_unranged(&server, JOB_LOG).await;
@@ -1180,18 +1313,48 @@ mod tests {
         let read = tail(&stand_in(&server).await, LIMIT).await.unwrap();
 
         assert_eq!(read, JobLog::new(last(&log, LIMIT), true));
+        assert_eq!(downloads(&server).await.len(), 1);
     }
 
     #[tokio::test]
     async fn a_range_that_holds_the_whole_log_is_not_truncated() {
-        let server = MockServer::start().await;
         let log = numbered(LIMIT / 2);
-        redirecting_unranged(&server, JOB_LOG).await;
-        storing_tail(&server, LIMIT, partial(&log, log.len())).await;
 
-        let read = tail(&stand_in(&server).await, LIMIT).await.unwrap();
+        for unit in ["bytes", "BYTES"] {
+            let server = MockServer::start().await;
+            let answer = ResponseTemplate::new(206)
+                .insert_header(
+                    "content-range",
+                    format!("{unit} 0-{}/{}", log.len() - 1, log.len()).as_str(),
+                )
+                .set_body_bytes(log.clone());
+            redirecting_unranged(&server, JOB_LOG).await;
+            storing_tail(&server, LIMIT, answer).await;
 
-        assert_eq!(read, JobLog::new(log, false));
+            let read = tail(&stand_in(&server).await, LIMIT).await.unwrap();
+
+            assert_eq!(read, JobLog::new(log.clone(), false), "{unit}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_range_that_does_not_end_the_log_is_taken_as_truncated() {
+        for content_range in ["bytes 0-8/100", "bytes 3-11/100", "bytes 0-3/9"] {
+            let server = MockServer::start().await;
+            let answer = ResponseTemplate::new(206)
+                .insert_header("content-range", content_range)
+                .set_body_string("step one\n");
+            redirecting_unranged(&server, JOB_LOG).await;
+            storing_tail(&server, LIMIT, answer).await;
+
+            let read = tail(&stand_in(&server).await, LIMIT).await.unwrap();
+
+            assert_eq!(
+                read,
+                JobLog::new(b"step one\n".to_vec(), true),
+                "{content_range}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1217,10 +1380,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_tail_from_a_store_that_ignores_the_range_keeps_the_last_bytes() {
+    async fn a_tail_from_a_store_that_offers_no_ranges_is_read_to_its_end_keeping_the_last_bytes() {
         let log = numbered(LARGE_LOG_BYTES);
 
         let direct = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(JOB_LOG))
+            .and(header_exists("range"))
+            .respond_with(ResponseTemplate::new(500))
+            .with_priority(1)
+            .expect(0)
+            .mount(&direct)
+            .await;
         Mock::given(method("GET"))
             .and(path(JOB_LOG))
             .respond_with(ResponseTemplate::new(200).set_body_bytes(log.clone()))
@@ -1250,16 +1421,16 @@ mod tests {
         for whole in [b"step one\n".to_vec(), log] {
             let server = MockServer::start().await;
             redirecting_unranged(&server, JOB_LOG).await;
-            storing_tail(
-                &server,
-                LIMIT,
-                ResponseTemplate::new(200).set_body_bytes(whole.clone()),
-            )
-            .await;
+            storing_tail(&server, LIMIT, whole_offering_ranges(&whole)).await;
 
             let read = tail(&stand_in(&server).await, LIMIT).await.unwrap();
 
             assert_eq!(read, JobLog::new(whole, false));
+            assert_eq!(
+                downloads(&server).await.len(),
+                1,
+                "a log within the limit is not asked for again"
+            );
         }
     }
 
@@ -1272,6 +1443,9 @@ mod tests {
         let ranged = MockServer::start().await;
         redirecting_unranged(&ranged, JOB_LOG).await;
         storing_tail(&ranged, odd, partial(&log, odd)).await;
+        let asked_again = MockServer::start().await;
+        redirecting_unranged(&asked_again, JOB_LOG).await;
+        storing_as_github_does(&asked_again, &log, odd).await;
         let ignored = MockServer::start().await;
         redirecting_unranged(&ignored, JOB_LOG).await;
         storing_tail(
@@ -1281,7 +1455,7 @@ mod tests {
         )
         .await;
 
-        for server in [&ranged, &ignored] {
+        for server in [&ranged, &asked_again, &ignored] {
             let read = tail(&stand_in(server).await, odd).await.unwrap();
 
             assert_eq!(read, expected);
@@ -1305,43 +1479,72 @@ mod tests {
         assert_eq!(read, JobLog::new(last(&log, LIMIT), true));
     }
 
-    #[tokio::test]
-    async fn a_store_with_no_range_to_answer_holds_an_empty_log() {
+    /// What a store that refuses the range of a tail of `limit` bytes as
+    /// 416, its `Content-Range` saying `content_range`, comes to.
+    async fn unsatisfied(limit: usize, content_range: &str) -> PullRequestResult<JobLog> {
         let server = MockServer::start().await;
         redirecting_unranged(&server, JOB_LOG).await;
-        storing_tail(
-            &server,
-            LIMIT,
-            ResponseTemplate::new(416).insert_header("content-range", "bytes */0"),
-        )
-        .await;
+        Mock::given(method("GET"))
+            .and(path(STORED_LOG))
+            .respond_with(ResponseTemplate::new(416).insert_header("content-range", content_range))
+            .expect(1)
+            .mount(&server)
+            .await;
+        tail(&stand_in(&server).await, limit).await
+    }
 
-        let read = tail(&stand_in(&server).await, LIMIT).await.unwrap();
+    #[tokio::test]
+    async fn a_store_that_finds_the_log_empty_holds_an_empty_log() {
+        let read = unsatisfied(LIMIT, "bytes */0").await.unwrap();
 
         assert_eq!(read, JobLog::new(Vec::new(), false));
     }
 
     #[tokio::test]
+    async fn a_store_that_refuses_the_range_of_a_log_with_bytes_is_refused() {
+        let refused = unsatisfied(LIMIT, "bytes */15741").await;
+
+        assert!(
+            matches!(
+                refused,
+                Err(PullRequestError::JobLog(JobLogError::Refused(416)))
+            ),
+            "{refused:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_store_that_refuses_a_range_never_asked_for_is_refused() {
+        let refused = unsatisfied(0, "bytes */0").await;
+
+        assert!(
+            matches!(
+                refused,
+                Err(PullRequestError::JobLog(JobLogError::Refused(416)))
+            ),
+            "{refused:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn a_tail_of_no_bytes_asks_for_no_range_and_says_whether_the_log_held_any() {
-        let server = MockServer::start().await;
-        redirecting_unranged(&server, JOB_LOG).await;
-        Mock::given(method("GET"))
-            .and(path(STORED_LOG))
-            .and(header_exists("range"))
-            .respond_with(ResponseTemplate::new(416))
-            .with_priority(1)
-            .expect(0)
-            .mount(&server)
-            .await;
-        storing(
-            &server,
-            ResponseTemplate::new(200).set_body_string("step one\n"),
-        )
-        .await;
+        for (body, held) in [("step one\n", true), ("", false)] {
+            let server = MockServer::start().await;
+            redirecting_unranged(&server, JOB_LOG).await;
+            Mock::given(method("GET"))
+                .and(path(STORED_LOG))
+                .and(header_exists("range"))
+                .respond_with(ResponseTemplate::new(416))
+                .with_priority(1)
+                .expect(0)
+                .mount(&server)
+                .await;
+            storing(&server, ResponseTemplate::new(200).set_body_string(body)).await;
 
-        let read = tail(&stand_in(&server).await, 0).await.unwrap();
+            let read = tail(&stand_in(&server).await, 0).await.unwrap();
 
-        assert_eq!(read, JobLog::new(Vec::new(), true));
+            assert_eq!(read, JobLog::new(Vec::new(), held), "{body:?}");
+        }
     }
 
     #[tokio::test]
@@ -1461,19 +1664,21 @@ mod tests {
     fn a_rolling_tail_keeps_the_last_bytes_and_never_more_than_twice_its_limit() {
         let log = numbered(LONG_LOG_BYTES);
 
-        for size in [1, 7, LIMIT - 1, LIMIT, LIMIT + 1, LONG_LOG_BYTES] {
-            let mut kept = Vec::new();
-            for chunk in log.chunks(size) {
-                keep_last(&mut kept, chunk, LIMIT);
-                assert!(
-                    kept.capacity() <= 2 * LIMIT,
-                    "chunks of {size} grew the tail to {}",
-                    kept.capacity()
-                );
-            }
-            kept.drain(..kept.len().saturating_sub(LIMIT));
+        for limit in [1, LIMIT] {
+            for size in [1, 2, 7, LIMIT - 1, LIMIT, LIMIT + 1, LONG_LOG_BYTES] {
+                let mut kept = Vec::new();
+                for chunk in log.chunks(size) {
+                    keep_last(&mut kept, chunk, limit);
+                    assert!(
+                        kept.capacity() <= 2 * limit,
+                        "chunks of {size} grew a tail of {limit} to {}",
+                        kept.capacity()
+                    );
+                }
+                kept.drain(..kept.len().saturating_sub(limit));
 
-            assert_eq!(kept, last(&log, LIMIT), "chunks of {size}");
+                assert_eq!(kept, last(&log, limit), "chunks of {size}, limit {limit}");
+            }
         }
     }
 
@@ -1500,38 +1705,6 @@ mod tests {
             from_character(&mut tail);
 
             assert_eq!(tail, unencoded, "no UTF-8 is left as it is");
-        }
-    }
-
-    #[test]
-    fn a_content_range_is_read_for_its_first_byte_and_total() {
-        for (value, expected) in [
-            ("bytes 4000-4999/5000", Some((4_000, Some(5_000)))),
-            ("bytes 0-8/*", Some((0, None))),
-            ("bytes */5000", None),
-            ("items 0-8/9", None),
-            ("bytes 0-8/many", None),
-            ("bytes x-8/9", None),
-        ] {
-            let mut headers = HeaderMap::new();
-            headers.insert(reqwest::header::CONTENT_RANGE, value.parse().unwrap());
-
-            assert_eq!(content_range(&headers), expected, "{value}");
-        }
-        assert_eq!(content_range(&HeaderMap::new()), None);
-    }
-
-    #[test]
-    fn a_range_is_whole_only_from_the_first_byte_to_the_last() {
-        for (range, arrived, expected) in [
-            (Some((0, Some(9))), 9, true),
-            (Some((0, None)), 9, true),
-            (Some((0, Some(10))), 9, false),
-            (Some((1, Some(10))), 9, false),
-            (Some((1, None)), 9, false),
-            (None, 9, false),
-        ] {
-            assert_eq!(whole(range, arrived), expected, "{range:?} of {arrived}");
         }
     }
 

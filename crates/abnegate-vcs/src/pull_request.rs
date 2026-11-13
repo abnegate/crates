@@ -112,6 +112,7 @@ mod collected;
 mod comment_request;
 mod commit;
 mod commit_status;
+mod content_range;
 mod contents;
 mod create_request;
 mod created;
