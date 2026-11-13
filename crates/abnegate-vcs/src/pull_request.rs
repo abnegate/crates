@@ -83,6 +83,12 @@
 //! contents API instead, no more of the answer than any JSON answer, and
 //! returns its bytes decoded from base64 in a [`Contents`].
 //!
+//! [`PullRequestService::fetch_job_log`] reads a workflow job's log from its
+//! start and [`PullRequestService::fetch_job_log_tail`] from its end, where a
+//! failed job says why, each holding no more of it than the byte limit their
+//! caller passes, and returns a [`JobLog`] that says in
+//! [`JobLog::truncated`] whether the log held more.
+//!
 //! [`WebhookSignature`] checks that a webhook delivery was signed with the
 //! secret its webhook was registered with, before anything reads it.
 //!
@@ -106,6 +112,7 @@ mod collected;
 mod comment_request;
 mod commit;
 mod commit_status;
+mod content_range;
 mod contents;
 mod create_request;
 mod created;
@@ -204,6 +211,7 @@ mod job_log;
 mod job_log_error;
 mod label;
 mod listed;
+mod log_end;
 mod make_latest;
 mod merge_method;
 mod merge_request;

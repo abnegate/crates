@@ -364,6 +364,61 @@ async fn an_anonymous_job_log_redirected_to_storage_carries_no_authorization_on_
 }
 
 #[tokio::test]
+async fn an_anonymous_tail_of_a_job_log_carries_no_authorization_on_either_hop() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(JOB_LOG))
+        .respond_with(
+            ResponseTemplate::new(302).insert_header("location", "/storage/log?sig=signed-secret"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(STORED_LOG))
+        .and(query_param("sig", "signed-secret"))
+        .and(header("range", format!("bytes=-{LIMIT}").as_str()))
+        .respond_with(ResponseTemplate::new(200).set_body_string("step one\n"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let service = anonymous(&server).await;
+    let job = NonZeroU64::new(9).unwrap();
+
+    let read = service
+        .fetch_job_log_tail(&project(&service), &empty(), job, LIMIT)
+        .await
+        .unwrap();
+
+    assert_eq!(read, JobLog::new(b"step one\n".to_vec(), false));
+    let received = arrivals(&server).await;
+    assert_eq!(received.len(), 2);
+    assert!(
+        received
+            .iter()
+            .all(|request| !request.headers.contains_key(AUTHORIZATION)),
+        "neither the request for the log nor its download carries authorization"
+    );
+}
+
+#[tokio::test]
+async fn an_empty_tokens_job_log_tail_without_anonymous_reads_is_refused_unsent() {
+    let server = MockServer::start().await;
+    untouched(&server).await;
+    let service = stand_in(&server).await;
+    let job = NonZeroU64::new(9).unwrap();
+
+    let read = service
+        .fetch_job_log_tail(&project(&service), &empty(), job, LIMIT)
+        .await;
+
+    assert!(
+        matches!(read, Err(PullRequestError::AuthenticationFailed)),
+        "{read:?}"
+    );
+}
+
+#[tokio::test]
 async fn an_empty_tokens_job_log_without_anonymous_reads_is_refused_unsent() {
     let server = MockServer::start().await;
     untouched(&server).await;
