@@ -112,65 +112,6 @@ pub(crate) fn assert_passed(output: &Output) {
     );
 }
 
-/// A live listener on loopback, which holds a connection in its backlog
-/// without accepting it, and a bash script that connects to it and prints
-/// [`CONNECTED`](Loopback::CONNECTED), or fails when it cannot.
-///
-/// Bash rather than `curl` or an interpreter, so no gate that refuses a
-/// program by name stands between the script and the listener: only the
-/// network the child was started with does. The script runs in the C
-/// locale, so the refusal bash reports is the English text
-/// [`assert_network_denied`] reads whatever locale the host has.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(crate) struct Loopback {
-    _listener: std::net::TcpListener,
-    _directory: tempfile::TempDir,
-    /// The script, run as `bash <script>`.
-    pub(crate) script: std::path::PathBuf,
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-impl Loopback {
-    /// What the script prints once it has connected.
-    pub(crate) const CONNECTED: &str = "connected to the loopback listener";
-
-    pub(crate) fn new() -> Self {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback listener");
-        let port = listener.local_addr().expect("its address").port();
-        let directory = tempfile::TempDir::new().expect("a directory for the script");
-        let script = directory.path().join("connect.sh");
-        std::fs::write(
-            &script,
-            format!(
-                "export LC_ALL=C LANG=C\nexec 3<>/dev/tcp/127.0.0.1/{port} || exit 1\necho '{}'\n",
-                Self::CONNECTED
-            ),
-        )
-        .expect("the script is written");
-        Self {
-            _listener: listener,
-            _directory: directory,
-            script,
-        }
-    }
-}
-
-/// Fail unless `output` reports a connection the operating system refused
-/// the child, rather than one the listener refused or one that was made:
-/// seatbelt answers `EPERM` and the seccomp filter `EACCES`.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(crate) fn assert_network_denied(output: &str) {
-    assert!(
-        !output.contains(Loopback::CONNECTED),
-        "the child reached the listener: {output}"
-    );
-    let refused = output.lines().any(|line| {
-        line.contains("/dev/tcp/")
-            && (line.contains("Operation not permitted") || line.contains("Permission denied"))
-    });
-    assert!(refused, "the child was not refused the network: {output}");
-}
-
 /// The reason abnegate-exec appends to a denied command's failure to start.
 pub(crate) fn undeniable() -> String {
     let error = abnegate_exec::Network::Denied.spawn_error(io::Error::other(""));

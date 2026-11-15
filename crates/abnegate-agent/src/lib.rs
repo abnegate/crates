@@ -84,6 +84,9 @@
 //! - `mcp`: an MCP client that launches stdio servers and connects to
 //!   streamable HTTP ones, and adds their tools to a [`ToolRegistry`],
 //!   configured from the environment under an application's own prefix.
+//! - `testing`: `testing::Loopback` and `testing::assert_network_denied`,
+//!   for a crate whose tests prove a tool's command reaches the network only
+//!   when its context allows it.
 
 pub mod chat;
 pub mod context;
@@ -96,6 +99,9 @@ pub mod session;
 pub mod template;
 #[cfg(test)]
 mod test_support;
+#[cfg(any(test, feature = "testing"))]
+#[cfg_attr(docsrs, doc(cfg(feature = "testing")))]
+pub mod testing;
 pub mod tool;
 
 pub use abnegate_config::Application;
