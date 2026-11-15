@@ -33,8 +33,9 @@ struct PathBeneath {
 
 /// A Landlock ruleset that handles creating a block device and allows it
 /// beneath `/`, so the domain it makes refuses no file access. What the
-/// domain adds is Landlock's own scoping: a process in it can trace, or open
-/// the memory of, no process outside it.
+/// domain adds is Landlock's own scoping: a process in it can trace no
+/// process outside it, nor reach that process's memory, environment or
+/// descriptors through `/proc`, whatever mode the access asks for.
 ///
 /// The ruleset closes on exec, as every Landlock ruleset does.
 pub(super) fn ruleset() -> io::Result<OwnedFd> {
@@ -83,14 +84,16 @@ pub(super) fn ruleset() -> io::Result<OwnedFd> {
     Ok(ruleset)
 }
 
-/// Whether `error`, from [`ruleset`], says this host has no Landlock to
-/// offer: a kernel built without it, one booted with it off, or a container
-/// whose own seccomp profile refuses it.
-pub(super) fn unavailable(error: &io::Error) -> bool {
-    matches!(
-        error.raw_os_error(),
-        Some(libc::ENOSYS | libc::EOPNOTSUPP | libc::EPERM)
-    )
+/// The error number a denied command's spawn fails with when [`ruleset`]
+/// fails with `error`: `EPERM` where this host has no Landlock to offer, as
+/// on a kernel built without it, one booted with it off, or in a container
+/// whose own seccomp profile refuses it, and the error's own number
+/// otherwise.
+pub(super) fn refusal(error: &io::Error) -> libc::c_int {
+    match error.raw_os_error() {
+        Some(libc::ENOSYS | libc::EOPNOTSUPP) | None => libc::EPERM,
+        Some(errno) => errno,
+    }
 }
 
 /// Put the calling thread, and everything it starts, in the domain
@@ -110,4 +113,32 @@ pub(super) fn restrict(ruleset: BorrowedFd<'_>) -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_host_without_landlock_refuses_with_eperm() {
+        for errno in [libc::ENOSYS, libc::EOPNOTSUPP, libc::EPERM] {
+            assert_eq!(
+                refusal(&io::Error::from_raw_os_error(errno)),
+                libc::EPERM,
+                "{errno}"
+            );
+        }
+        assert_eq!(
+            refusal(&io::Error::from(io::ErrorKind::InvalidData)),
+            libc::EPERM
+        );
+    }
+
+    #[test]
+    fn any_other_failure_refuses_with_its_own_error_number() {
+        assert_eq!(
+            refusal(&io::Error::from_raw_os_error(libc::EMFILE)),
+            libc::EMFILE
+        );
+    }
 }

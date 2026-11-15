@@ -8,6 +8,19 @@
     )
 ))]
 mod denial;
+#[cfg(any(
+    target_os = "macos",
+    all(
+        target_os = "linux",
+        target_endian = "little",
+        any(
+            target_arch = "x86_64",
+            target_arch = "aarch64",
+            target_arch = "riscv64"
+        )
+    )
+))]
+mod descriptors;
 #[cfg(all(
     target_os = "linux",
     target_endian = "little",
@@ -49,22 +62,23 @@ pub enum Network {
     /// pipeline, or a channel between the command and what it starts, is
     /// unaffected.
     ///
+    /// The command inherits no descriptor beyond its standard input, output
+    /// and error, so a socket the executor holds, already connected or not,
+    /// does not reach it, unless a `pre_exec` hook added to the command makes
+    /// one inheritable again.
+    ///
     /// On Linux the command, and everything it starts, also:
     ///
     /// - makes no datagram socket pair, which could address a named socket;
-    /// - inherits no descriptor beyond its standard input, output and error,
-    ///   so a socket the executor holds does not reach it, unless a
-    ///   `pre_exec` hook added to the command makes one inheritable again;
     /// - runs with `no_new_privs`, so a setuid program or one with file
     ///   capabilities, such as `sudo`, `ping` or `fusermount`, gains no
     ///   privilege in it;
-    /// - traces, and writes the memory of, no process outside it, the
-    ///   executor included, which could otherwise be made to reach the
-    ///   network for it. A Landlock domain that refuses no file access
-    ///   keeps it in. Where Landlock is unavailable, Yama does instead when
-    ///   `kernel.yama.ptrace_scope` is 1 or 2 and the executor holds no
-    ///   `CAP_SYS_PTRACE`, or when it is 3. A host where neither does fails
-    ///   to spawn the command with `EPERM`.
+    /// - traces no process outside it, the executor included, and reaches
+    ///   none of their memory, environment or descriptors through `/proc`,
+    ///   so it can neither make one reach the network for it nor reopen a
+    ///   pipe one holds, such as an MCP server's standard input. A Landlock
+    ///   domain that refuses no file access keeps it in, and a host without
+    ///   Landlock fails to spawn the command with `EPERM`.
     ///
     /// On macOS the command also cannot open a URL or a document through
     /// LaunchServices or send an Apple event, so it cannot hand a URL to the
@@ -172,9 +186,15 @@ mod tests {
     #[cfg(target_os = "linux")]
     const PROBE_ABSTRACT_UNIX: &str = "ABNEGATE_EXEC_NETWORK_PROBE_ABSTRACT_UNIX";
 
-    /// Names the process whose memory the probe tries to open for writing.
+    /// Names the process whose memory, and whose pipe, the probe tries to
+    /// open for writing.
     #[cfg(target_os = "linux")]
     const PROBE_PARENT: &str = "ABNEGATE_EXEC_NETWORK_PROBE_PARENT";
+
+    /// Names the write end of a pipe the test process holds, which the probe
+    /// tries to reopen through `/proc`.
+    #[cfg(target_os = "linux")]
+    const PROBE_PIPE: &str = "ABNEGATE_EXEC_NETWORK_PROBE_PIPE";
 
     /// Names an inheritable descriptor the test process holds, which the probe
     /// checks it did not inherit.
@@ -252,6 +272,15 @@ mod tests {
             .open(format!("/proc/{parent}/mem"))
     }
 
+    #[cfg(target_os = "linux")]
+    fn proc_fd() -> io::Result<std::fs::File> {
+        let parent = variable(PROBE_PARENT);
+        let pipe = variable(PROBE_PIPE);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(format!("/proc/{parent}/fd/{pipe}"))
+    }
+
     /// Not a test in itself: run as a child with [`PROBE_TARGET`] set, it
     /// prints one `name=outcome` line for each way it tries to reach a
     /// network, or something that could reach one for it, and one for a Unix
@@ -277,6 +306,7 @@ mod tests {
             println!("datagram_pair={}", outcome(UnixDatagram::pair()));
             println!("abstract_unix={}", outcome(abstract_unix()));
             println!("memory={}", outcome(memory()));
+            println!("proc_fd={}", outcome(proc_fd()));
             println!("io_uring={}", io_uring());
         }
     }
@@ -306,7 +336,8 @@ mod tests {
 
     /// Everything a probe tries to reach, live for as long as the probe runs:
     /// a loopback listener, a named Unix listener and datagram socket, an
-    /// abstract Unix listener on Linux, and an inheritable descriptor.
+    /// inheritable descriptor, and on Linux an abstract Unix listener and a
+    /// pipe.
     struct Targets {
         tcp: TcpListener,
         _directory: TempDir,
@@ -318,6 +349,8 @@ mod tests {
         abstract_name: String,
         #[cfg(target_os = "linux")]
         _abstract_listener: UnixListener,
+        #[cfg(target_os = "linux")]
+        pipe: (io::PipeReader, io::PipeWriter),
         inherited: OwnedFd,
     }
 
@@ -332,6 +365,8 @@ mod tests {
             #[cfg(target_os = "linux")]
             let (abstract_name, abstract_listener) = abstract_listener();
             let inherited = inheritable(&tcp);
+            #[cfg(target_os = "linux")]
+            let pipe = io::pipe().expect("a pipe");
             Self {
                 tcp,
                 _directory: directory,
@@ -343,6 +378,8 @@ mod tests {
                 abstract_name,
                 #[cfg(target_os = "linux")]
                 _abstract_listener: abstract_listener,
+                #[cfg(target_os = "linux")]
+                pipe,
                 inherited,
             }
         }
@@ -357,7 +394,8 @@ mod tests {
             #[cfg(target_os = "linux")]
             command
                 .env(PROBE_ABSTRACT_UNIX, &self.abstract_name)
-                .env(PROBE_PARENT, std::process::id().to_string());
+                .env(PROBE_PARENT, std::process::id().to_string())
+                .env(PROBE_PIPE, self.pipe.1.as_raw_fd().to_string());
         }
     }
 
@@ -426,12 +464,10 @@ mod tests {
             report.assert(name, "PermissionDenied");
         }
         report.assert("unix", "ok");
+        report.assert("inherited", &libc::EBADF.to_string());
         #[cfg(target_os = "linux")]
-        {
-            for name in ["datagram_pair", "abstract_unix", "memory"] {
-                report.assert(name, "PermissionDenied");
-            }
-            report.assert("inherited", &libc::EBADF.to_string());
+        for name in ["datagram_pair", "abstract_unix", "memory", "proc_fd"] {
+            report.assert(name, "PermissionDenied");
         }
     }
 
@@ -453,6 +489,7 @@ mod tests {
         {
             report.assert("datagram_pair", "ok");
             report.assert("abstract_unix", "ok");
+            report.assert("proc_fd", "ok");
             if ancestors_traceable() {
                 report.assert("memory", "ok");
             } else {
