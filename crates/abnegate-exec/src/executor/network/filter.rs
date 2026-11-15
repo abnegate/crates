@@ -2,7 +2,6 @@ use std::io;
 
 use nix::libc;
 use nix::libc::sock_filter;
-use tokio::process::Command;
 
 /// `AUDIT_ARCH_X86_64`: `EM_X86_64` marked 64-bit and little-endian.
 #[cfg(target_arch = "x86_64")]
@@ -26,9 +25,23 @@ const ARCHITECTURE_OFFSET: u32 = 4;
 /// Where `struct seccomp_data` keeps the low word of the first argument, on
 /// a little-endian host.
 const FIRST_ARGUMENT_OFFSET: u32 = 16;
+/// Where `struct seccomp_data` keeps the low word of the second argument, on
+/// a little-endian host.
+const SECOND_ARGUMENT_OFFSET: u32 = 24;
 
-/// The socket families a denied command may still open.
-const ALLOWED_FAMILIES: &[libc::c_int] = &[libc::AF_UNIX, libc::AF_NETLINK];
+/// `SOCK_TYPE_MASK`: the bits of a socket type that name its kind, below
+/// `SOCK_NONBLOCK` and `SOCK_CLOEXEC`.
+const SOCKET_TYPE_MASK: u32 = 0xF;
+
+/// The socket families a denied command may still open with `socket`. A
+/// Unix socket is not among them: connected to a named or abstract address,
+/// it reaches a local daemon that can reach the network for the command.
+const ALLOWED_FAMILIES: &[libc::c_int] = &[libc::AF_NETLINK];
+
+/// The kinds of Unix socket pair a denied command may still make. A
+/// datagram pair is not among them: it can send to, or reconnect to, a named
+/// or abstract address.
+const ALLOWED_PAIRS: &[libc::c_int] = &[libc::SOCK_STREAM, libc::SOCK_SEQPACKET];
 
 /// Syscalls that could make or borrow a network socket without `socket`.
 const FORBIDDEN_SYSCALLS: &[libc::c_long] = &[
@@ -38,42 +51,53 @@ const FORBIDDEN_SYSCALLS: &[libc::c_long] = &[
     libc::SYS_pidfd_getfd,
 ];
 
-/// Install a seccomp filter in `command`'s process just before it executes,
-/// which every process it starts inherits and none can lift: a socket
-/// outside [`ALLOWED_FAMILIES`] is refused with `EACCES`, and each of
+/// A seccomp filter that refuses a socket outside [`ALLOWED_FAMILIES`] and
+/// a socket pair outside [`ALLOWED_PAIRS`] with `EACCES`, and each of
 /// [`FORBIDDEN_SYSCALLS`], each a way to make or borrow a socket around that
-/// check, with `EPERM`. A filter that cannot be installed fails the spawn.
-pub(super) fn deny(command: &mut Command) {
-    let instructions = program();
-    let length = u16::try_from(instructions.len()).expect("the filter fits a BPF program");
-    // Runs between fork and exec, so it allocates nothing: the program was
-    // built before the fork, and `prctl` and `syscall` are bare syscall
-    // wrappers.
-    #[allow(unsafe_code)]
-    unsafe {
-        command.pre_exec(move || {
-            let program = libc::sock_fprog {
-                len: length,
-                filter: instructions.as_ptr().cast_mut(),
-            };
-            if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == -1 {
-                return Err(io::Error::last_os_error());
-            }
-            let installed = libc::syscall(
+/// check, with `EPERM`.
+pub(super) struct Filter {
+    instructions: Vec<sock_filter>,
+    length: u16,
+}
+
+impl Filter {
+    /// The filter, built ahead of the fork it is installed after.
+    pub(super) fn new() -> Self {
+        let instructions = program();
+        let length = u16::try_from(instructions.len()).expect("the filter fits a BPF program");
+        Self {
+            instructions,
+            length,
+        }
+    }
+
+    /// Install the filter on the calling thread, which every process it
+    /// starts inherits and none can lift. The thread must have set
+    /// `no_new_privs` first.
+    ///
+    /// It allocates nothing, so it may run between fork and exec.
+    pub(super) fn install(&self) -> io::Result<()> {
+        let program = libc::sock_fprog {
+            len: self.length,
+            filter: self.instructions.as_ptr().cast_mut(),
+        };
+        #[allow(unsafe_code)]
+        let installed = unsafe {
+            libc::syscall(
                 libc::SYS_seccomp,
                 libc::SECCOMP_SET_MODE_FILTER,
                 0,
                 &raw const program,
-            );
-            if installed == -1 {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(())
-        });
+            )
+        };
+        if installed == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
     }
 }
 
-/// The filter [`deny`] installs.
+/// The instructions of a [`Filter`].
 fn program() -> Vec<sock_filter> {
     let mut program = vec![
         load(ARCHITECTURE_OFFSET),
@@ -83,6 +107,7 @@ fn program() -> Vec<sock_filter> {
     ];
     program.extend(foreign_abi());
     program.extend(socket_families());
+    program.extend(socket_pairs());
     program.extend(forbidden_syscalls());
     program
 }
@@ -105,6 +130,23 @@ fn socket_families() -> Vec<sock_filter> {
     ];
     for (index, &family) in ALLOWED_FAMILIES.iter().enumerate() {
         instructions.push(equals(family.unsigned_abs(), offset(families - index), 0));
+    }
+    instructions.push(refuse(libc::EACCES));
+    instructions.push(allow());
+    instructions
+}
+
+fn socket_pairs() -> Vec<sock_filter> {
+    let kinds = ALLOWED_PAIRS.len();
+    let mut instructions = vec![
+        equals(number(libc::SYS_socketpair), 0, offset(kinds + 6)),
+        load(FIRST_ARGUMENT_OFFSET),
+        equals(libc::AF_UNIX.unsigned_abs(), 0, offset(kinds + 2)),
+        load(SECOND_ARGUMENT_OFFSET),
+        mask(SOCKET_TYPE_MASK),
+    ];
+    for (index, &kind) in ALLOWED_PAIRS.iter().enumerate() {
+        instructions.push(equals(kind.unsigned_abs(), offset(kinds - index), 0));
     }
     instructions.push(refuse(libc::EACCES));
     instructions.push(allow());
@@ -139,6 +181,10 @@ fn load(offset: u32) -> sock_filter {
     statement(libc::BPF_LD | libc::BPF_W | libc::BPF_ABS, offset)
 }
 
+fn mask(bits: u32) -> sock_filter {
+    statement(libc::BPF_ALU | libc::BPF_AND | libc::BPF_K, bits)
+}
+
 fn equals(value: u32, matched: u8, unmatched: u8) -> sock_filter {
     jump(libc::BPF_JEQ, value, matched, unmatched)
 }
@@ -159,12 +205,12 @@ fn refuse(errno: libc::c_int) -> sock_filter {
     )
 }
 
-fn statement(parts: u32, k: u32) -> sock_filter {
+fn statement(parts: u32, value: u32) -> sock_filter {
     sock_filter {
         code: code(parts),
         jt: 0,
         jf: 0,
-        k,
+        k: value,
     }
 }
 
@@ -186,6 +232,7 @@ mod tests {
         architecture: u32,
         number: u32,
         first_argument: u32,
+        second_argument: u32,
     }
 
     impl Call {
@@ -194,6 +241,7 @@ mod tests {
                 architecture: NATIVE_ARCHITECTURE,
                 number: number(syscall),
                 first_argument: 0,
+                second_argument: 0,
             }
         }
 
@@ -204,11 +252,20 @@ mod tests {
             }
         }
 
+        fn socket_pair(family: libc::c_int, kind: libc::c_int) -> Self {
+            Self {
+                first_argument: family.unsigned_abs(),
+                second_argument: kind.unsigned_abs(),
+                ..Self::native(libc::SYS_socketpair)
+            }
+        }
+
         fn word(&self, offset: u32) -> u32 {
             match offset {
                 NUMBER_OFFSET => self.number,
                 ARCHITECTURE_OFFSET => self.architecture,
                 FIRST_ARGUMENT_OFFSET => self.first_argument,
+                SECOND_ARGUMENT_OFFSET => self.second_argument,
                 _ => panic!("the filter read an unexpected offset {offset}"),
             }
         }
@@ -231,6 +288,8 @@ mod tests {
                 accumulator = call.word(instruction.k);
             } else if parts == libc::BPF_RET | libc::BPF_K {
                 return instruction.k;
+            } else if parts == libc::BPF_ALU | libc::BPF_AND | libc::BPF_K {
+                accumulator &= instruction.k;
             } else {
                 let taken = if parts == libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K {
                     accumulator == instruction.k
@@ -263,11 +322,7 @@ mod tests {
     }
 
     #[test]
-    fn a_unix_or_netlink_socket_is_allowed() {
-        assert_eq!(
-            verdict(&Call::socket(libc::AF_UNIX)),
-            libc::SECCOMP_RET_ALLOW
-        );
+    fn a_netlink_socket_is_allowed() {
         assert_eq!(
             verdict(&Call::socket(libc::AF_NETLINK)),
             libc::SECCOMP_RET_ALLOW
@@ -276,11 +331,52 @@ mod tests {
 
     #[test]
     fn every_other_socket_is_refused() {
-        for family in [libc::AF_INET, libc::AF_INET6, libc::AF_PACKET, 0, 0xFFFF] {
+        for family in [
+            libc::AF_UNIX,
+            libc::AF_INET,
+            libc::AF_INET6,
+            libc::AF_PACKET,
+            0,
+            0xFFFF,
+        ] {
             assert_eq!(
                 verdict(&Call::socket(family)),
                 refused(libc::EACCES),
                 "{family}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_stream_or_sequenced_packet_unix_pair_is_allowed() {
+        for kind in [
+            libc::SOCK_STREAM,
+            libc::SOCK_STREAM | libc::SOCK_CLOEXEC,
+            libc::SOCK_SEQPACKET | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
+        ] {
+            assert_eq!(
+                verdict(&Call::socket_pair(libc::AF_UNIX, kind)),
+                libc::SECCOMP_RET_ALLOW,
+                "{kind:#x}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_datagram_pair_or_a_pair_of_another_family_is_refused() {
+        for (family, kind) in [
+            (libc::AF_UNIX, libc::SOCK_DGRAM),
+            (libc::AF_UNIX, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC),
+            (libc::AF_UNIX, libc::SOCK_RAW),
+            (libc::AF_UNIX, 0),
+            (libc::AF_INET, libc::SOCK_STREAM),
+            (libc::AF_TIPC, libc::SOCK_SEQPACKET),
+            (libc::AF_NETLINK, libc::SOCK_RAW),
+        ] {
+            assert_eq!(
+                verdict(&Call::socket_pair(family, kind)),
+                refused(libc::EACCES),
+                "{family} {kind:#x}"
             );
         }
     }
@@ -302,8 +398,8 @@ mod tests {
             libc::SYS_read,
             libc::SYS_write,
             libc::SYS_execve,
-            libc::SYS_socketpair,
             libc::SYS_connect,
+            libc::SYS_sendmsg,
         ] {
             assert_eq!(
                 verdict(&Call::native(syscall)),
@@ -329,7 +425,7 @@ mod tests {
         let call = Call::native(libc::SYS_socket);
         let call = Call {
             number: call.number | X32_SYSCALL_BIT,
-            first_argument: libc::AF_UNIX.unsigned_abs(),
+            first_argument: libc::AF_NETLINK.unsigned_abs(),
             ..call
         };
 
