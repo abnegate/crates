@@ -22,6 +22,10 @@ const WORKTREES: &str = "worktrees";
 /// pointing back at it.
 const BACK_LINK: &str = "gitdir";
 
+/// The write bits of the owner, the group and everyone else; an exclude file
+/// with none of them set is one the user marked read-only.
+const WRITABLE: Mode = Mode::S_IWUSR.union(Mode::S_IWGRP).union(Mode::S_IWOTH);
+
 /// Where git keeps a checkout's repository, as `git rev-parse` resolved it
 /// from the checkout.
 ///
@@ -125,7 +129,9 @@ impl GitLayout {
 /// descriptor of the directory before it and none through a link, so a run
 /// that swaps `info` or `exclude` for a link between steps is refused rather
 /// than followed. The open never waits, and anything but a regular file, a
-/// FIFO whose read would wait for a writer among them, is refused.
+/// FIFO whose read would wait for a writer among them, is refused. So is a
+/// file with no write bit set, even for a caller such as root whose open
+/// ignores the bits, because the user marked it read-only.
 fn open_exclude(repository: &Path) -> nix::Result<File> {
     let exclude = Path::new(EXCLUDE_PATH);
     let (Some(information), Some(name)) = (exclude.parent(), exclude.file_name()) else {
@@ -149,9 +155,15 @@ fn open_exclude(repository: &Path) -> nix::Result<File> {
             | OFlag::O_CLOEXEC,
         Mode::from_bits_truncate(0o666),
     )?;
-    let kind = SFlag::from_bits_truncate(fstat(&file)?.st_mode) & SFlag::S_IFMT;
-    if kind != SFlag::S_IFREG {
+    let mode = fstat(&file)?.st_mode;
+    if SFlag::from_bits_truncate(mode) & SFlag::S_IFMT != SFlag::S_IFREG {
         return Err(Errno::EINVAL);
+    }
+    if Mode::from_bits_truncate(mode)
+        .intersection(WRITABLE)
+        .is_empty()
+    {
+        return Err(Errno::EACCES);
     }
     Ok(File::from(file))
 }
