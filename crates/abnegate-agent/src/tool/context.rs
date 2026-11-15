@@ -97,8 +97,9 @@ pub struct ToolContext {
     ///
     /// [`Network::Denied`] is enforced by the operating system rather than by
     /// what a call names, so a shell, an interpreter or a build script is
-    /// kept off the network just the same, loopback included; Unix sockets
-    /// still work. A host that cannot enforce it never runs the child with a
+    /// kept off the network just the same, loopback included, and so is a
+    /// named or abstract Unix socket; pipes and stream socket pairs still
+    /// work. A host that cannot enforce it never runs the child with a
     /// network: the child fails to start, or exits without running.
     /// [`Network::Open`] by default.
     ///

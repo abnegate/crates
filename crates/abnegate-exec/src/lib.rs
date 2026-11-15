@@ -86,7 +86,11 @@
 //! unconfined command, and every process it starts, off the network
 //! altogether, loopback included, without confining its filesystem: the
 //! operating system refuses the sockets, so an interpreter or a shell the
-//! command starts cannot reach one either.
+//! command starts cannot reach one either. Named and abstract Unix sockets are
+//! refused too, since a local daemon behind one could reach the network for
+//! the command; pipes and stream socket pairs still work. See
+//! [`Network::Denied`] for what else Linux puts in place, and when a host
+//! fails to spawn a denied command instead.
 //!
 //! # Platform support
 //!

@@ -7,6 +7,16 @@
         target_arch = "riscv64"
     )
 ))]
+mod denial;
+#[cfg(all(
+    target_os = "linux",
+    target_endian = "little",
+    any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "riscv64"
+    )
+))]
 mod filter;
 
 use std::ffi::OsStr;
@@ -21,7 +31,7 @@ use super::confinement::Backend;
 #[cfg(target_os = "macos")]
 const SEATBELT_PROFILE: &str = "(version 1)(allow default)(deny network*)";
 
-/// Whether an unconfined command, and every process it starts in turn, may
+/// Whether an unconfined command, and every process it starts, may
 /// reach a network.
 ///
 /// [`Denied`](Network::Denied) is enforced by the operating system rather than
@@ -29,7 +39,7 @@ const SEATBELT_PROFILE: &str = "(version 1)(allow default)(deny network*)";
 /// the command starts is denied just the same: on macOS the command runs
 /// under a seatbelt profile that allows everything but the network, and on
 /// Linux (x86-64, AArch64 and RISC-V 64) under a seccomp filter that refuses
-/// every socket but a Unix or netlink one. A host that can enforce neither
+/// every socket but a netlink one. A host that can enforce neither
 /// fails to start a denied command rather than running it with a network.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[non_exhaustive]
@@ -38,9 +48,28 @@ pub enum Network {
     #[default]
     Open,
     /// The command, and everything it starts, reaches no network: not the
-    /// internet, not a name server, and not a listener on loopback. Unix
-    /// sockets still work, so a pipeline or a local IPC channel is
+    /// internet, not a name server, not a listener on loopback, and not a
+    /// named or abstract Unix socket, through which a local daemon could
+    /// reach one for it. Pipes and stream socket pairs still work, so a
+    /// pipeline, or a channel between the command and what it starts, is
     /// unaffected.
+    ///
+    /// On Linux the command, and everything it starts, also:
+    ///
+    /// - makes no datagram socket pair, which could address a named socket;
+    /// - inherits no descriptor beyond its standard input, output and error,
+    ///   so a socket the executor holds does not reach it, unless a
+    ///   `pre_exec` hook added to the command makes one inheritable again;
+    /// - runs with `no_new_privs`, so a setuid program or one with file
+    ///   capabilities, such as `sudo`, `ping` or `fusermount`, gains no
+    ///   privilege in it;
+    /// - traces, and writes the memory of, no process outside it, the
+    ///   executor included, which could otherwise be made to reach the
+    ///   network for it. A Landlock domain that refuses no file access
+    ///   keeps it in. Where Landlock is unavailable, Yama does instead when
+    ///   `kernel.yama.ptrace_scope` is 1 or 2 and the executor holds no
+    ///   `CAP_SYS_PTRACE`, or when it is 3. A host where neither does fails
+    ///   to spawn the command with `EPERM`.
     Denied,
 }
 
@@ -80,7 +109,7 @@ fn denied(program: &OsStr) -> Command {
 ))]
 fn denied(program: &OsStr) -> Command {
     let mut command = Command::new(program);
-    filter::deny(&mut command);
+    denial::deny(&mut command);
     command
 }
 
@@ -113,9 +142,18 @@ mod tests {
     use std::net::TcpListener;
     use std::net::TcpStream;
     use std::net::UdpSocket;
+    use std::os::fd::AsRawFd;
+    use std::os::fd::FromRawFd;
+    use std::os::fd::OwnedFd;
+    use std::os::fd::RawFd;
+    use std::os::unix::net::UnixDatagram;
+    use std::os::unix::net::UnixListener;
     use std::os::unix::net::UnixStream;
     use std::path::PathBuf;
     use std::process::Stdio;
+
+    use nix::libc;
+    use tempfile::TempDir;
 
     use crate::executor::ConfinementMode;
     use crate::executor::sandbox;
@@ -124,6 +162,29 @@ mod tests {
 
     /// Names the loopback address a [`network_probe`] child tries to reach.
     const PROBE_TARGET: &str = "ABNEGATE_EXEC_NETWORK_PROBE";
+
+    /// Names the path of a Unix stream listener the probe tries to connect to.
+    const PROBE_NAMED_UNIX: &str = "ABNEGATE_EXEC_NETWORK_PROBE_NAMED_UNIX";
+
+    /// Names the path of a bound Unix datagram socket the probe tries to send
+    /// to.
+    const PROBE_DATAGRAM: &str = "ABNEGATE_EXEC_NETWORK_PROBE_DATAGRAM";
+
+    /// Names the abstract Unix listener the probe tries to connect to.
+    #[cfg(target_os = "linux")]
+    const PROBE_ABSTRACT_UNIX: &str = "ABNEGATE_EXEC_NETWORK_PROBE_ABSTRACT_UNIX";
+
+    /// Names the process whose memory the probe tries to open for writing.
+    #[cfg(target_os = "linux")]
+    const PROBE_PARENT: &str = "ABNEGATE_EXEC_NETWORK_PROBE_PARENT";
+
+    /// Names an inheritable descriptor the test process holds, which the probe
+    /// checks it did not inherit.
+    const PROBE_INHERITED: &str = "ABNEGATE_EXEC_NETWORK_PROBE_INHERITED";
+
+    /// The lowest number the inheritable descriptor is duplicated to, well
+    /// clear of any the probe opens itself.
+    const INHERITED_FLOOR: RawFd = 200;
 
     /// The probe's path, as `--exact` names it.
     const PROBE: &str = "executor::network::tests::network_probe";
@@ -137,14 +198,9 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "linux")]
-    fn io_uring() -> String {
-        // A null parameter block: the kernel answers EFAULT when it lets the
-        // call through at all, so no ring is ever made.
-        #[allow(unsafe_code)]
-        let result = unsafe {
-            nix::libc::syscall(nix::libc::SYS_io_uring_setup, 1, std::ptr::null_mut::<u8>())
-        };
+    /// `ok`, or the error number the last call failed with, for a raw call
+    /// that answered `-1`.
+    fn errno(result: libc::c_long) -> String {
         match result {
             -1 => io::Error::last_os_error()
                 .raw_os_error()
@@ -154,21 +210,77 @@ mod tests {
         }
     }
 
+    fn variable(name: &str) -> String {
+        std::env::var(name).unwrap_or_else(|_| panic!("the probe was given no {name}"))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn io_uring() -> String {
+        // A null parameter block: the kernel answers EFAULT when it lets the
+        // call through at all, so no ring is ever made.
+        #[allow(unsafe_code)]
+        let result =
+            unsafe { libc::syscall(libc::SYS_io_uring_setup, 1, std::ptr::null_mut::<u8>()) };
+        errno(result)
+    }
+
+    fn inherited() -> String {
+        let descriptor: RawFd = variable(PROBE_INHERITED)
+            .parse()
+            .expect("an inherited descriptor number");
+        #[allow(unsafe_code)]
+        let flags = unsafe { libc::fcntl(descriptor, libc::F_GETFD) };
+        errno(flags.into())
+    }
+
+    fn datagram() -> io::Result<usize> {
+        UnixDatagram::unbound()?.send_to(b"probe", variable(PROBE_DATAGRAM))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn abstract_unix() -> io::Result<UnixStream> {
+        use std::os::linux::net::SocketAddrExt;
+        use std::os::unix::net::SocketAddr;
+
+        let address = SocketAddr::from_abstract_name(variable(PROBE_ABSTRACT_UNIX))?;
+        UnixStream::connect_addr(&address)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn memory() -> io::Result<std::fs::File> {
+        let parent = variable(PROBE_PARENT);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(format!("/proc/{parent}/mem"))
+    }
+
     /// Not a test in itself: run as a child with [`PROBE_TARGET`] set, it
     /// prints one `name=outcome` line for each way it tries to reach a
-    /// network, and one for a Unix socket pair, which must always work.
+    /// network, or something that could reach one for it, and one for a Unix
+    /// stream socket pair, which must always work.
     #[test]
     fn network_probe() {
         let Some(target) = std::env::var_os(PROBE_TARGET) else {
             return;
         };
+        println!("inherited={}", inherited());
         let target = target.to_string_lossy().into_owned();
         println!("tcp={}", outcome(TcpStream::connect(&target)));
         println!("udp={}", outcome(UdpSocket::bind("0.0.0.0:0")));
         println!("ipv6={}", outcome(UdpSocket::bind("[::]:0")));
         println!("unix={}", outcome(UnixStream::pair()));
+        println!(
+            "named_unix={}",
+            outcome(UnixStream::connect(variable(PROBE_NAMED_UNIX)))
+        );
+        println!("datagram={}", outcome(datagram()));
         #[cfg(target_os = "linux")]
-        println!("io_uring={}", io_uring());
+        {
+            println!("datagram_pair={}", outcome(UnixDatagram::pair()));
+            println!("abstract_unix={}", outcome(abstract_unix()));
+            println!("memory={}", outcome(memory()));
+            println!("io_uring={}", io_uring());
+        }
     }
 
     /// Everything one probe run reported, by name.
@@ -184,23 +296,105 @@ mod tests {
                 .find_map(|line| line.strip_prefix(prefix.as_str()))
                 .unwrap_or_else(|| panic!("the probe reported no {name}:\n{}", self.stdout))
         }
+
+        fn assert(&self, name: &str, expected: &str) {
+            assert_eq!(self.get(name), expected, "{name}:\n{}", self.stdout);
+        }
     }
 
     fn executable() -> PathBuf {
         std::env::current_exe().expect("the test binary's path")
     }
 
-    /// A live listener on loopback, which an open command reaches, and the
-    /// address a denied one must fail to.
-    fn listener() -> (TcpListener, String) {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback listener");
-        let address = listener.local_addr().expect("its address").to_string();
-        (listener, address)
+    /// Everything a probe tries to reach, live for as long as the probe runs:
+    /// a loopback listener, a named Unix listener and datagram socket, an
+    /// abstract Unix listener on Linux, and an inheritable descriptor.
+    struct Targets {
+        tcp: TcpListener,
+        _directory: TempDir,
+        named_unix: PathBuf,
+        _named_listener: UnixListener,
+        datagram: PathBuf,
+        _datagram_socket: UnixDatagram,
+        #[cfg(target_os = "linux")]
+        abstract_name: String,
+        #[cfg(target_os = "linux")]
+        _abstract_listener: UnixListener,
+        inherited: OwnedFd,
     }
 
-    async fn report(mut command: Command, target: &str) -> Report {
+    impl Targets {
+        fn new() -> Self {
+            let tcp = TcpListener::bind("127.0.0.1:0").expect("a loopback listener");
+            let directory = tempfile::tempdir().expect("a directory for Unix sockets");
+            let named_unix = directory.path().join("stream");
+            let named_listener = UnixListener::bind(&named_unix).expect("a named Unix listener");
+            let datagram = directory.path().join("datagram");
+            let datagram_socket = UnixDatagram::bind(&datagram).expect("a named datagram socket");
+            #[cfg(target_os = "linux")]
+            let (abstract_name, abstract_listener) = abstract_listener();
+            let inherited = inheritable(&tcp);
+            Self {
+                tcp,
+                _directory: directory,
+                named_unix,
+                _named_listener: named_listener,
+                datagram,
+                _datagram_socket: datagram_socket,
+                #[cfg(target_os = "linux")]
+                abstract_name,
+                #[cfg(target_os = "linux")]
+                _abstract_listener: abstract_listener,
+                inherited,
+            }
+        }
+
+        fn apply(&self, command: &mut Command) {
+            let address = self.tcp.local_addr().expect("the listener's address");
+            command
+                .env(PROBE_TARGET, address.to_string())
+                .env(PROBE_NAMED_UNIX, &self.named_unix)
+                .env(PROBE_DATAGRAM, &self.datagram)
+                .env(PROBE_INHERITED, self.inherited.as_raw_fd().to_string());
+            #[cfg(target_os = "linux")]
+            command
+                .env(PROBE_ABSTRACT_UNIX, &self.abstract_name)
+                .env(PROBE_PARENT, std::process::id().to_string());
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn abstract_listener() -> (String, UnixListener) {
+        use std::os::linux::net::SocketAddrExt;
+        use std::os::unix::net::SocketAddr;
+
+        let name = format!("abnegate-exec-probe-{}", uuid::Uuid::new_v4());
+        let address = SocketAddr::from_abstract_name(&name).expect("an abstract address");
+        let listener = UnixListener::bind_addr(&address).expect("an abstract Unix listener");
+        (name, listener)
+    }
+
+    /// A duplicate of `socket` that every child the test process spawns
+    /// inherits, unless something closes it on the way.
+    fn inheritable(socket: &TcpListener) -> OwnedFd {
+        #[allow(unsafe_code)]
+        let duplicate = unsafe { libc::fcntl(socket.as_raw_fd(), libc::F_DUPFD, INHERITED_FLOOR) };
+        assert_ne!(
+            duplicate,
+            -1,
+            "an inheritable duplicate: {}",
+            io::Error::last_os_error()
+        );
+        // The descriptor was just made, and nothing else owns it.
+        #[allow(unsafe_code)]
+        unsafe {
+            OwnedFd::from_raw_fd(duplicate)
+        }
+    }
+
+    async fn report(mut command: Command, targets: &Targets) -> Report {
+        targets.apply(&mut command);
         let output = command
-            .env(PROBE_TARGET, target)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
@@ -215,10 +409,10 @@ mod tests {
         Report { stdout }
     }
 
-    async fn probe(network: Network, target: &str) -> Report {
+    async fn probe(network: Network, targets: &Targets) -> Report {
         let mut command = network.command(executable());
         command.args(["--exact", PROBE, "--nocapture"]);
-        report(command, target).await
+        report(command, targets).await
     }
 
     /// Whether a denied command runs at all here. Seatbelt cannot nest
@@ -242,16 +436,26 @@ mod tests {
         false
     }
 
+    /// Whether Yama lets a process write the memory of its ancestor, as an
+    /// open command's probe tries to.
+    #[cfg(target_os = "linux")]
+    fn ancestors_traceable() -> bool {
+        std::fs::read_to_string("/proc/sys/kernel/yama/ptrace_scope")
+            .map_or(true, |scope| matches!(scope.trim(), "0" | "1"))
+    }
+
     fn assert_denied(report: &Report) {
-        for name in ["tcp", "udp", "ipv6"] {
-            assert_eq!(
-                report.get(name),
-                "PermissionDenied",
-                "{name} was not denied:\n{}",
-                report.stdout
-            );
+        for name in ["tcp", "udp", "ipv6", "named_unix", "datagram"] {
+            report.assert(name, "PermissionDenied");
         }
-        assert_eq!(report.get("unix"), "ok", "{}", report.stdout);
+        report.assert("unix", "ok");
+        #[cfg(target_os = "linux")]
+        {
+            for name in ["datagram_pair", "abstract_unix", "memory"] {
+                report.assert(name, "PermissionDenied");
+            }
+            report.assert("inherited", &libc::EBADF.to_string());
+        }
     }
 
     #[test]
@@ -260,24 +464,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_open_command_reaches_a_loopback_listener() {
-        let (_listener, address) = listener();
+    async fn an_open_command_reaches_every_target() {
+        let targets = Targets::new();
 
-        let report = probe(Network::Open, &address).await;
+        let report = probe(Network::Open, &targets).await;
 
-        assert_eq!(report.get("tcp"), "ok", "{}", report.stdout);
-        assert_eq!(report.get("udp"), "ok", "{}", report.stdout);
-        assert_eq!(report.get("unix"), "ok", "{}", report.stdout);
+        for name in ["inherited", "tcp", "udp", "unix", "named_unix", "datagram"] {
+            report.assert(name, "ok");
+        }
+        #[cfg(target_os = "linux")]
+        {
+            report.assert("datagram_pair", "ok");
+            report.assert("abstract_unix", "ok");
+            if ancestors_traceable() {
+                report.assert("memory", "ok");
+            }
+        }
     }
 
     #[tokio::test]
-    async fn a_denied_command_reaches_no_network_but_keeps_unix_sockets() {
+    async fn a_denied_command_reaches_no_network_but_keeps_stream_socket_pairs() {
         if !enforced().await {
             return;
         }
-        let (_listener, address) = listener();
+        let targets = Targets::new();
 
-        let report = probe(Network::Denied, &address).await;
+        let report = probe(Network::Denied, &targets).await;
 
         assert_denied(&report);
     }
@@ -287,14 +499,14 @@ mod tests {
         if !enforced().await {
             return;
         }
-        let (_listener, address) = listener();
+        let targets = Targets::new();
         let mut command = Network::Denied.command("sh");
         command
             .args(["-c", r#"sh -c '"$0" "$@"' "$0" "$@""#])
             .arg(executable())
             .args(["--exact", PROBE, "--nocapture"]);
 
-        let report = report(command, &address).await;
+        let report = report(command, &targets).await;
 
         assert_denied(&report);
     }
@@ -305,16 +517,11 @@ mod tests {
         if !enforced().await {
             return;
         }
-        let (_listener, address) = listener();
+        let targets = Targets::new();
 
-        let report = probe(Network::Denied, &address).await;
+        let report = probe(Network::Denied, &targets).await;
 
-        assert_eq!(
-            report.get("io_uring"),
-            nix::libc::EPERM.to_string(),
-            "{}",
-            report.stdout
-        );
+        report.assert("io_uring", &libc::EPERM.to_string());
     }
 
     #[tokio::test]
