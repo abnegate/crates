@@ -2108,9 +2108,6 @@ async fn connected_from_a_shell(network: crate::tool::Network) -> String {
     result.output.expect("the shell's report")
 }
 
-/// A shell reached whatever network its host could, so an offline chat
-/// could still talk to a server on loopback or beyond through any program
-/// the shell started.
 #[tokio::test]
 async fn a_shell_in_a_context_without_network_cannot_reach_a_local_listener() {
     if !abnegate_exec::testing::network_denial_enforced().await {
@@ -2130,8 +2127,8 @@ async fn a_shell_in_an_open_context_reaches_a_local_listener() {
     assert!(report.contains(Loopback::CONNECTED), "{report}");
 }
 
-/// A program on `run_command`'s list reached whatever network its host
-/// could, whether or not the public web gate knew its name.
+/// The context's network, not the public web gate, keeps a listed program
+/// from the listener.
 #[tokio::test]
 async fn a_command_in_a_context_without_network_cannot_reach_a_local_listener() {
     if !abnegate_exec::testing::network_denial_enforced().await {

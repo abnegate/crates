@@ -619,8 +619,6 @@ async fn a_child_that_never_reports_its_end_does_not_hold_the_teardown() {
     );
 }
 
-/// A denied job that could not be kept off the network failed with a bare
-/// "Operation not permitted", which named no reason.
 #[tokio::test]
 async fn a_denied_job_that_fails_to_start_says_why() {
     let cwd = directory();
@@ -1637,8 +1635,6 @@ async fn a_job_is_routed_through_its_context_proxy_or_else_the_environments() {
     Jobs::kill_session(session).await;
 }
 
-/// A background job ran at its host's priority, so a build or a test suite it
-/// started contended with the host's own work.
 #[tokio::test]
 async fn a_job_starts_at_the_contexts_niceness() {
     let cwd = directory();
@@ -1681,8 +1677,6 @@ async fn connected_from_a_job(network: crate::tool::Network) -> (JobStatus, Stri
     (status, tail.output)
 }
 
-/// A background job reached whatever network its host could, so an offline
-/// chat's job could still talk to a server on loopback or beyond.
 #[tokio::test]
 async fn a_job_in_a_context_without_network_cannot_reach_a_local_listener() {
     if !abnegate_exec::testing::network_denial_enforced().await {
