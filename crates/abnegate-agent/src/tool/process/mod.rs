@@ -4,6 +4,7 @@ mod capture;
 mod finished;
 mod group;
 
+use std::io;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -21,6 +22,7 @@ use tokio::time::Instant;
 use tokio::time::timeout;
 use tokio::time::timeout_at;
 
+use super::Network;
 use super::ToolContext;
 use super::ToolError;
 
@@ -41,6 +43,11 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 
 const READ_BUFFER_BYTES: usize = 8 * 1024;
 
+/// Why a denied command that failed to start most likely did, word for word
+/// as abnegate-exec puts it, which keeps its own copy crate-private.
+const UNDENIABLE: &str =
+    "the command did not start, likely because this host cannot keep it off the network";
+
 /// `program`, set to see the context's environment and nothing else, with the
 /// context's proxy applied last so no tool can route around it, started at
 /// the context's niceness, and reaching only the network the context allows.
@@ -54,23 +61,43 @@ pub(crate) fn command(program: &str, context: &ToolContext) -> Command {
     command
 }
 
+/// `error`, from spawning a [`command`] that reaches only `network`, with the
+/// reason a denied command most likely failed to start appended.
+///
+/// The denial is put in place between fork and exec, and only its error number
+/// comes back, so a host that cannot deny the network reports a bare
+/// "Operation not permitted" or "Invalid argument". An open command's error,
+/// and a missing program's [`io::ErrorKind::NotFound`], are returned unchanged.
+pub(crate) fn spawn_error(network: Network, error: io::Error) -> io::Error {
+    if network == Network::Denied && error.kind() != io::ErrorKind::NotFound {
+        return io::Error::new(error.kind(), format!("{error}: {UNDENIABLE}"));
+    }
+    error
+}
+
 /// Run `command` in a process group of its own until it exits or `limit`
 /// passes, reading both of its streams as it goes.
 ///
 /// Whatever the leader leaves running is given [`GROUP_GRACE`] to finish and
 /// then killed with it, so a call returns once its command has, and nothing
 /// it started outlives it. Output is held to [`MAXIMUM_CAPTURE_BYTES`] from each
-/// end of each stream.
-pub(crate) async fn run(mut command: Command, limit: Duration) -> Result<Finished, ToolError> {
+/// end of each stream. A failure to start is reported as [`spawn_error`] puts
+/// it for `network`, the network `command` was made to reach.
+pub(crate) async fn run(
+    mut command: Command,
+    network: Network,
+    limit: Duration,
+) -> Result<Finished, ToolError> {
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0)
         .kill_on_drop(true);
-    let mut child = command
-        .spawn()
-        .map_err(|error| ToolError::Execution(format!("Failed to execute: {error}")))?;
+    let mut child = command.spawn().map_err(|error| {
+        let error = spawn_error(network, error);
+        ToolError::Execution(format!("Failed to execute: {error}"))
+    })?;
     let mut group = Group::led_by(child.id());
     let mut stdout = Stream::read(child.stdout.take());
     let mut stderr = Stream::read(child.stderr.take());
@@ -168,6 +195,7 @@ async fn drain(mut pipe: impl AsyncRead + Unpin, capture: Arc<Mutex<Capture>>) {
 
 #[cfg(test)]
 mod tests {
+    use nix::libc;
     use tempfile::TempDir;
 
     use super::*;
@@ -183,6 +211,66 @@ mod tests {
         command
     }
 
+    /// The reason a tool's command failed to start, for one in a context
+    /// with `network` whose program is a directory, which no host executes.
+    async fn unexecutable(network: Network) -> String {
+        let directory = TempDir::new().expect("a temporary directory");
+        let context = ToolContext::default().with_network(network);
+        let program = directory.path().to_string_lossy().into_owned();
+
+        let error = run(command(&program, &context), context.network, TIMEOUT)
+            .await
+            .expect_err("a directory does not execute");
+
+        error.to_string()
+    }
+
+    /// A denied command that could not be kept off the network failed with
+    /// a bare "Operation not permitted", which named no reason.
+    #[tokio::test]
+    async fn a_denied_command_that_fails_to_start_says_why() {
+        let reason = unexecutable(Network::Denied).await;
+
+        assert!(reason.ends_with(&format!(": {UNDENIABLE}")), "{reason}");
+    }
+
+    #[tokio::test]
+    async fn an_open_command_that_fails_to_start_says_only_what_failed() {
+        let reason = unexecutable(Network::Open).await;
+
+        assert!(!reason.contains(UNDENIABLE), "{reason}");
+    }
+
+    #[test]
+    fn a_denied_spawn_error_names_the_network_as_abnegate_exec_does() {
+        let error = spawn_error(
+            Network::Denied,
+            io::Error::from(io::ErrorKind::PermissionDenied),
+        );
+
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            error.to_string(),
+            "permission denied: the command did not start, likely because this host cannot keep it off the network"
+        );
+    }
+
+    #[test]
+    fn a_denied_spawn_error_for_a_missing_program_is_unchanged() {
+        let error = spawn_error(Network::Denied, io::Error::from_raw_os_error(libc::ENOENT));
+
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert_eq!(error.raw_os_error(), Some(libc::ENOENT));
+    }
+
+    #[test]
+    fn an_open_spawn_error_is_unchanged() {
+        let error = spawn_error(Network::Open, io::Error::from_raw_os_error(libc::EPERM));
+
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(error.raw_os_error(), Some(libc::EPERM));
+    }
+
     /// A tool's command ran at its host's priority, so a build or a test
     /// suite it started contended with the host's own work.
     #[tokio::test]
@@ -191,7 +279,9 @@ mod tests {
         let mut niced = command("sh", &context);
         niced.args(["-c", "ps -o nice= -p $$"]);
 
-        let finished = run(niced, TIMEOUT).await.expect("the command finishes");
+        let finished = run(niced, Network::Open, TIMEOUT)
+            .await
+            .expect("the command finishes");
 
         assert!(finished.status.success(), "{}", finished.stderr);
         assert_eq!(finished.stdout.trim(), "19");
@@ -206,7 +296,7 @@ mod tests {
         let started = directory.path().join("started");
         let line = format!("touch '{}'; sleep 120 & echo $!", started.display());
 
-        let (finished, waited) = timed(run(shell(&line), TIMEOUT), &started).await;
+        let (finished, waited) = timed(run(shell(&line), Network::Open, TIMEOUT), &started).await;
 
         let finished = finished.expect("the command finishes");
         assert!(finished.status.success());
@@ -224,7 +314,7 @@ mod tests {
         let spoken = directory.path().join("spoken");
         let line = format!("sleep 120 & echo $!; touch '{}'; wait", spoken.display());
 
-        let (error, waited) = expired(run(shell(&line), TIMEOUT), &spoken).await;
+        let (error, waited) = expired(run(shell(&line), Network::Open, TIMEOUT), &spoken).await;
 
         let error = error.expect_err("the command outlives its limit");
         assert!(
@@ -246,6 +336,7 @@ mod tests {
     async fn a_flood_of_output_is_held_to_its_two_ends() {
         let finished = run(
             shell("head -c 20000000 /dev/zero | tr '\\0' x; echo; echo END"),
+            Network::Open,
             TIMEOUT,
         )
         .await
@@ -259,9 +350,13 @@ mod tests {
 
     #[tokio::test]
     async fn both_streams_and_the_status_come_back() {
-        let finished = run(shell("echo out; echo err >&2; exit 3"), TIMEOUT)
-            .await
-            .expect("the command finishes");
+        let finished = run(
+            shell("echo out; echo err >&2; exit 3"),
+            Network::Open,
+            TIMEOUT,
+        )
+        .await
+        .expect("the command finishes");
 
         assert_eq!(finished.status.code(), Some(3));
         assert_eq!(finished.stdout, "out\n");
