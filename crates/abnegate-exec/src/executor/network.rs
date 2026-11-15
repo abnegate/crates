@@ -106,14 +106,26 @@ impl Network {
 
     /// `error`, from spawning a [`command`](Network::command) with this
     /// network access, with the reason a denied command most likely failed
-    /// to start appended.
+    /// to start appended, keeping its [`kind`](io::Error::kind).
     ///
-    /// The denial is put in place from a `pre_exec` hook, and the standard
-    /// library hands back only the hook's error number, so a host that cannot
-    /// deny the network reports a bare "Operation not permitted" or "Invalid
-    /// argument". An open command's error, and a missing program's
+    /// A denied command whose denial cannot be put in place fails to spawn
+    /// with only an error number, such as `EPERM`, which names no reason. An
+    /// open command's error, and a missing program's
     /// [`io::ErrorKind::NotFound`], are returned unchanged.
-    pub(crate) fn spawn_error(self, error: io::Error) -> io::Error {
+    ///
+    /// ```
+    /// use std::io;
+    ///
+    /// use abnegate_exec::Network;
+    ///
+    /// let refused = io::Error::from(io::ErrorKind::PermissionDenied);
+    ///
+    /// let error = Network::Denied.spawn_error(refused);
+    ///
+    /// assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    /// assert!(error.to_string().ends_with("cannot keep it off the network"));
+    /// ```
+    pub fn spawn_error(self, error: io::Error) -> io::Error {
         match self {
             Network::Denied if error.kind() != io::ErrorKind::NotFound => {
                 io::Error::new(error.kind(), format!("{error}: {UNDENIABLE}"))
@@ -123,7 +135,6 @@ impl Network {
     }
 }
 
-/// Why a denied command that failed to start most likely did.
 const UNDENIABLE: &str =
     "the command did not start, likely because this host cannot keep it off the network";
 

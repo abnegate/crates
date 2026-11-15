@@ -90,7 +90,9 @@
 //! refused too, since a local daemon behind one could reach the network for
 //! the command; pipes and stream socket pairs still work. See
 //! [`Network::Denied`] for what else Linux and macOS put in place, and when a
-//! host fails to spawn a denied command instead.
+//! host fails to spawn a denied command instead. A caller that spawns a
+//! [`Network::command`] itself names that reason in its spawn error with
+//! [`Network::spawn_error`].
 //!
 //! # Platform support
 //!
