@@ -2160,3 +2160,27 @@ async fn a_command_in_a_context_without_network_cannot_reach_a_local_listener() 
     assert!(!result.success, "{result:?}");
     crate::test_support::assert_network_denied(&result.error.expect("the failure"));
 }
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn a_command_in_an_open_context_reaches_a_local_listener() {
+    let loopback = crate::test_support::Loopback::new();
+    let context = shell_test_context().with_network(crate::tool::Network::Open);
+
+    let result = RunCommandTool::with_commands(&["bash"])
+        .execute(
+            json!({"command": "bash", "args": [loopback.script.to_string_lossy()]}),
+            &context,
+        )
+        .await
+        .expect("bash runs");
+
+    assert!(result.success, "{result:?}");
+    assert!(
+        result
+            .output
+            .as_deref()
+            .is_some_and(|output| output.contains(crate::test_support::Loopback::CONNECTED)),
+        "{result:?}"
+    );
+}
