@@ -117,8 +117,7 @@ mod tests {
     use std::path::PathBuf;
     use std::process::Stdio;
 
-    use crate::executor::ConfinementMode;
-    use crate::executor::sandbox;
+    use crate::testing::network_denial_enforced as enforced;
 
     use super::*;
 
@@ -219,27 +218,6 @@ mod tests {
         let mut command = network.command(executable());
         command.args(["--exact", PROBE, "--nocapture"]);
         report(command, target).await
-    }
-
-    /// Whether a denied command runs at all here. Seatbelt cannot nest
-    /// inside a stricter sandbox, so a test host that is itself sandboxed
-    /// skips rather than fails, unless confinement is required.
-    async fn enforced() -> bool {
-        let status = Network::Denied
-            .command("true")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .await;
-        if matches!(status, Ok(status) if status.success()) {
-            return true;
-        }
-        assert!(
-            !sandbox::required(ConfinementMode::SingleCommand),
-            "{} is set, but a denied command cannot run here: {status:?}",
-            sandbox::REQUIRE_CONFINEMENT
-        );
-        false
     }
 
     fn assert_denied(report: &Report) {

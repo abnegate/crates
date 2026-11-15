@@ -1,12 +1,11 @@
 //! How a test that needs the host's real sandbox treats a host without one.
 
+use crate::testing::REQUIRE_CONFINEMENT;
+use crate::testing::confinement_required;
+
 use super::Confinement;
 use super::ConfinementMode;
 use super::HOST_BACKEND;
-
-/// Set, to anything but empty or `0`, where a real-sandbox test that cannot
-/// run is a failure rather than a skip, as in CI.
-pub(crate) const REQUIRE_CONFINEMENT: &str = "ABNEGATE_EXEC_REQUIRE_CONFINEMENT";
 
 /// Whether a test that runs a command in the host's real sandbox, in `mode`,
 /// can go ahead.
@@ -23,6 +22,7 @@ pub(crate) async fn proven(mode: ConfinementMode) -> bool {
                 !required(mode),
                 "{REQUIRE_CONFINEMENT} is set, but this host cannot prove its sandbox for {mode:?}: {error}"
             );
+            eprintln!("skipped: this host cannot prove its sandbox for {mode:?}: {error}");
             false
         }
     }
@@ -34,7 +34,5 @@ pub(crate) fn required(mode: ConfinementMode) -> bool {
         ConfinementMode::SingleCommand => true,
         ConfinementMode::ProcessTree => backend.enforces_execute_roots(),
     });
-    let set = std::env::var_os(REQUIRE_CONFINEMENT)
-        .is_some_and(|value| !value.is_empty() && value != "0");
-    claimed && set
+    claimed && confinement_required()
 }

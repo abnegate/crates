@@ -1662,7 +1662,7 @@ async fn connected_from_a_job(network: crate::tool::Network) -> (JobStatus, Stri
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn a_job_in_a_context_without_network_cannot_reach_a_local_listener() {
-    if !crate::test_support::network_denial_enforced().await {
+    if !abnegate_exec::testing::network_denial_enforced().await {
         return;
     }
 

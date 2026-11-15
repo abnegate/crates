@@ -2113,7 +2113,7 @@ async fn connected_from_a_shell(network: crate::tool::Network) -> String {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn a_shell_in_a_context_without_network_cannot_reach_a_local_listener() {
-    if !crate::test_support::network_denial_enforced().await {
+    if !abnegate_exec::testing::network_denial_enforced().await {
         return;
     }
 
@@ -2139,7 +2139,7 @@ async fn a_shell_in_an_open_context_reaches_a_local_listener() {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn a_command_in_a_context_without_network_cannot_reach_a_local_listener() {
-    if !crate::test_support::network_denial_enforced().await {
+    if !abnegate_exec::testing::network_denial_enforced().await {
         return;
     }
     let loopback = crate::test_support::Loopback::new();

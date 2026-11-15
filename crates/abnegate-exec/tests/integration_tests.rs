@@ -9,7 +9,6 @@
 
 use std::net::TcpListener;
 use std::net::TcpStream;
-use std::process::Stdio;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -22,6 +21,7 @@ use abnegate_exec::protocol::ErrorCode;
 use abnegate_exec::protocol::LogLevel;
 use abnegate_exec::protocol::OutboundMessage;
 use abnegate_exec::protocol::RunStart;
+use abnegate_exec::testing::network_denial_enforced;
 use base64::prelude::*;
 use tokio::sync::mpsc;
 
@@ -34,10 +34,6 @@ const PATIENCE: Duration = Duration::from_secs(60);
 
 /// Names the loopback address a [`network_probe`] child tries to reach.
 const PROBE_TARGET: &str = "ABNEGATE_EXEC_NETWORK_PROBE";
-
-/// Set, to anything but empty or `0`, where a test that cannot deny a
-/// command the network is a failure rather than a skip, as in CI.
-const REQUIRE_CONFINEMENT: &str = "ABNEGATE_EXEC_REQUIRE_CONFINEMENT";
 
 fn create_echo_request(job_id: &str, message: &str) -> RunStart {
     RunStart::new(job_id, "/tmp", "echo")
@@ -762,27 +758,6 @@ fn network_probe() {
     }
 }
 
-/// Whether a denied command runs at all here; a host sandboxed too tightly
-/// for seatbelt to nest skips, unless [`REQUIRE_CONFINEMENT`] is set.
-async fn enforced() -> bool {
-    let status = Network::Denied
-        .command("true")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .await;
-    if matches!(status, Ok(status) if status.success()) {
-        return true;
-    }
-    let required = std::env::var_os(REQUIRE_CONFINEMENT)
-        .is_some_and(|value| !value.is_empty() && value != "0");
-    assert!(
-        !required,
-        "{REQUIRE_CONFINEMENT} is set, but a denied command cannot run here: {status:?}"
-    );
-    false
-}
-
 /// What the probe printed when `network` ran it through the executor
 /// against a live loopback listener.
 async fn probed_through_executor(network: Network) -> String {
@@ -827,7 +802,7 @@ async fn an_open_executor_lets_a_command_reach_a_loopback_listener() {
 
 #[tokio::test]
 async fn a_network_denied_executor_keeps_a_command_from_a_loopback_listener() {
-    if !enforced().await {
+    if !network_denial_enforced().await {
         return;
     }
 

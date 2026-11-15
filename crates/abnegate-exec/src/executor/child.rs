@@ -6,7 +6,7 @@ use std::ffi::OsStr;
 
 use tokio::process::Command;
 
-use super::sandbox::REQUIRE_CONFINEMENT;
+use crate::testing::REQUIRE_CONFINEMENT;
 
 /// Set to the name of the test a child process runs.
 const CHILD: &str = "ABNEGATE_EXEC_TEST_CHILD";

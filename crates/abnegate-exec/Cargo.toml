@@ -17,6 +17,10 @@ workspace = true
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
+[features]
+default = []
+testing = []
+
 [dependencies]
 abnegate-secret = { path = "../abnegate-secret", version = "0.2.0" }
 base64 = { workspace = true }
@@ -31,6 +35,7 @@ tokio-util = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
+abnegate-exec = { path = ".", features = ["testing"] }
 futures = { workspace = true }
 nix = { workspace = true, features = ["pthread", "term"] }
 tempfile = { workspace = true }
