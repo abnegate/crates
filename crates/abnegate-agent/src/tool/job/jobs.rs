@@ -217,7 +217,9 @@ fn launch(command: &JobCommand, context: &ToolContext, log: &Log) -> io::Result<
         .stderr(Stdio::from(log.writer()?))
         .process_group(0)
         .kill_on_drop(true);
-    process.spawn()
+    process
+        .spawn()
+        .map_err(|error| process::spawn_error(context.network, error))
 }
 
 /// Hold a job to its limits, and record how it ended.

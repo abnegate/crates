@@ -272,7 +272,7 @@ impl Waiting for RunShellTool {
             .arg(&parameters.command)
             .current_dir(&directory);
 
-        let output = process::run(process, limit).await?;
+        let output = process::run(process, context.network, limit).await?;
         let (stdout, stderr) = (output.stdout, output.stderr);
 
         let mut report = String::new();

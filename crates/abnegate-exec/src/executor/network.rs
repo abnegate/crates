@@ -35,6 +35,7 @@ mod filter;
 mod seatbelt;
 
 use std::ffi::OsStr;
+use std::io;
 
 use tokio::process::Command;
 
@@ -102,7 +103,29 @@ impl Network {
             Network::Denied => denied(program.as_ref()),
         }
     }
+
+    /// `error`, from spawning a [`command`](Network::command) with this
+    /// network access, with the reason a denied command most likely failed
+    /// to start appended.
+    ///
+    /// The denial is put in place from a `pre_exec` hook, and the standard
+    /// library hands back only the hook's error number, so a host that cannot
+    /// deny the network reports a bare "Operation not permitted" or "Invalid
+    /// argument". An open command's error, and a missing program's
+    /// [`io::ErrorKind::NotFound`], are returned unchanged.
+    pub(crate) fn spawn_error(self, error: io::Error) -> io::Error {
+        match self {
+            Network::Denied if error.kind() != io::ErrorKind::NotFound => {
+                io::Error::new(error.kind(), format!("{error}: {UNDENIABLE}"))
+            }
+            _ => error,
+        }
+    }
 }
+
+/// Why a denied command that failed to start most likely did.
+const UNDENIABLE: &str =
+    "the command did not start, likely because this host cannot keep it off the network";
 
 #[cfg(target_os = "macos")]
 fn denied(program: &OsStr) -> Command {
@@ -474,6 +497,36 @@ mod tests {
     #[test]
     fn a_default_network_is_open() {
         assert_eq!(Network::default(), Network::Open);
+    }
+
+    #[test]
+    fn a_denied_spawn_error_says_why_the_command_did_not_start() {
+        let error = Network::Denied.spawn_error(io::Error::from_raw_os_error(libc::EPERM));
+
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "{}: the command did not start, likely because this host cannot keep it off the network",
+                io::Error::from_raw_os_error(libc::EPERM)
+            )
+        );
+    }
+
+    #[test]
+    fn a_denied_spawn_error_for_a_missing_program_is_unchanged() {
+        let error = Network::Denied.spawn_error(io::Error::from_raw_os_error(libc::ENOENT));
+
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert_eq!(error.raw_os_error(), Some(libc::ENOENT));
+    }
+
+    #[test]
+    fn an_open_spawn_error_is_unchanged() {
+        let error = Network::Open.spawn_error(io::Error::from_raw_os_error(libc::EPERM));
+
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(error.raw_os_error(), Some(libc::EPERM));
     }
 
     #[tokio::test]

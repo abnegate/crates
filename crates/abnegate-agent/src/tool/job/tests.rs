@@ -616,6 +616,30 @@ async fn a_child_that_never_reports_its_end_does_not_hold_the_teardown() {
     );
 }
 
+/// A denied job that could not be kept off the network failed with a bare
+/// "Operation not permitted", which named no reason.
+#[tokio::test]
+async fn a_denied_job_that_fails_to_start_says_why() {
+    let cwd = directory();
+    let context = context(chat(), cwd.path()).with_network(crate::tool::Network::Denied);
+    let program = cwd.path().to_string_lossy().into_owned();
+
+    let refused = Jobs::spawn(&JobCommand::new(program, Vec::new()), &context)
+        .await
+        .expect_err("a directory does not execute");
+
+    assert!(
+        refused.starts_with("Failed to start the job: "),
+        "{refused}"
+    );
+    assert!(
+        refused.ends_with(
+            ": the command did not start, likely because this host cannot keep it off the network"
+        ),
+        "{refused}"
+    );
+}
+
 /// The log and the exclude write are the session's, and a directory the
 /// command names moves neither.
 ///
