@@ -133,7 +133,7 @@ impl CommandExecutor {
                     .spawn(configure)
             }
             None => {
-                let mut process = Command::new(command);
+                let mut process = self.config.network.command(command);
                 process.args(arguments);
                 self.config.environment.apply(&mut process);
                 process.envs(environment);

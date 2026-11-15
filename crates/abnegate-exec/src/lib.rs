@@ -80,6 +80,14 @@
 //! proxy unless [`PROXY_BYPASS_VARIABLE`] or [`Proxy::with_bypass`] names other
 //! hosts. Confined commands reach no network at all and are unaffected.
 //!
+//! # Network denial
+//!
+//! [`ExecutorConfig::with_network`] set to [`Network::Denied`] keeps every
+//! unconfined command, and every process it starts, off the network
+//! altogether, loopback included, without confining its filesystem: the
+//! operating system refuses the sockets, so an interpreter or a shell the
+//! command starts cannot reach one either.
+//!
 //! # Platform support
 //!
 //! Unix only. Confinement additionally needs macOS or Linux; see
@@ -122,6 +130,7 @@ pub use executor::HOST_BACKEND;
 pub use executor::Invocation;
 pub use executor::JobHandle;
 pub use executor::Marker;
+pub use executor::Network;
 pub use executor::Niceness;
 pub use job::JobRegistry;
 pub use job::JobState;

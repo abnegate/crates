@@ -3,6 +3,7 @@ use std::time::Duration;
 use crate::proxy::Proxy;
 
 use super::environment_policy::EnvironmentPolicy;
+use super::network::Network;
 use super::niceness::Niceness;
 
 /// How long a command may run when its `RunStart` sets no timeout: five
@@ -56,6 +57,11 @@ pub struct ExecutorConfig {
     /// starts in turn. Nothing by default, which leaves each at the
     /// executor's own priority.
     pub niceness: Option<Niceness>,
+
+    /// Whether an unconfined command, and everything it starts, may reach a
+    /// network. [`Network::Open`] by default; a confined command reaches
+    /// none whatever this says.
+    pub network: Network,
 }
 
 impl Default for ExecutorConfig {
@@ -68,6 +74,7 @@ impl Default for ExecutorConfig {
             environment: EnvironmentPolicy::default(),
             proxy: Proxy::from_environment(),
             niceness: None,
+            network: Network::Open,
         }
     }
 }
@@ -122,6 +129,13 @@ impl ExecutorConfig {
         self.niceness = Some(niceness);
         self
     }
+
+    /// Give every unconfined command, and everything it starts, `network`
+    /// access.
+    pub fn with_network(mut self, network: Network) -> Self {
+        self.network = network;
+        self
+    }
 }
 
 #[cfg(test)]
@@ -136,6 +150,7 @@ mod tests {
         assert_eq!(config.output_limit, DEFAULT_OUTPUT_LIMIT);
         assert_eq!(config.buffer_size, DEFAULT_BUFFER_SIZE);
         assert_eq!(config.niceness, None);
+        assert_eq!(config.network, Network::Open);
     }
 
     #[test]
@@ -144,11 +159,13 @@ mod tests {
             .with_timeout(Duration::from_secs(60))
             .with_output_limit(1024)
             .with_buffer_size(512)
-            .with_niceness(Niceness::LOWEST);
+            .with_niceness(Niceness::LOWEST)
+            .with_network(Network::Denied);
 
         assert_eq!(config.timeout, Duration::from_secs(60));
         assert_eq!(config.output_limit, 1024);
         assert_eq!(config.buffer_size, 512);
         assert_eq!(config.niceness, Some(Niceness::LOWEST));
+        assert_eq!(config.network, Network::Denied);
     }
 }

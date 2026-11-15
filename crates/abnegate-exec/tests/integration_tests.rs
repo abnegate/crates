@@ -7,11 +7,15 @@
 //! - Process group management
 //! - Output limiting
 
+use std::net::TcpListener;
+use std::net::TcpStream;
+use std::process::Stdio;
 use std::time::Duration;
 use std::time::Instant;
 
 use abnegate_exec::executor::CommandExecutor;
 use abnegate_exec::executor::ExecutorConfig;
+use abnegate_exec::executor::Network;
 use abnegate_exec::job::JobRegistry;
 use abnegate_exec::job::JobState;
 use abnegate_exec::protocol::ErrorCode;
@@ -27,6 +31,13 @@ const TIMEOUT: Duration = Duration::from_secs(300);
 
 /// How long a test waits in real time on a run past its timeout.
 const PATIENCE: Duration = Duration::from_secs(60);
+
+/// Names the loopback address a [`network_probe`] child tries to reach.
+const PROBE_TARGET: &str = "ABNEGATE_EXEC_NETWORK_PROBE";
+
+/// Set, to anything but empty or `0`, where a test that cannot deny a
+/// command the network is a failure rather than a skip, as in CI.
+const REQUIRE_CONFINEMENT: &str = "ABNEGATE_EXEC_REQUIRE_CONFINEMENT";
 
 fn create_echo_request(job_id: &str, message: &str) -> RunStart {
     RunStart::new(job_id, "/tmp", "echo")
@@ -736,4 +747,91 @@ async fn test_large_output() {
             ..
         }
     )));
+}
+
+/// Not a test in itself: run as a child with [`PROBE_TARGET`] set, it prints
+/// `tcp=ok`, or the kind of error that kept it from the target.
+#[test]
+fn network_probe() {
+    let Some(target) = std::env::var_os(PROBE_TARGET) else {
+        return;
+    };
+    match TcpStream::connect(target.to_string_lossy().as_ref()) {
+        Ok(_) => println!("tcp=ok"),
+        Err(error) => println!("tcp={:?}", error.kind()),
+    }
+}
+
+/// Whether a denied command runs at all here; a host sandboxed too tightly
+/// for seatbelt to nest skips, unless [`REQUIRE_CONFINEMENT`] is set.
+async fn enforced() -> bool {
+    let status = Network::Denied
+        .command("true")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await;
+    if matches!(status, Ok(status) if status.success()) {
+        return true;
+    }
+    let required = std::env::var_os(REQUIRE_CONFINEMENT)
+        .is_some_and(|value| !value.is_empty() && value != "0");
+    assert!(
+        !required,
+        "{REQUIRE_CONFINEMENT} is set, but a denied command cannot run here: {status:?}"
+    );
+    false
+}
+
+/// What the probe printed when `network` ran it through the executor
+/// against a live loopback listener.
+async fn probed_through_executor(network: Network) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap().to_string();
+    let executable = std::env::current_exe().unwrap();
+    let executor = CommandExecutor::with_config(ExecutorConfig::new().with_network(network));
+    let (sender, mut receiver) = mpsc::channel(100);
+    let request = RunStart::new("network-1", "/tmp", executable.to_string_lossy())
+        .with_arguments(["--exact", "network_probe", "--nocapture"])
+        .with_environment([(PROBE_TARGET, address)])
+        .with_timeout(TIMEOUT);
+
+    let _handle = executor.spawn(&request, sender).await.unwrap();
+    let messages = collect_messages(&mut receiver).await;
+
+    assert!(
+        messages.iter().any(|message| matches!(
+            message,
+            OutboundMessage::RunExit {
+                exit_code: Some(0),
+                ..
+            }
+        )),
+        "the probe failed: {messages:?}"
+    );
+    messages
+        .iter()
+        .filter_map(|message| match message {
+            OutboundMessage::RunStdout { data, .. } => Some(decode_output_data(data)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn an_open_executor_lets_a_command_reach_a_loopback_listener() {
+    let stdout = probed_through_executor(Network::Open).await;
+
+    assert!(stdout.contains("tcp=ok"), "{stdout}");
+}
+
+#[tokio::test]
+async fn a_network_denied_executor_keeps_a_command_from_a_loopback_listener() {
+    if !enforced().await {
+        return;
+    }
+
+    let stdout = probed_through_executor(Network::Denied).await;
+
+    assert!(stdout.contains("tcp=PermissionDenied"), "{stdout}");
 }
