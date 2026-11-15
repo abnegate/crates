@@ -2,8 +2,8 @@ use std::io;
 
 use nix::libc;
 
-/// The lowest descriptor above standard input, output and error.
-const FIRST_INHERITED: libc::c_int = 3;
+use super::FIRST_INHERITED;
+use super::mark;
 
 /// Mark every descriptor above standard error close-on-exec, so a socket the
 /// process inherited, which a denied command could still send through, never
@@ -11,7 +11,7 @@ const FIRST_INHERITED: libc::c_int = 3;
 ///
 /// It allocates nothing, so it may run between fork and exec. A descriptor
 /// made inheritable after it runs is still inherited.
-pub(super) fn close_on_exec() -> io::Result<()> {
+pub(in crate::executor::network) fn close_on_exec() -> io::Result<()> {
     #[allow(unsafe_code)]
     let marked = unsafe {
         libc::syscall(
@@ -25,12 +25,7 @@ pub(super) fn close_on_exec() -> io::Result<()> {
         return Ok(());
     }
     for descriptor in FIRST_INHERITED..open_limit()? {
-        // A descriptor that is not open answers `EBADF`, which leaves
-        // nothing to mark.
-        #[allow(unsafe_code)]
-        unsafe {
-            libc::fcntl(descriptor, libc::F_SETFD, libc::FD_CLOEXEC);
-        }
+        mark(descriptor);
     }
     Ok(())
 }

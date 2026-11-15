@@ -1,4 +1,3 @@
-mod descriptors;
 mod landlock;
 mod ptrace;
 
@@ -7,6 +6,7 @@ use std::io;
 use nix::libc;
 use tokio::process::Command;
 
+use super::descriptors;
 use super::filter::Filter;
 use ptrace::Ptrace;
 

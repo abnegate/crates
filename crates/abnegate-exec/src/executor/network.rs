@@ -8,6 +8,19 @@
     )
 ))]
 mod denial;
+#[cfg(any(
+    target_os = "macos",
+    all(
+        target_os = "linux",
+        target_endian = "little",
+        any(
+            target_arch = "x86_64",
+            target_arch = "aarch64",
+            target_arch = "riscv64"
+        )
+    )
+))]
+mod descriptors;
 #[cfg(all(
     target_os = "linux",
     target_endian = "little",
@@ -49,12 +62,14 @@ pub enum Network {
     /// pipeline, or a channel between the command and what it starts, is
     /// unaffected.
     ///
+    /// The command inherits no descriptor beyond its standard input, output
+    /// and error, so a socket the executor holds, already connected or not,
+    /// does not reach it, unless a `pre_exec` hook added to the command makes
+    /// one inheritable again.
+    ///
     /// On Linux the command, and everything it starts, also:
     ///
     /// - makes no datagram socket pair, which could address a named socket;
-    /// - inherits no descriptor beyond its standard input, output and error,
-    ///   so a socket the executor holds does not reach it, unless a
-    ///   `pre_exec` hook added to the command makes one inheritable again;
     /// - runs with `no_new_privs`, so a setuid program or one with file
     ///   capabilities, such as `sudo`, `ping` or `fusermount`, gains no
     ///   privilege in it;
@@ -426,12 +441,10 @@ mod tests {
             report.assert(name, "PermissionDenied");
         }
         report.assert("unix", "ok");
+        report.assert("inherited", &libc::EBADF.to_string());
         #[cfg(target_os = "linux")]
-        {
-            for name in ["datagram_pair", "abstract_unix", "memory"] {
-                report.assert(name, "PermissionDenied");
-            }
-            report.assert("inherited", &libc::EBADF.to_string());
+        for name in ["datagram_pair", "abstract_unix", "memory"] {
+            report.assert(name, "PermissionDenied");
         }
     }
 

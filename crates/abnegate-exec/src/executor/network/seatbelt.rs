@@ -8,6 +8,8 @@ use std::sync::OnceLock;
 
 use tokio::process::Command;
 
+use super::descriptors;
+
 /// The seatbelt profile a denied command runs under: everything the host
 /// allows, except any network at all, and asking another program to act for
 /// it through LaunchServices or an Apple event.
@@ -41,20 +43,23 @@ unsafe extern "C" {
 }
 
 /// Put [`PROFILE`] on `command`'s process just before it executes, which
-/// every process it starts inherits and none can lift. The program is then
+/// every process it starts inherits and none can lift, once no descriptor
+/// beyond its standard streams is left for the program to inherit. The program is then
 /// executed as it would be without the profile, so a program missing from the
 /// child's own `PATH` fails the spawn with [`io::ErrorKind::NotFound`]. A
 /// profile that cannot be compiled or applied fails the spawn too.
 pub(super) fn deny(command: &mut Command) {
     let bytecode = bytecode();
     // Runs between fork and exec, so it allocates nothing: the profile was
-    // compiled before the fork, and applying it hands the kernel those bytes.
+    // compiled before the fork, applying it hands the kernel those bytes, and
+    // descriptors are listed into the stack.
     #[allow(unsafe_code)]
     unsafe {
         command.pre_exec(move || {
             let Some(bytecode) = bytecode else {
                 return Err(io::Error::from(io::ErrorKind::Unsupported));
             };
+            descriptors::close_on_exec()?;
             let mut profile = Profile {
                 builtin: ptr::null_mut(),
                 data: bytecode.as_ptr(),
