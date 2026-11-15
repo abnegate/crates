@@ -118,7 +118,9 @@ pub(crate) fn assert_passed(output: &Output) {
 ///
 /// Bash rather than `curl` or an interpreter, so no gate that refuses a
 /// program by name stands between the script and the listener: only the
-/// network the child was started with does.
+/// network the child was started with does. The script runs in the C
+/// locale, so the refusal bash reports is the English text
+/// [`assert_network_denied`] reads whatever locale the host has.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) struct Loopback {
     _listener: std::net::TcpListener,
@@ -140,7 +142,7 @@ impl Loopback {
         std::fs::write(
             &script,
             format!(
-                "exec 3<>/dev/tcp/127.0.0.1/{port} || exit 1\necho '{}'\n",
+                "export LC_ALL=C LANG=C\nexec 3<>/dev/tcp/127.0.0.1/{port} || exit 1\necho '{}'\n",
                 Self::CONNECTED
             ),
         )
