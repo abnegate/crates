@@ -112,42 +112,15 @@ pub(crate) fn assert_passed(output: &Output) {
     );
 }
 
-/// Set, to anything but empty or `0`, where a test of a network-denied child
-/// that cannot run here is a failure rather than a skip, as in CI. The same
-/// variable abnegate-exec's own tests read.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-const REQUIRE_CONFINEMENT: &str = "ABNEGATE_EXEC_REQUIRE_CONFINEMENT";
-
-/// Whether a network-denied child runs at all here. Seatbelt cannot nest
-/// inside a stricter sandbox, so a test host that is itself sandboxed skips
-/// rather than fails, unless [`REQUIRE_CONFINEMENT`] is set.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(crate) async fn network_denial_enforced() -> bool {
-    let status = abnegate_exec::Network::Denied
-        .command("true")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await;
-    if matches!(status, Ok(status) if status.success()) {
-        return true;
-    }
-    let required = std::env::var_os(REQUIRE_CONFINEMENT)
-        .is_some_and(|value| !value.is_empty() && value != "0");
-    assert!(
-        !required,
-        "{REQUIRE_CONFINEMENT} is set, but a network-denied child cannot run here: {status:?}"
-    );
-    false
-}
-
 /// A live listener on loopback, which holds a connection in its backlog
 /// without accepting it, and a bash script that connects to it and prints
 /// [`CONNECTED`](Loopback::CONNECTED), or fails when it cannot.
 ///
 /// Bash rather than `curl` or an interpreter, so no gate that refuses a
 /// program by name stands between the script and the listener: only the
-/// network the child was started with does.
+/// network the child was started with does. The script runs in the C
+/// locale, so the refusal bash reports is the English text
+/// [`assert_network_denied`] reads whatever locale the host has.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) struct Loopback {
     _listener: std::net::TcpListener,
@@ -169,7 +142,7 @@ impl Loopback {
         std::fs::write(
             &script,
             format!(
-                "exec 3<>/dev/tcp/127.0.0.1/{port} || exit 1\necho '{}'\n",
+                "export LC_ALL=C LANG=C\nexec 3<>/dev/tcp/127.0.0.1/{port} || exit 1\necho '{}'\n",
                 Self::CONNECTED
             ),
         )

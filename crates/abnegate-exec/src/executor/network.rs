@@ -154,8 +154,7 @@ mod tests {
     use nix::libc;
     use tempfile::TempDir;
 
-    use crate::executor::ConfinementMode;
-    use crate::executor::sandbox;
+    use crate::testing::network_denial_enforced as enforced;
 
     use super::*;
 
@@ -414,27 +413,6 @@ mod tests {
         report(command, targets).await
     }
 
-    /// Whether a denied command runs at all here. Seatbelt cannot nest
-    /// inside a stricter sandbox, so a test host that is itself sandboxed
-    /// skips rather than fails, unless confinement is required.
-    async fn enforced() -> bool {
-        let status = Network::Denied
-            .command("true")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .await;
-        if matches!(status, Ok(status) if status.success()) {
-            return true;
-        }
-        assert!(
-            !sandbox::required(ConfinementMode::SingleCommand),
-            "{} is set, but a denied command cannot run here: {status:?}",
-            sandbox::REQUIRE_CONFINEMENT
-        );
-        false
-    }
-
     /// Whether Yama lets a process write the memory of its ancestor, as an
     /// open command's probe tries to.
     #[cfg(target_os = "linux")]
@@ -477,6 +455,10 @@ mod tests {
             report.assert("abstract_unix", "ok");
             if ancestors_traceable() {
                 report.assert("memory", "ok");
+            } else {
+                eprintln!(
+                    "skipped the memory check: Yama keeps an open command from writing its ancestor's memory here"
+                );
             }
         }
     }
@@ -510,6 +492,10 @@ mod tests {
         assert_denied(&report);
     }
 
+    /// A host whose kernel refuses io_uring to everyone, as
+    /// `kernel.io_uring_disabled=2` or a container's own seccomp profile
+    /// does, answers `EPERM` without the filter, so it says nothing about
+    /// the filter and skips.
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn a_denied_command_cannot_set_up_io_uring() {
@@ -517,10 +503,19 @@ mod tests {
             return;
         }
         let targets = Targets::new();
+        let refused = libc::EPERM.to_string();
 
-        let report = probe(Network::Denied, &targets).await;
+        let open = probe(Network::Open, &targets).await;
+        if open.get("io_uring") == refused {
+            eprintln!(
+                "skipped: this host refuses io_uring to an open command too:\n{}",
+                open.stdout
+            );
+            return;
+        }
+        let denied = probe(Network::Denied, &targets).await;
 
-        report.assert("io_uring", &libc::EPERM.to_string());
+        denied.assert("io_uring", &refused);
     }
 
     #[tokio::test]

@@ -235,11 +235,11 @@ mod tests {
     use crate::executor::EnvironmentPolicy;
     use crate::executor::child;
     use crate::executor::sandbox;
-    use crate::executor::sandbox::REQUIRE_CONFINEMENT;
     use crate::protocol::ConfinementRequest;
     use crate::protocol::ErrorCode;
     use crate::protocol::LogLevel;
     use crate::proxy::Proxy;
+    use crate::testing::REQUIRE_CONFINEMENT;
 
     use super::*;
 
