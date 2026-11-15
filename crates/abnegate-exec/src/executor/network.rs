@@ -474,12 +474,36 @@ mod tests {
         report(command, targets).await
     }
 
-    /// Whether Yama lets a process write the memory of its ancestor, as an
-    /// open command's probe tries to.
+    /// The capability that lets a process trace one Yama's scope 1 or 2
+    /// would otherwise keep it from, numbered as `linux/capability.h` does.
     #[cfg(target_os = "linux")]
-    fn ancestors_traceable() -> bool {
-        std::fs::read_to_string("/proc/sys/kernel/yama/ptrace_scope")
-            .map_or(true, |scope| matches!(scope.trim(), "0" | "1"))
+    const CAP_SYS_PTRACE: u32 = 19;
+
+    /// What an open command's probe meets writing its ancestor's memory, by
+    /// the host's own rule rather than any sandbox: Yama's scope 1 lets a
+    /// process trace only its descendants and 2 none, unless it holds
+    /// `CAP_SYS_PTRACE`, and 3 none whatever it holds. Opening the
+    /// ancestor's descriptors only reads it, which Yama leaves alone.
+    #[cfg(target_os = "linux")]
+    fn host_ancestor_memory() -> &'static str {
+        let scope = std::fs::read_to_string("/proc/sys/kernel/yama/ptrace_scope");
+        match scope.as_deref().map(str::trim) {
+            Err(_) | Ok("0") => "ok",
+            Ok("1" | "2") if traces_anyone() => "ok",
+            Ok(_) => "PermissionDenied",
+        }
+    }
+
+    /// Whether the test process holds `CAP_SYS_PTRACE`, which an open
+    /// command it spawns keeps.
+    #[cfg(target_os = "linux")]
+    fn traces_anyone() -> bool {
+        std::fs::read_to_string("/proc/self/status")
+            .expect("the test process's status")
+            .lines()
+            .find_map(|line| line.strip_prefix("CapEff:"))
+            .and_then(|mask| u64::from_str_radix(mask.trim(), 16).ok())
+            .is_some_and(|mask| mask & (1 << CAP_SYS_PTRACE) != 0)
     }
 
     fn assert_denied(report: &Report) {
@@ -489,8 +513,15 @@ mod tests {
         report.assert("unix", "ok");
         report.assert("inherited", &libc::EBADF.to_string());
         #[cfg(target_os = "linux")]
-        for name in ["datagram_pair", "abstract_unix", "memory", "proc_fd"] {
-            report.assert(name, "PermissionDenied");
+        {
+            for name in ["datagram_pair", "abstract_unix", "memory", "proc_fd"] {
+                report.assert(name, "PermissionDenied");
+            }
+            if host_ancestor_memory() != "ok" {
+                eprintln!(
+                    "the memory check proves only Yama here: this host refuses an open command its ancestor's memory too"
+                );
+            }
         }
     }
 
@@ -543,13 +574,7 @@ mod tests {
             report.assert("datagram_pair", "ok");
             report.assert("abstract_unix", "ok");
             report.assert("proc_fd", "ok");
-            if ancestors_traceable() {
-                report.assert("memory", "ok");
-            } else {
-                eprintln!(
-                    "skipped the memory check: Yama keeps an open command from writing its ancestor's memory here"
-                );
-            }
+            report.assert("memory", host_ancestor_memory());
         }
     }
 
