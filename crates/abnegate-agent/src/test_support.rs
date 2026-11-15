@@ -112,6 +112,92 @@ pub(crate) fn assert_passed(output: &Output) {
     );
 }
 
+/// Set, to anything but empty or `0`, where a test of a network-denied child
+/// that cannot run here is a failure rather than a skip, as in CI. The same
+/// variable abnegate-exec's own tests read.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+const REQUIRE_CONFINEMENT: &str = "ABNEGATE_EXEC_REQUIRE_CONFINEMENT";
+
+/// Whether a network-denied child runs at all here. Seatbelt cannot nest
+/// inside a stricter sandbox, so a test host that is itself sandboxed skips
+/// rather than fails, unless [`REQUIRE_CONFINEMENT`] is set.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) async fn network_denial_enforced() -> bool {
+    let status = abnegate_exec::Network::Denied
+        .command("true")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await;
+    if matches!(status, Ok(status) if status.success()) {
+        return true;
+    }
+    let required = std::env::var_os(REQUIRE_CONFINEMENT)
+        .is_some_and(|value| !value.is_empty() && value != "0");
+    assert!(
+        !required,
+        "{REQUIRE_CONFINEMENT} is set, but a network-denied child cannot run here: {status:?}"
+    );
+    false
+}
+
+/// A live listener on loopback, which holds a connection in its backlog
+/// without accepting it, and a bash script that connects to it and prints
+/// [`CONNECTED`](Loopback::CONNECTED), or fails when it cannot.
+///
+/// Bash rather than `curl` or an interpreter, so no gate that refuses a
+/// program by name stands between the script and the listener: only the
+/// network the child was started with does.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) struct Loopback {
+    _listener: std::net::TcpListener,
+    _directory: tempfile::TempDir,
+    /// The script, run as `bash <script>`.
+    pub(crate) script: std::path::PathBuf,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl Loopback {
+    /// What the script prints once it has connected.
+    pub(crate) const CONNECTED: &str = "connected to the loopback listener";
+
+    pub(crate) fn new() -> Self {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback listener");
+        let port = listener.local_addr().expect("its address").port();
+        let directory = tempfile::TempDir::new().expect("a directory for the script");
+        let script = directory.path().join("connect.sh");
+        std::fs::write(
+            &script,
+            format!(
+                "exec 3<>/dev/tcp/127.0.0.1/{port} || exit 1\necho '{}'\n",
+                Self::CONNECTED
+            ),
+        )
+        .expect("the script is written");
+        Self {
+            _listener: listener,
+            _directory: directory,
+            script,
+        }
+    }
+}
+
+/// Fail unless `output` reports a connection the operating system refused
+/// the child, rather than one the listener refused or one that was made:
+/// seatbelt answers `EPERM` and the seccomp filter `EACCES`.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn assert_network_denied(output: &str) {
+    assert!(
+        !output.contains(Loopback::CONNECTED),
+        "the child reached the listener: {output}"
+    );
+    let refused = output.lines().any(|line| {
+        line.contains("/dev/tcp/")
+            && (line.contains("Operation not permitted") || line.contains("Permission denied"))
+    });
+    assert!(refused, "the child was not refused the network: {output}");
+}
+
 /// The proxy a test's child process names in its environment, which a
 /// context or hub given a proxy of its own must not route through.
 pub(crate) const ENVIRONMENT_PROXY: &str = "http://127.0.0.1:28888";

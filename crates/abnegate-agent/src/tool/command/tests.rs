@@ -2090,3 +2090,69 @@ fn a_configured_run_command_is_otherwise_the_default_tool() {
         unwaited(RunCommandTool).parameters_schema()
     );
 }
+
+/// What `run_shell` reported running the loopback script with `network`.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+async fn connected_from_a_shell(network: crate::tool::Network) -> String {
+    let loopback = crate::test_support::Loopback::new();
+    let context = shell_test_context().with_network(network);
+    let line = format!("bash '{}'", loopback.script.display());
+
+    let result = RunShellTool
+        .execute(json!({"command": line}), &context)
+        .await
+        .expect("the shell runs");
+
+    assert!(result.success, "{result:?}");
+    result.output.expect("the shell's report")
+}
+
+/// A shell reached whatever network its host could, so an offline chat
+/// could still talk to a server on loopback or beyond through any program
+/// the shell started.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn a_shell_in_a_context_without_network_cannot_reach_a_local_listener() {
+    if !crate::test_support::network_denial_enforced().await {
+        return;
+    }
+
+    let report = connected_from_a_shell(crate::tool::Network::Denied).await;
+
+    assert!(report.starts_with("Exit code: 1"), "{report}");
+    crate::test_support::assert_network_denied(&report);
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn a_shell_in_an_open_context_reaches_a_local_listener() {
+    let report = connected_from_a_shell(crate::tool::Network::Open).await;
+
+    assert!(
+        report.contains(crate::test_support::Loopback::CONNECTED),
+        "{report}"
+    );
+}
+
+/// A program on `run_command`'s list reached whatever network its host
+/// could, whether or not the public web gate knew its name.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn a_command_in_a_context_without_network_cannot_reach_a_local_listener() {
+    if !crate::test_support::network_denial_enforced().await {
+        return;
+    }
+    let loopback = crate::test_support::Loopback::new();
+    let context = shell_test_context().with_network(crate::tool::Network::Denied);
+
+    let result = RunCommandTool::with_commands(&["bash"])
+        .execute(
+            json!({"command": "bash", "args": [loopback.script.to_string_lossy()]}),
+            &context,
+        )
+        .await
+        .expect("bash runs");
+
+    assert!(!result.success, "{result:?}");
+    crate::test_support::assert_network_denied(&result.error.expect("the failure"));
+}

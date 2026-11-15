@@ -1635,3 +1635,54 @@ async fn a_job_starts_at_the_contexts_niceness() {
     assert_eq!(status, JobStatus::Exited(0), "{}", tail.output);
     assert_eq!(tail.output.trim(), "19");
 }
+
+/// What a background job that runs the loopback script came to, and what it
+/// logged.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+async fn connected_from_a_job(network: crate::tool::Network) -> (JobStatus, String) {
+    let loopback = crate::test_support::Loopback::new();
+    let cwd = directory();
+    let session = chat();
+    let context = context(session, cwd.path()).with_network(network);
+    let command = JobCommand::new("bash", vec![loopback.script.to_string_lossy().into_owned()]);
+    let started = Jobs::spawn(&command, &context)
+        .await
+        .expect("the job starts");
+
+    let status = settles(session, &started.id).await;
+    let tail = Jobs::read(session, &started.id, 0, 4_000)
+        .await
+        .expect("its own session reads it");
+    Jobs::kill_session(session).await;
+    (status, tail.output)
+}
+
+/// A background job reached whatever network its host could, so an offline
+/// chat's job could still talk to a server on loopback or beyond.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn a_job_in_a_context_without_network_cannot_reach_a_local_listener() {
+    if !crate::test_support::network_denial_enforced().await {
+        return;
+    }
+
+    let (status, output) = connected_from_a_job(crate::tool::Network::Denied).await;
+
+    assert!(
+        matches!(status, JobStatus::Exited(code) if code != 0),
+        "{status:?}: {output}"
+    );
+    crate::test_support::assert_network_denied(&output);
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn a_job_in_an_open_context_reaches_a_local_listener() {
+    let (status, output) = connected_from_a_job(crate::tool::Network::Open).await;
+
+    assert_eq!(status, JobStatus::Exited(0), "{output}");
+    assert!(
+        output.contains(crate::test_support::Loopback::CONNECTED),
+        "{output}"
+    );
+}

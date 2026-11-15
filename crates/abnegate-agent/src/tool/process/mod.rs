@@ -42,10 +42,10 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 const READ_BUFFER_BYTES: usize = 8 * 1024;
 
 /// `program`, set to see the context's environment and nothing else, with the
-/// context's proxy applied last so no tool can route around it, and started
-/// at the context's niceness.
+/// context's proxy applied last so no tool can route around it, started at
+/// the context's niceness, and reaching only the network the context allows.
 pub(crate) fn command(program: &str, context: &ToolContext) -> Command {
-    let mut command = Command::new(program);
+    let mut command = context.network.command(program);
     context.environment.apply(&mut command);
     context.route(&mut command);
     if let Some(niceness) = context.niceness {
