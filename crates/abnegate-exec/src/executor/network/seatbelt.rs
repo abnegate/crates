@@ -44,15 +44,18 @@ unsafe extern "C" {
 
 /// Put [`PROFILE`] on `command`'s process just before it executes, which
 /// every process it starts inherits and none can lift, once no descriptor
-/// beyond its standard streams is left for the program to inherit. The program is then
-/// executed as it would be without the profile, so a program missing from the
-/// child's own `PATH` fails the spawn with [`io::ErrorKind::NotFound`]. A
-/// profile that cannot be compiled or applied fails the spawn too.
+/// beyond its standard streams is left for the program to inherit. The
+/// program is then executed as it would be without the profile, so a program
+/// missing from the child's own `PATH` fails the spawn with
+/// [`io::ErrorKind::NotFound`]. A profile that cannot be compiled or applied
+/// fails the spawn too.
 pub(super) fn deny(command: &mut Command) {
     let bytecode = bytecode();
-    // Runs between fork and exec, so it allocates nothing: the profile was
-    // compiled before the fork, applying it hands the kernel those bytes, and
-    // descriptors are listed into the stack.
+    // Runs between fork and exec, so it must not allocate or take a lock
+    // another thread of the parent may hold: the profile is compiled before
+    // the fork, descriptors are listed into the stack, and the `dlsym` lookup
+    // `sandbox_apply` makes to notify libxpc is safe because libSystem resets
+    // dyld's locks in the child.
     #[allow(unsafe_code)]
     unsafe {
         command.pre_exec(move || {
