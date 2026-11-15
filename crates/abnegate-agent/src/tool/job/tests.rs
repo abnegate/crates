@@ -27,6 +27,7 @@ use crate::test_support::assert_routed;
 use crate::test_support::assert_unrouted;
 use crate::test_support::captured_logs;
 use crate::test_support::ran_in_child;
+use crate::test_support::undeniable;
 use crate::tool::Proxy;
 use crate::tool::Session;
 use crate::tool::ToolContext;
@@ -632,12 +633,7 @@ async fn a_denied_job_that_fails_to_start_says_why() {
         refused.starts_with("Failed to start the job: "),
         "{refused}"
     );
-    assert!(
-        refused.ends_with(
-            ": the command did not start, likely because this host cannot keep it off the network"
-        ),
-        "{refused}"
-    );
+    assert!(refused.ends_with(&undeniable()), "{refused}");
 }
 
 /// The log and the exclude write are the session's, and a directory the

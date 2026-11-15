@@ -54,13 +54,9 @@ fn logs(checkout: &Path) -> PathBuf {
 /// the environment `run_command` builds is read through the one function both
 /// tools and background jobs start their children with.
 async fn environments(context: &ToolContext) -> [String; 2] {
-    let command = crate::tool::process::run(
-        crate::tool::process::command("env", context),
-        context.network,
-        TIMEOUT,
-    )
-    .await
-    .expect("env runs");
+    let command = crate::tool::process::run(crate::tool::process::command("env", context), TIMEOUT)
+        .await
+        .expect("env runs");
     assert!(command.status.success(), "{command:?}");
     let shell = RunShellTool
         .execute(json!({"command": "env"}), context)

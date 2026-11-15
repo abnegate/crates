@@ -18,7 +18,6 @@ use serde_json::json;
 use tokio::io::AsyncBufRead;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::BufReader;
-use tokio::process::Command;
 use tokio::time::Instant;
 use tokio::time::timeout_at;
 
@@ -422,19 +421,18 @@ fn ripgrep_arguments(
 /// failed; only a failure that found nothing returns `None`, handing the
 /// search to the walk.
 async fn ripgrep(
-    mut command: Command,
+    mut command: process::Command,
     search_path: &Path,
     maximum_results: usize,
     deadline: Instant,
     context: &ToolContext,
 ) -> Option<ToolResult> {
-    let mut child = command
+    command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
-        .ok()?;
+        .kill_on_drop(true);
+    let mut child = command.spawn().ok()?;
     let mut stdout = BufReader::new(child.stdout.take()?);
 
     let mut results = Vec::new();
@@ -577,6 +575,7 @@ mod tests {
     use std::sync::atomic::AtomicBool;
 
     use tempfile::TempDir;
+    use tokio::process::Command;
 
     use super::*;
     use crate::test_support::CHILD_TEST;
@@ -603,10 +602,10 @@ mod tests {
 
     const MARKER: &str = "open sesame please";
 
-    fn shell(line: &str) -> Command {
+    fn shell(line: &str) -> process::Command {
         let mut command = Command::new("sh");
         command.arg("-c").arg(line);
-        command
+        process::Command::open(command)
     }
 
     /// A ripgrep configuration file in `directory` asking for dot-files,

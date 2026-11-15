@@ -258,7 +258,7 @@ async fn run_allowed(
     process.args(&parameters.arguments).current_dir(&directory);
 
     let limit = call_limit(parameters.timeout_seconds, context.command_timeout);
-    let output = process::run(process, context.network, limit).await?;
+    let output = process::run(process, limit).await?;
     let (stdout, stderr) = (output.stdout, output.stderr);
 
     let mut result = String::new();
