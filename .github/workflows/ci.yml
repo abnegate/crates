@@ -222,28 +222,28 @@ jobs:
       - *selection
 
       - name: Checkout repository
-        if: needs.changes.outputs.exec == 'true'
+        if: &seatbelt ${{ needs.changes.outputs.exec == 'true' || contains(fromJSON(needs.changes.outputs.packages), 'abnegate-agent') }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Install Rust toolchain
-        if: needs.changes.outputs.exec == 'true'
+        if: *seatbelt
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
 
       - name: Cache cargo dependencies
-        if: needs.changes.outputs.exec == 'true'
+        if: *seatbelt
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: seatbelt
           cache-on-failure: true
 
       - name: Assert the confinement backend is usable
-        if: needs.changes.outputs.exec == 'true'
+        if: *seatbelt
         run: /usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true
 
       - name: Install cargo-nextest
-        if: needs.changes.outputs.exec == 'true'
+        if: *seatbelt
         uses: taiki-e/install-action@c3ec0de9ae7f1019cea21aa96aa0a895b9552063 # v2.87.9
         with:
           tool: cargo-nextest@0.9.146
@@ -251,6 +251,17 @@ jobs:
       - name: Run abnegate-exec tests under seatbelt
         if: needs.changes.outputs.exec == 'true'
         run: cargo nextest run -p abnegate-exec --all-targets --no-fail-fast
+        env:
+          RUST_BACKTRACE: 1
+          ABNEGATE_EXEC_REQUIRE_CONFINEMENT: "1"
+
+      # abnegate-agent denies a tool's child the network through abnegate-exec,
+      # so its tests that a child cannot reach a loopback listener prove
+      # seatbelt holds for the agent too. Every one of them is named for that
+      # listener.
+      - name: Run abnegate-agent's network tests under seatbelt
+        if: contains(fromJSON(needs.changes.outputs.packages), 'abnegate-agent')
+        run: cargo nextest run -p abnegate-agent --all-targets --no-fail-fast -E 'test(local_listener)'
         env:
           RUST_BACKTRACE: 1
           ABNEGATE_EXEC_REQUIRE_CONFINEMENT: "1"
