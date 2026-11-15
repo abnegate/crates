@@ -277,6 +277,10 @@ mod tests {
         assert_denied(&report);
     }
 
+    /// A host whose kernel refuses io_uring to everyone, as
+    /// `kernel.io_uring_disabled=2` or a container's own seccomp profile
+    /// does, answers `EPERM` without the filter, so it says nothing about
+    /// the filter and skips.
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn a_denied_command_cannot_set_up_io_uring() {
@@ -284,15 +288,19 @@ mod tests {
             return;
         }
         let (_listener, address) = listener();
+        let refused = nix::libc::EPERM.to_string();
 
-        let report = probe(Network::Denied, &address).await;
+        let open = probe(Network::Open, &address).await;
+        if open.get("io_uring") == refused {
+            eprintln!(
+                "skipped: this host refuses io_uring to an open command too:\n{}",
+                open.stdout
+            );
+            return;
+        }
+        let denied = probe(Network::Denied, &address).await;
 
-        assert_eq!(
-            report.get("io_uring"),
-            nix::libc::EPERM.to_string(),
-            "{}",
-            report.stdout
-        );
+        assert_eq!(denied.get("io_uring"), refused, "{}", denied.stdout);
     }
 
     #[tokio::test]
