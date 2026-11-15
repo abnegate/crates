@@ -18,29 +18,24 @@ mod denial;
     )
 ))]
 mod filter;
+#[cfg(target_os = "macos")]
+mod seatbelt;
 
 use std::ffi::OsStr;
 
 use tokio::process::Command;
 
-#[cfg(target_os = "macos")]
-use super::confinement::Backend;
-
-/// The seatbelt profile a [`Network::Denied`] command runs under on macOS:
-/// everything the host allows, except any network at all.
-#[cfg(target_os = "macos")]
-const SEATBELT_PROFILE: &str = "(version 1)(allow default)(deny network*)";
-
-/// Whether an unconfined command, and every process it starts, may
+/// Whether an unconfined command, and every process it starts in turn, may
 /// reach a network.
 ///
 /// [`Denied`](Network::Denied) is enforced by the operating system rather than
 /// by inspecting what a command runs, so an interpreter, a shell, or a program
 /// the command starts is denied just the same: on macOS the command runs
-/// under a seatbelt profile that allows everything but the network, and on
-/// Linux (x86-64, AArch64 and RISC-V 64) under a seccomp filter that refuses
-/// every socket but a netlink one. A host that can enforce neither
-/// fails to start a denied command rather than running it with a network.
+/// under a seatbelt profile that allows everything but the network,
+/// LaunchServices and sending Apple events, and on Linux (x86-64, AArch64 and
+/// RISC-V 64) under a seccomp filter that refuses every socket but a netlink
+/// one. A host that can enforce neither fails to start a denied command
+/// rather than running it with a network.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[non_exhaustive]
 pub enum Network {
@@ -70,15 +65,23 @@ pub enum Network {
     ///   `kernel.yama.ptrace_scope` is 1 or 2 and the executor holds no
     ///   `CAP_SYS_PTRACE`, or when it is 3. A host where neither does fails
     ///   to spawn the command with `EPERM`.
+    ///
+    /// On macOS the command also cannot open a URL or a document through
+    /// LaunchServices or send an Apple event, so it cannot hand a URL to the
+    /// default browser or script another application into fetching one. Other
+    /// Mach and XPC services stay reachable, and one that makes requests on a
+    /// caller's behalf is outside what this denies.
     Denied,
 }
 
 impl Network {
     /// A command that runs `program` with this network access.
     ///
-    /// Arguments added to the returned command reach `program` itself. A
-    /// denied command whose denial cannot be put in place fails to spawn, or,
-    /// on macOS, exits without running `program`.
+    /// Arguments added to the returned command reach `program` itself, and
+    /// `program` is looked up in the `PATH` the command is spawned with, as an
+    /// open one is: a program that is not found fails the spawn with
+    /// [`std::io::ErrorKind::NotFound`]. A denied command whose denial cannot
+    /// be put in place fails to spawn.
     pub fn command(self, program: impl AsRef<OsStr>) -> Command {
         match self {
             Network::Open => Command::new(program),
@@ -89,12 +92,8 @@ impl Network {
 
 #[cfg(target_os = "macos")]
 fn denied(program: &OsStr) -> Command {
-    let mut command = Command::new(Backend::Seatbelt.executable());
-    command
-        .arg("-p")
-        .arg(SEATBELT_PROFILE)
-        .arg("--")
-        .arg(program);
+    let mut command = Command::new(program);
+    seatbelt::deny(&mut command);
     command
 }
 
@@ -549,15 +548,106 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[tokio::test]
-    async fn a_denied_command_is_run_by_seatbelt() {
+    async fn a_denied_command_runs_its_own_program_under_the_profile() {
         let command = Network::Denied.command("ls");
         let standard = command.as_std();
-        let arguments: Vec<&OsStr> = standard.get_args().collect();
 
-        assert_eq!(standard.get_program(), Backend::Seatbelt.executable());
+        assert_eq!(standard.get_program(), "ls");
+        assert_eq!(standard.get_args().count(), 0);
         assert_eq!(
-            arguments,
-            ["-p", SEATBELT_PROFILE, "--", "ls"].map(OsStr::new)
+            seatbelt::PROFILE,
+            c"(version 1)(allow default)(deny network*)(deny lsopen)(deny appleevent-send)"
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_denied_command_cannot_open_a_url_through_launch_services() {
+        if !enforced().await {
+            return;
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback listener");
+        let address = listener.local_addr().expect("the listener's address");
+        listener
+            .set_nonblocking(true)
+            .expect("a non-blocking listener");
+
+        let status = Network::Denied
+            .command("open")
+            .args(["-g", &format!("http://{address}/")])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await
+            .expect("open's status");
+
+        assert!(!status.success(), "open handed the URL on: {status:?}");
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        while tokio::time::Instant::now() < deadline {
+            match listener.accept() {
+                Ok((_, peer)) => panic!("{peer} reached the listener on the command's behalf"),
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+                Err(error) => panic!("the listener failed: {error}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_denied_command_whose_program_is_missing_fails_to_spawn() {
+        if !enforced().await {
+            return;
+        }
+        let program = format!("definitely-not-a-program-{}", uuid::Uuid::new_v4());
+
+        let result = Network::Denied.command(&program).status().await;
+
+        assert_eq!(
+            result.as_ref().map_err(io::Error::kind).err(),
+            Some(io::ErrorKind::NotFound),
+            "{result:?}"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_denied_command_whose_absolute_program_is_missing_fails_to_spawn() {
+        if !enforced().await {
+            return;
+        }
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let program = directory.path().join("missing");
+
+        let result = Network::Denied.command(&program).status().await;
+
+        assert_eq!(
+            result.as_ref().map_err(io::Error::kind).err(),
+            Some(io::ErrorKind::NotFound),
+            "{result:?}"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_denied_command_finds_its_program_on_the_path_it_is_spawned_with() {
+        use std::os::unix::fs::PermissionsExt;
+
+        if !enforced().await {
+            return;
+        }
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let name = format!("abnegate-path-probe-{}", uuid::Uuid::new_v4());
+        let script = directory.path().join(&name);
+        std::fs::write(&script, "#!/bin/sh\necho found\n").expect("the script");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+            .expect("the script's mode");
+
+        let mut command = Network::Denied.command(&name);
+        command.env("PATH", directory.path());
+        let output = command.output().await.expect("the script's output");
+
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "found\n");
     }
 }

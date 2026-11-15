@@ -100,7 +100,7 @@ pub struct ToolContext {
     /// kept off the network just the same, loopback included, and so is a
     /// named or abstract Unix socket; pipes and stream socket pairs still
     /// work. A host that cannot enforce it never runs the child with a
-    /// network: the child fails to start, or exits without running.
+    /// network: the child fails to start.
     /// [`Network::Open`] by default.
     ///
     /// A stdio MCP server is started by the hub, not by a tool, so this does
