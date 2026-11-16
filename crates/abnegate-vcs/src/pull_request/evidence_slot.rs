@@ -10,8 +10,9 @@ use crate::pull_request::PullRequestEvidence;
 pub enum EvidenceSlot {
     /// Everything that says whether it is ready to merge.
     Read(Box<PullRequestEvidence>),
-    /// GitHub reported an error at it, such as one it could not find or will
-    /// not show the token.
+    /// GitHub reported an error at it that concerns it alone, such as one it
+    /// could not find. A refusal of what the token may read fails the whole
+    /// call instead, wherever GitHub reports it.
     Reported,
     /// GitHub sent nothing for it.
     Missing,

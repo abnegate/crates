@@ -28,6 +28,7 @@ use crate::pull_request::graphql_query::GraphQlQuery;
 use crate::pull_request::graphql_response::GraphQlResponse;
 use crate::pull_request::graphql_status_context::GraphQlStatusContext;
 use crate::pull_request::graphql_workflow_run::GraphQlWorkflowRun;
+use crate::pull_request::service::graphql::FORBIDDEN;
 use crate::pull_request::service::graphql::NO_DATA;
 use crate::pull_request::service::graphql::RATE_LIMITED;
 use crate::pull_request::service::graphql::rejection;
@@ -78,6 +79,14 @@ const HALVINGS: usize = 2;
 
 /// Fewest pull requests or rows a request has to ask for to be halved.
 const HALVABLE: usize = 2;
+
+/// The kinds GitHub's GraphQL API names a refusal of the token with, rather
+/// than of any one pull request.
+const CREDENTIAL_WIDE: &[&str] = &[FORBIDDEN, INSUFFICIENT_SCOPES];
+
+/// The kind GitHub's GraphQL API names a token without the scopes a field
+/// needs with.
+const INSUFFICIENT_SCOPES: &str = "INSUFFICIENT_SCOPES";
 
 /// The kind GitHub's GraphQL API names a query that ran out of time with.
 const TIMEOUT: &str = "TIMEOUT";
@@ -194,10 +203,14 @@ impl PullRequestService {
     /// A slot is [`EvidenceSlot::Read`] unless GitHub reported an error at
     /// it, sent nothing for it, answered for another pull request or
     /// repository, or sent what this crate cannot read; each of those fails
-    /// only its own slot. A spent rate limit anywhere in the answer is
-    /// [`PullRequestError::RateLimited`], and every other error GitHub
-    /// reported, or a refusal of the request itself, fails the whole call as
-    /// any GraphQL call reads it.
+    /// only its own slot. An error that speaks for the token rather than a
+    /// pull request fails the whole call wherever GitHub reports it: a spent
+    /// rate limit is [`PullRequestError::RateLimited`], and a refusal of what
+    /// the token may read, such as a token without read access to checks, or
+    /// one without the scopes a field needs, is
+    /// [`PullRequestError::Forbidden`]. Every other error GitHub reported
+    /// outside a slot, or a refusal of the request itself, fails the whole
+    /// call as any GraphQL call reads it.
     ///
     /// A request whose answer is larger than the 16 MiB this crate reads,
     /// that GitHub's gateway answers with a 502 or 504, or that GitHub says
@@ -296,11 +309,12 @@ impl PullRequestService {
         if reported(&errors, RATE_LIMITED) {
             return Err(PullRequestError::RateLimited);
         }
-        let data = answered_with(data).ok_or_else(|| unanswered(&errors, rejection))?;
-        let (slotted, general): (Vec<GraphQlError>, Vec<GraphQlError>) =
-            errors.into_iter().partition(|error| slot(error).is_some());
+        let data = answered_with(data).ok_or_else(|| unanswered(&errors, evidence_rejection))?;
+        let (slotted, general): (Vec<GraphQlError>, Vec<GraphQlError>) = errors
+            .into_iter()
+            .partition(|error| slot(error).is_some() && !credential_wide(error));
         if !general.is_empty() {
-            return Err(rejection(&general));
+            return Err(evidence_rejection(&general));
         }
         let failed: HashSet<usize> = slotted.iter().filter_map(slot).collect();
         let answered: GraphQlNodes = serde_json::from_value(data).map_err(|_| unreadable())?;
@@ -417,8 +431,30 @@ fn timed_out(error: &GraphQlError) -> bool {
 fn open_rejection(errors: &[GraphQlError]) -> PullRequestError {
     match missing(errors, REPOSITORY_PATH) {
         true => PullRequestError::RepositoryNotFound,
+        false => evidence_rejection(errors),
+    }
+}
+
+/// The refusal errors reported for a read of open pull requests name: one
+/// that speaks for the token rather than a pull request makes the read
+/// [`PullRequestError::Forbidden`], and every other refusal is read as any
+/// GraphQL call reads it.
+fn evidence_rejection(errors: &[GraphQlError]) -> PullRequestError {
+    match errors.iter().any(credential_wide) {
+        true => PullRequestError::Forbidden,
         false => rejection(errors),
     }
+}
+
+/// Whether `error` says what the token may not read, which holds for every
+/// pull request asked for wherever in the answer GitHub reports it, as when
+/// a token without read access to checks is refused each pull request's
+/// check suites.
+fn credential_wide(error: &GraphQlError) -> bool {
+    error
+        .kind
+        .as_deref()
+        .is_some_and(|kind| CREDENTIAL_WIDE.contains(&kind))
 }
 
 /// The entry of a list of node ids an error was reported at: its path starts

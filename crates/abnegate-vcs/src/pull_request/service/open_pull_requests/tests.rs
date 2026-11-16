@@ -848,14 +848,14 @@ async fn a_status_still_expected_is_left_out_and_no_status_reads_as_none() {
 }
 
 #[tokio::test]
-async fn an_error_reported_at_an_entry_fails_it_even_with_data() {
+async fn an_error_reported_inside_an_entry_fails_only_it_even_with_data() {
     let server = evidence_server(|_: &Request| {
         ResponseTemplate::new(200).set_body_json(json!({
             "data": { "nodes": [evidence_node(7), evidence_node(8)] },
             "errors": [{
-                "type": "FORBIDDEN",
-                "path": ["nodes", 0, "commits"],
-                "message": "Resource not accessible by integration",
+                "type": "NOT_FOUND",
+                "path": ["nodes", 0, "commits", "nodes", 0, "commit"],
+                "message": "Could not resolve to a Commit",
             }],
         }))
     })
@@ -864,6 +864,79 @@ async fn an_error_reported_at_an_entry_fails_it_even_with_data() {
     let evidence = evidence_from(&server, &identifiers([7, 8])).await.unwrap();
 
     assert_eq!(kinds(&evidence), vec![Some("reported"), None]);
+}
+
+#[tokio::test]
+async fn a_token_refused_part_of_every_pull_request_is_refused_the_whole_read() {
+    let suites = |index: usize| {
+        json!([
+            "nodes",
+            index,
+            "commits",
+            "nodes",
+            0,
+            "commit",
+            "checkSuites"
+        ])
+    };
+    for (kind, path) in [
+        ("FORBIDDEN", suites(0)),
+        ("FORBIDDEN", suites(1)),
+        ("INSUFFICIENT_SCOPES", suites(0)),
+        ("INSUFFICIENT_SCOPES", Value::Null),
+    ] {
+        let server = evidence_server(move |_: &Request| {
+            ResponseTemplate::new(200).set_body_json(json!({
+                "data": { "nodes": [evidence_node(7), evidence_node(8)] },
+                "errors": [
+                    {
+                        "type": "NOT_FOUND",
+                        "path": ["nodes", 1],
+                        "message": "Could not resolve to a node",
+                    },
+                    {
+                        "type": kind,
+                        "path": path,
+                        "message": "Resource not accessible by integration",
+                    },
+                ],
+            }))
+        })
+        .await;
+
+        let failure = evidence_from(&server, &identifiers([7, 8]))
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(failure, PullRequestError::Forbidden),
+            "{kind}: {failure:?}"
+        );
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            1,
+            "a refusal of the token is never halved"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_page_refused_for_the_tokens_scopes_is_forbidden() {
+    let server = open_server(ResponseTemplate::new(200).set_body_json(json!({
+        "data": null,
+        "errors": [{
+            "type": "INSUFFICIENT_SCOPES",
+            "message": "Your token has not been granted the required scopes",
+        }],
+    })))
+    .await;
+
+    let failure = open_from(&server, None).await.unwrap_err();
+
+    assert!(
+        matches!(failure, PullRequestError::Forbidden),
+        "{failure:?}"
+    );
 }
 
 #[tokio::test]
