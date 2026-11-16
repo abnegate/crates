@@ -242,8 +242,12 @@ last commit in the history of `main`, as a merge commit does, release-plz
 publishes from and tags that last commit instead. release-plz asks GitHub which
 pull request a commit came from, and an empty answer skips the release without
 failing the job, so after merging a release pull request, confirm that the
-Release job logged `published <crate> <version>` for each crate.
-`scripts/audit_release.py`, which needs Python 3.11 or later, holds these
+Release job logged `published <crate> <version>` for each crate. GitHub can
+leave that answer empty for good, as when the merge itself errors, and the job
+then logs `skipping release: current commit is not from a release PR`. Re-running
+it changes nothing; merge a pull request from a branch named
+`release-plz-<anything>` instead, and its squash commit publishes the versions
+already on `main`. `scripts/audit_release.py`, which needs Python 3.11 or later, holds these
 settings in CI.
 
 A version bumped by hand in a feature pull request is not published by that
