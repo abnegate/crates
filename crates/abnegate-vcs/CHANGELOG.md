@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3](https://github.com/abnegate/crates/compare/abnegate-vcs/v0.2.2...abnegate-vcs/v0.2.3) - 2026-11-16
+
+### Added
+
+- *(vcs)* so hosts can list open pull requests with their checks, threads and comments in a few queries ([#100](https://github.com/abnegate/crates/pull/100))
+
 ## [0.2.2](https://github.com/abnegate/crates/compare/abnegate-vcs/v0.2.1...abnegate-vcs/v0.2.2) - 2026-11-13
 
 ### Added
