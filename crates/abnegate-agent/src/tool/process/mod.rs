@@ -1,6 +1,7 @@
 //! Running a command to its end, or its time limit, with nothing left behind.
 
 mod capture;
+mod command;
 mod finished;
 mod group;
 
@@ -11,11 +12,11 @@ use std::sync::PoisonError;
 use std::time::Duration;
 
 pub(crate) use capture::Capture;
+pub(crate) use command::Command;
 pub(crate) use finished::Finished;
 pub(crate) use group::Group;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncReadExt;
-use tokio::process::Command;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tokio::time::timeout;
@@ -42,16 +43,16 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 const READ_BUFFER_BYTES: usize = 8 * 1024;
 
 /// `program`, set to see the context's environment and nothing else, with the
-/// context's proxy applied last so no tool can route around it, and started
-/// at the context's niceness.
+/// context's proxy applied last so no tool can route around it, started at
+/// the context's niceness, and reaching only the network the context allows.
 pub(crate) fn command(program: &str, context: &ToolContext) -> Command {
-    let mut command = Command::new(program);
+    let mut command = context.network.command(program);
     context.environment.apply(&mut command);
     context.route(&mut command);
     if let Some(niceness) = context.niceness {
         niceness.apply(&mut command);
     }
-    command
+    Command::new(command, context.network)
 }
 
 /// Run `command` in a process group of its own until it exits or `limit`
@@ -60,7 +61,8 @@ pub(crate) fn command(program: &str, context: &ToolContext) -> Command {
 /// Whatever the leader leaves running is given [`GROUP_GRACE`] to finish and
 /// then killed with it, so a call returns once its command has, and nothing
 /// it started outlives it. Output is held to [`MAXIMUM_CAPTURE_BYTES`] from each
-/// end of each stream.
+/// end of each stream. A failure to start is reported as
+/// [`Command::spawn`] puts it.
 pub(crate) async fn run(mut command: Command, limit: Duration) -> Result<Finished, ToolError> {
     command
         .stdin(Stdio::null())
@@ -176,15 +178,43 @@ mod tests {
     use crate::test_support::expired;
     use crate::test_support::gone;
     use crate::test_support::timed;
+    use crate::test_support::undeniable;
+    use crate::tool::Network;
 
     fn shell(line: &str) -> Command {
-        let mut command = Command::new("sh");
+        let mut command = tokio::process::Command::new("sh");
         command.arg("-c").arg(line);
-        command
+        Command::open(command)
     }
 
-    /// A tool's command ran at its host's priority, so a build or a test
-    /// suite it started contended with the host's own work.
+    /// The reason a tool's command failed to start, for one in a context
+    /// with `network` whose program is a directory, which no host executes.
+    async fn unexecutable(network: Network) -> String {
+        let directory = TempDir::new().expect("a temporary directory");
+        let context = ToolContext::default().with_network(network);
+        let program = directory.path().to_string_lossy().into_owned();
+
+        let error = run(command(&program, &context), TIMEOUT)
+            .await
+            .expect_err("a directory does not execute");
+
+        error.to_string()
+    }
+
+    #[tokio::test]
+    async fn a_denied_command_that_fails_to_start_says_why() {
+        let reason = unexecutable(Network::Denied).await;
+
+        assert!(reason.ends_with(&undeniable()), "{reason}");
+    }
+
+    #[tokio::test]
+    async fn an_open_command_that_fails_to_start_says_only_what_failed() {
+        let reason = unexecutable(Network::Open).await;
+
+        assert!(!reason.contains(&undeniable()), "{reason}");
+    }
+
     #[tokio::test]
     async fn a_command_starts_at_the_contexts_niceness() {
         let context = ToolContext::default().with_niceness(crate::tool::Niceness::LOWEST);
@@ -197,9 +227,6 @@ mod tests {
         assert_eq!(finished.stdout.trim(), "19");
     }
 
-    /// `sleep` holds the pipe `sh` handed it, so waiting for the pipe to
-    /// close waited out the sleep, and once the call gave up only `sh` was
-    /// killed. The call now returns once `sh` has, and takes `sleep` with it.
     #[tokio::test]
     async fn a_child_left_running_in_the_background_neither_holds_the_call_nor_outlives_it() {
         let directory = TempDir::new().expect("a temporary directory");
@@ -240,8 +267,6 @@ mod tests {
         assert!(gone(pid).await, "sleep {pid} outlived the timeout");
     }
 
-    /// `output()` held everything a command wrote. A command that writes
-    /// without end now costs the two ends of each stream and nothing more.
     #[tokio::test]
     async fn a_flood_of_output_is_held_to_its_two_ends() {
         let finished = run(

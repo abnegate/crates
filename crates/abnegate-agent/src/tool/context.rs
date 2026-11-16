@@ -5,6 +5,7 @@ use std::time::Duration;
 use tokio::process::Command;
 
 use super::EnvironmentPolicy;
+use super::Network;
 use super::Niceness;
 use super::Proxy;
 use super::PublicWeb;
@@ -71,6 +72,10 @@ pub struct ToolContext {
     /// Whether `run_command` may start `curl` or `wget`, asked before each
     /// such call; nothing else consults it (see [`PublicWeb`]). Nothing by
     /// default, which lets every such call through.
+    ///
+    /// It refuses a call by the program it names, so it keeps no other
+    /// program off the network, and no program a child starts: what does is
+    /// [`network`](Self::network).
     pub public_web: Option<Arc<dyn PublicWeb>>,
     /// The proxy every child a tool starts, a background job's included, is
     /// routed through. It is laid over [`environment`](Self::environment)
@@ -87,6 +92,21 @@ pub struct ToolContext {
     /// included, is started at, and so everything that child starts in turn.
     /// Nothing by default, which leaves each at this process's own priority.
     pub niceness: Option<Niceness>,
+    /// Whether every child a tool starts, a background job's included, may
+    /// reach a network, and so everything that child starts in turn.
+    ///
+    /// [`Network::Denied`] is enforced by the operating system rather than by
+    /// what a call names, so a shell, an interpreter or a build script is
+    /// kept off the network just the same, loopback included, and so is a
+    /// named or abstract Unix socket; pipes and stream socket pairs still
+    /// work. A host that cannot enforce it never runs the child with a
+    /// network: the child fails to start.
+    /// [`Network::Open`] by default.
+    ///
+    /// A stdio MCP server is started by the hub, not by a tool, so this does
+    /// not reach it: a host that must keep a turn off the network withholds
+    /// MCP from it.
+    pub network: Network,
 }
 
 impl ToolContext {
@@ -213,6 +233,20 @@ impl ToolContext {
         self
     }
 
+    /// The same context, starting every child a tool starts with `network`.
+    ///
+    /// ```
+    /// use abnegate_agent::ToolContext;
+    /// use abnegate_agent::tool::Network;
+    ///
+    /// let context = ToolContext::default().with_network(Network::Denied);
+    /// assert_eq!(context.network, Network::Denied);
+    /// ```
+    pub fn with_network(mut self, network: Network) -> Self {
+        self.network = network;
+        self
+    }
+
     /// Lay this context's proxy over `command`, or the one this process's
     /// environment names when it has none of its own.
     pub(crate) fn route(&self, command: &mut Command) {
@@ -244,6 +278,7 @@ impl Default for ToolContext {
             public_web: None,
             proxy: None,
             niceness: None,
+            network: Network::Open,
         }
     }
 }
@@ -347,6 +382,11 @@ mod tests {
     #[test]
     fn the_default_context_leaves_children_at_this_processs_priority() {
         assert!(ToolContext::default().niceness.is_none());
+    }
+
+    #[test]
+    fn the_default_context_leaves_children_their_network() {
+        assert_eq!(ToolContext::default().network, Network::Open);
     }
 
     #[test]

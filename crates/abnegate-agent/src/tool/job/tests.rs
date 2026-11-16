@@ -27,6 +27,9 @@ use crate::test_support::assert_routed;
 use crate::test_support::assert_unrouted;
 use crate::test_support::captured_logs;
 use crate::test_support::ran_in_child;
+use crate::test_support::undeniable;
+use crate::testing::Loopback;
+use crate::testing::assert_network_denied;
 use crate::tool::Proxy;
 use crate::tool::Session;
 use crate::tool::ToolContext;
@@ -614,6 +617,23 @@ async fn a_child_that_never_reports_its_end_does_not_hold_the_teardown() {
         JobStatus::Running,
         "nothing ever reported the child's end, which is the case under test"
     );
+}
+
+#[tokio::test]
+async fn a_denied_job_that_fails_to_start_says_why() {
+    let cwd = directory();
+    let context = context(chat(), cwd.path()).with_network(crate::tool::Network::Denied);
+    let program = cwd.path().to_string_lossy().into_owned();
+
+    let refused = Jobs::spawn(&JobCommand::new(program, Vec::new()), &context)
+        .await
+        .expect_err("a directory does not execute");
+
+    assert!(
+        refused.starts_with("Failed to start the job: "),
+        "{refused}"
+    );
+    assert!(refused.ends_with(&undeniable()), "{refused}");
 }
 
 /// The log and the exclude write are the session's, and a directory the
@@ -1615,8 +1635,6 @@ async fn a_job_is_routed_through_its_context_proxy_or_else_the_environments() {
     Jobs::kill_session(session).await;
 }
 
-/// A background job ran at its host's priority, so a build or a test suite it
-/// started contended with the host's own work.
 #[tokio::test]
 async fn a_job_starts_at_the_contexts_niceness() {
     let cwd = directory();
@@ -1634,4 +1652,50 @@ async fn a_job_starts_at_the_contexts_niceness() {
 
     assert_eq!(status, JobStatus::Exited(0), "{}", tail.output);
     assert_eq!(tail.output.trim(), "19");
+}
+
+/// What a background job that runs the loopback script came to, and what it
+/// logged.
+async fn connected_from_a_job(network: crate::tool::Network) -> (JobStatus, String) {
+    let loopback = Loopback::new().expect("a loopback listener");
+    let cwd = directory();
+    let session = chat();
+    let context = context(session, cwd.path()).with_network(network);
+    let command = JobCommand::new(
+        "bash",
+        vec![loopback.script().to_string_lossy().into_owned()],
+    );
+    let started = Jobs::spawn(&command, &context)
+        .await
+        .expect("the job starts");
+
+    let status = settles(session, &started.id).await;
+    let tail = Jobs::read(session, &started.id, 0, 4_000)
+        .await
+        .expect("its own session reads it");
+    Jobs::kill_session(session).await;
+    (status, tail.output)
+}
+
+#[tokio::test]
+async fn a_job_in_a_context_without_network_cannot_reach_a_local_listener() {
+    if !abnegate_exec::testing::network_denial_enforced().await {
+        return;
+    }
+
+    let (status, output) = connected_from_a_job(crate::tool::Network::Denied).await;
+
+    assert!(
+        matches!(status, JobStatus::Exited(code) if code != 0),
+        "{status:?}: {output}"
+    );
+    assert_network_denied(&output);
+}
+
+#[tokio::test]
+async fn a_job_in_an_open_context_reaches_a_local_listener() {
+    let (status, output) = connected_from_a_job(crate::tool::Network::Open).await;
+
+    assert_eq!(status, JobStatus::Exited(0), "{output}");
+    assert!(output.contains(Loopback::CONNECTED), "{output}");
 }

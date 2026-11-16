@@ -20,6 +20,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 [features]
 default = []
 mcp = ["dep:rmcp", "dep:abnegate-agent-cli", "dep:abnegate-http", "dep:h2"]
+testing = ["dep:tempfile"]
 
 [dependencies]
 abnegate-agent-cli = { path = "../abnegate-agent-cli", version = "0.2.4", optional = true }
@@ -42,6 +43,7 @@ rmcp = { workspace = true, optional = true, features = ["client", "transport-asy
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
+tempfile = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "rt", "sync", "time"] }
 tracing = { workspace = true }
@@ -51,6 +53,7 @@ urlencoding = { workspace = true }
 uuid = { workspace = true, features = ["serde", "v4"] }
 
 [dev-dependencies]
+abnegate-exec = { path = "../abnegate-exec", version = "0.2.4", features = ["testing"] }
 abnegate-llm = { path = "../abnegate-llm", version = "0.2.0", features = ["testing"] }
 rmcp = { workspace = true, features = ["client", "macros", "schemars", "server", "transport-async-rw"] }
 tempfile = { workspace = true }

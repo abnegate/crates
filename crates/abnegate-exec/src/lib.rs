@@ -80,10 +80,32 @@
 //! proxy unless [`PROXY_BYPASS_VARIABLE`] or [`Proxy::with_bypass`] names other
 //! hosts. Confined commands reach no network at all and are unaffected.
 //!
+//! # Network denial
+//!
+//! [`ExecutorConfig::with_network`] set to [`Network::Denied`] keeps every
+//! unconfined command, and every process it starts, off the network
+//! altogether, loopback included, without confining its filesystem: the
+//! operating system refuses the sockets, so an interpreter or a shell the
+//! command starts cannot reach one either. Named and abstract Unix sockets are
+//! refused too, since a local daemon behind one could reach the network for
+//! the command; pipes and stream socket pairs still work. See
+//! [`Network::Denied`] for what else Linux and macOS put in place, and when a
+//! host fails to spawn a denied command instead. A caller that spawns a
+//! [`Network::command`] itself names that reason in its spawn error with
+//! [`Network::spawn_error`].
+//!
 //! # Platform support
 //!
 //! Unix only. Confinement additionally needs macOS or Linux; see
 //! [`HOST_BACKEND`].
+//!
+//! # Features
+//!
+//! - `testing`: `testing::network_denial_enforced` and
+//!   `testing::confinement_required`, for crates whose tests run commands
+//!   through this one, so a test that needs the host's real sandbox skips,
+//!   saying why, where the host has none, and fails instead where
+//!   `ABNEGATE_EXEC_REQUIRE_CONFINEMENT` is set.
 
 #[cfg(not(any(
     target_os = "linux",
@@ -100,6 +122,9 @@ pub mod executor;
 pub mod job;
 pub mod protocol;
 pub mod proxy;
+#[cfg(any(test, feature = "testing"))]
+#[cfg_attr(docsrs, doc(cfg(feature = "testing")))]
+pub mod testing;
 
 pub use abnegate_secret::SecretValue;
 pub use error::DaemonError;
@@ -122,6 +147,7 @@ pub use executor::HOST_BACKEND;
 pub use executor::Invocation;
 pub use executor::JobHandle;
 pub use executor::Marker;
+pub use executor::Network;
 pub use executor::Niceness;
 pub use job::JobRegistry;
 pub use job::JobState;

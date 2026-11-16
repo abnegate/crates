@@ -25,6 +25,8 @@ use crate::test_support::captured_logs;
 use crate::test_support::gone;
 use crate::test_support::ran_in_child;
 use crate::test_support::timed;
+use crate::testing::Loopback;
+use crate::testing::assert_network_denied;
 use crate::tool::MAXIMUM_TOOL_MESSAGE_CHARACTERS;
 use crate::tool::Proxy;
 use crate::tool::Session;
@@ -2088,5 +2090,84 @@ fn a_configured_run_command_is_otherwise_the_default_tool() {
     assert_eq!(
         unwaited(configured).parameters_schema(),
         unwaited(RunCommandTool).parameters_schema()
+    );
+}
+
+/// What `run_shell` reported running the loopback script with `network`.
+async fn connected_from_a_shell(network: crate::tool::Network) -> String {
+    let loopback = Loopback::new().expect("a loopback listener");
+    let context = shell_test_context().with_network(network);
+    let line = format!("bash '{}'", loopback.script().display());
+
+    let result = RunShellTool
+        .execute(json!({"command": line}), &context)
+        .await
+        .expect("the shell runs");
+
+    assert!(result.success, "{result:?}");
+    result.output.expect("the shell's report")
+}
+
+#[tokio::test]
+async fn a_shell_in_a_context_without_network_cannot_reach_a_local_listener() {
+    if !abnegate_exec::testing::network_denial_enforced().await {
+        return;
+    }
+
+    let report = connected_from_a_shell(crate::tool::Network::Denied).await;
+
+    assert!(report.starts_with("Exit code: 1"), "{report}");
+    assert_network_denied(&report);
+}
+
+#[tokio::test]
+async fn a_shell_in_an_open_context_reaches_a_local_listener() {
+    let report = connected_from_a_shell(crate::tool::Network::Open).await;
+
+    assert!(report.contains(Loopback::CONNECTED), "{report}");
+}
+
+/// The context's network, not the public web gate, keeps a listed program
+/// from the listener.
+#[tokio::test]
+async fn a_command_in_a_context_without_network_cannot_reach_a_local_listener() {
+    if !abnegate_exec::testing::network_denial_enforced().await {
+        return;
+    }
+    let loopback = Loopback::new().expect("a loopback listener");
+    let context = shell_test_context().with_network(crate::tool::Network::Denied);
+
+    let result = RunCommandTool::with_commands(&["bash"])
+        .execute(
+            json!({"command": "bash", "args": [loopback.script().to_string_lossy()]}),
+            &context,
+        )
+        .await
+        .expect("bash runs");
+
+    assert!(!result.success, "{result:?}");
+    assert_network_denied(&result.error.expect("the failure"));
+}
+
+#[tokio::test]
+async fn a_command_in_an_open_context_reaches_a_local_listener() {
+    let loopback = Loopback::new().expect("a loopback listener");
+    let context = shell_test_context().with_network(crate::tool::Network::Open);
+
+    let result = RunCommandTool::with_commands(&["bash"])
+        .execute(
+            json!({"command": "bash", "args": [loopback.script().to_string_lossy()]}),
+            &context,
+        )
+        .await
+        .expect("bash runs");
+
+    assert!(result.success, "{result:?}");
+    assert!(
+        result
+            .output
+            .as_deref()
+            .is_some_and(|output| output.contains(Loopback::CONNECTED)),
+        "{result:?}"
     );
 }

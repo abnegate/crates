@@ -17,7 +17,7 @@ only; confinement additionally needs macOS or Linux.
 
 ## Features
 
-None.
+- `testing`: `testing::network_denial_enforced` and `testing::confinement_required`, for crates whose tests run commands through this one, so a test that needs the host's real sandbox skips, saying why, where the host has none, and fails instead where `ABNEGATE_EXEC_REQUIRE_CONFINEMENT` is set.
 
 ## Usage
 

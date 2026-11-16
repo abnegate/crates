@@ -133,14 +133,16 @@ impl CommandExecutor {
                     .spawn(configure)
             }
             None => {
-                let mut process = Command::new(command);
+                let mut process = self.config.network.command(command);
                 process.args(arguments);
                 self.config.environment.apply(&mut process);
                 process.envs(environment);
                 self.config.proxy.apply(&mut process);
                 configure(&mut process);
                 session::lead(&mut process, None);
-                process.spawn()
+                process
+                    .spawn()
+                    .map_err(|error| self.config.network.spawn_error(error))
             }
         };
         let mut child = spawned.map_err(ExecutorError::SpawnFailed)?;
@@ -233,13 +235,14 @@ mod tests {
 
     use crate::executor::ConfinementMode;
     use crate::executor::EnvironmentPolicy;
+    use crate::executor::Network;
     use crate::executor::child;
     use crate::executor::sandbox;
-    use crate::executor::sandbox::REQUIRE_CONFINEMENT;
     use crate::protocol::ConfinementRequest;
     use crate::protocol::ErrorCode;
     use crate::protocol::LogLevel;
     use crate::proxy::Proxy;
+    use crate::testing::REQUIRE_CONFINEMENT;
 
     use super::*;
 
@@ -1339,6 +1342,39 @@ mod tests {
             Err(ExecutorError::SpawnFailed(_)) => {}
             other => panic!("Wrong result: {other:?}"),
         }
+    }
+
+    /// The reason a spawn failed, for a request whose program is a directory,
+    /// which no host executes.
+    async fn unexecutable_spawn_error(network: Network) -> String {
+        let executor =
+            CommandExecutor::with_config(ExecutorConfig::default().with_network(network));
+        let (sender, _receiver) = mpsc::channel(100);
+        let request = RunStart::new("unexecutable-test", "/tmp", "/tmp").with_timeout(TIMEOUT);
+
+        match executor.spawn(&request, sender).await {
+            Err(ExecutorError::SpawnFailed(error)) => error.to_string(),
+            other => panic!("Wrong result: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_spawn_denied_failure_says_why() {
+        let reason = unexecutable_spawn_error(Network::Denied).await;
+
+        assert!(
+            reason.ends_with(
+                ": the command did not start, likely because this host cannot keep it off the network"
+            ),
+            "{reason}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_spawn_open_failure_is_unchanged() {
+        let reason = unexecutable_spawn_error(Network::Open).await;
+
+        assert!(!reason.contains("off the network"), "{reason}");
     }
 
     #[tokio::test]

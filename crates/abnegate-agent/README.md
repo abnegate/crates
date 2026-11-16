@@ -18,6 +18,7 @@ and reloads agent runs, and `template` renders `{{key}}` prompt templates.
 ## Features
 
 - `mcp`: an MCP client that launches stdio servers and connects to streamable HTTP ones, and adds their tools to a `ToolRegistry`. Its configuration is `abnegate-agent-cli`'s `McpConfig`, re-exported here, so one `mcp.json` drives this client and a coding agent CLI alike.
+- `testing`: `testing::Loopback` and `testing::assert_network_denied`, for crates whose tests prove a tool's command reaches the network only when its `ToolContext` allows it.
 
 ## Usage
 

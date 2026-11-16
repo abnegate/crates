@@ -112,6 +112,12 @@ pub(crate) fn assert_passed(output: &Output) {
     );
 }
 
+/// The reason abnegate-exec appends to a denied command's failure to start.
+pub(crate) fn undeniable() -> String {
+    let error = abnegate_exec::Network::Denied.spawn_error(io::Error::other(""));
+    error.to_string()
+}
+
 /// The proxy a test's child process names in its environment, which a
 /// context or hub given a proxy of its own must not route through.
 pub(crate) const ENVIRONMENT_PROXY: &str = "http://127.0.0.1:28888";

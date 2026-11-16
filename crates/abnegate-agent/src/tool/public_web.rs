@@ -8,13 +8,17 @@ use std::panic::RefUnwindSafe;
 /// it starts `curl` or `wget`, in the foreground or the background, and fails
 /// the call with the refusal as its message.
 ///
-/// That is all it gates. It is not a network sandbox: other programs on
+/// That is all it gates, and it answers with a reason the model is shown. It
+/// does not keep a turn off the network: other programs on
 /// [`DEFAULT_COMMANDS`](crate::tool::DEFAULT_COMMANDS) reach the network too
 /// (`git`, `gh`, `npm`, `npx`, `pip`, `uv`, `cargo`), a list passed to
 /// [`RunCommandTool::with_commands`](crate::tool::RunCommandTool::with_commands)
 /// may name more, and `run_shell` is never asked, so a shell can still run
-/// `curl`. A host that must keep a turn off the network withholds those
-/// tools or confines the process itself.
+/// `curl`. A host that must keep a turn off the network sets
+/// [`ToolContext::network`](crate::ToolContext::network) to
+/// [`Network::Denied`](crate::tool::Network::Denied), which the operating
+/// system enforces on every child a tool starts and everything that child
+/// starts in turn.
 ///
 /// ```
 /// use std::sync::Arc;
