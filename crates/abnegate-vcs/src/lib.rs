@@ -199,6 +199,9 @@ pub use crate::pull_request::DiffSide;
 pub use crate::pull_request::EnabledAutoMerge;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::EvidenceSlot;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::Excerpt;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
@@ -218,6 +221,9 @@ pub use crate::pull_request::GitHubPullRequest;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::GitReference;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::HeadChecks;
 #[cfg(feature = "github-app")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]
 pub use crate::pull_request::Installation;
@@ -286,6 +292,9 @@ pub use crate::pull_request::NotesRequest;
 pub use crate::pull_request::ObjectKind;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::OpenPullRequestPage;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::Page;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
@@ -299,6 +308,9 @@ pub use crate::pull_request::PullRequestDetail;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::PullRequestError;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::PullRequestEvidence;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::PullRequestReception;
@@ -326,6 +338,9 @@ pub use crate::pull_request::ReleaseRequest;
 #[cfg(feature = "github")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github")))]
 pub use crate::pull_request::Repository;
+#[cfg(feature = "github")]
+#[cfg_attr(docsrs, doc(cfg(feature = "github")))]
+pub use crate::pull_request::RepositoryId;
 #[cfg(feature = "github-app")]
 #[cfg_attr(docsrs, doc(cfg(feature = "github-app")))]
 pub use crate::pull_request::RepositorySelection;

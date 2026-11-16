@@ -7,6 +7,10 @@ use std::num::NonZeroU64;
 /// word GitHub adds later reaches the caller rather than an error. A field
 /// GitHub may leave out or send as `null` is `None`; every other field is one
 /// GitHub always sends, and a run without it is never read.
+///
+/// A run read with a pull request's evidence comes from GitHub's GraphQL API,
+/// which says less of it; [`crate::pull_request::HeadChecks`] lists what
+/// differs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct WorkflowRun {
