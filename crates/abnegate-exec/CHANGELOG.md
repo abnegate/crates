@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.5](https://github.com/abnegate/crates/compare/abnegate-exec/v0.2.4...abnegate-exec/v0.2.5) - 2026-11-16
+
+### Added
+
+- *(exec)* deny a command the network at the os level ([#96](https://github.com/abnegate/crates/pull/96))
+
 ## [0.2.4](https://github.com/abnegate/crates/compare/abnegate-exec/v0.2.3...abnegate-exec/v0.2.4) - 2026-11-13
 
 ### Added
