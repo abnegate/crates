@@ -137,6 +137,13 @@ const MAXIMUM_REFUSAL_BYTES: usize = 64 * 1024;
 /// partial list.
 pub(super) const MAXIMUM_ANSWER_BYTES: usize = 16 * 1024 * 1024;
 
+/// What a GraphQL query GitHub ran out of time answering is reported as.
+const TIMED_OUT: &str = "GitHub's GraphQL API ran out of time answering";
+
+/// The statuses GitHub's gateway answers a request it gave up waiting on
+/// with.
+const GATEWAY_TIMEOUTS: &[u16] = &[502, 504];
+
 /// What an answer this crate cannot read is reported as, in place of the
 /// parser's own message, which quotes the answer.
 const UNREADABLE: &str = "GitHub answered in a form this crate cannot read";
@@ -195,7 +202,7 @@ const GIT_SUFFIX: &str = ".git";
 /// - Finding and listing pull requests: [`Self::find_pull_request`],
 ///   [`Self::list_pull_requests`] and [`Self::list_files`].
 /// - Listing open pull requests with what says whether each is ready, a page
-///   and ten pull requests to a request: [`Self::fetch_open_pull_requests`]
+///   and ten pull requests to a request: [`Self::list_open_pull_requests`]
 ///   and [`Self::fetch_pull_request_evidence`].
 /// - Actions: [`Self::collect_workflow_runs`], [`Self::fetch_workflow_job`]
 ///   and [`Self::fetch_job_log`].
@@ -1193,6 +1200,20 @@ async fn refusal(response: Response) -> PullRequestError {
         Ok(refusal) => unexpected(status, &refusal),
         Err(failure) => failure,
     }
+}
+
+/// Whether `failure` is an answer larger than this crate reads.
+pub(super) fn oversized(failure: &PullRequestError) -> bool {
+    matches!(failure, PullRequestError::GitHubApi(message) if message == OVERSIZED)
+}
+
+/// Whether a request that failed with `failure` may succeed asked again for
+/// less: its answer was larger than this crate reads, GitHub's gateway gave
+/// up waiting on it, or GitHub's GraphQL API said it ran out of time.
+pub(super) fn halvable(failure: &PullRequestError) -> bool {
+    oversized(failure)
+        || matches!(failure, PullRequestError::GitHubApi(message) if message == TIMED_OUT)
+        || matches!(failure, PullRequestError::Refused { status, .. } if GATEWAY_TIMEOUTS.contains(status))
 }
 
 /// The rows to ask for when `per_page` are wanted: never more than GitHub

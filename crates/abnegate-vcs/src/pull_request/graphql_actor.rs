@@ -7,6 +7,10 @@ const BOT: &str = "Bot";
 /// The suffix GitHub's REST API spells an App's login with.
 const BOT_SUFFIX: &str = "[bot]";
 
+/// Apps whose login GitHub's REST API spells as another word altogether, by
+/// the login its GraphQL API gives them.
+const RENAMED: &[(&str, &str)] = &[("copilot-swe-agent", "Copilot")];
+
 /// Whoever wrote something, as GitHub's GraphQL API names them.
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct GraphQlActor {
@@ -18,12 +22,16 @@ pub(super) struct GraphQlActor {
 
 impl GraphQlActor {
     /// The login as GitHub's REST API spells it: an App's with `[bot]` after
-    /// it, as its GraphQL API leaves out.
+    /// it, as its GraphQL API leaves out, or, for the few Apps REST names
+    /// another way, such as GitHub's Copilot coding agent, that name.
     pub(super) fn login_as_listed(self) -> Option<String> {
         let login = self.login?;
-        match self.kind.as_deref() == Some(BOT) && !login.ends_with(BOT_SUFFIX) {
-            true => Some(format!("{login}{BOT_SUFFIX}")),
-            false => Some(login),
+        if self.kind.as_deref() != Some(BOT) || login.ends_with(BOT_SUFFIX) {
+            return Some(login);
+        }
+        match RENAMED.iter().find(|(graphql, _)| *graphql == login) {
+            Some((_, rest)) => Some(rest.to_string()),
+            None => Some(format!("{login}{BOT_SUFFIX}")),
         }
     }
 }

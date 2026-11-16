@@ -164,6 +164,17 @@ pub enum PullRequestError {
     #[error("The content is larger than the limit the caller set")]
     TooLarge,
 
+    /// More pull requests were asked for in one batch than a batch reads, so
+    /// nothing was sent.
+    #[error("{asked} pull requests were asked for in one batch, which reads at most {maximum}")]
+    #[non_exhaustive]
+    BatchTooLarge {
+        /// How many were asked for.
+        asked: usize,
+        /// The most one batch reads.
+        maximum: usize,
+    },
+
     /// GitHub sent a file's content in a form that is not valid base64, so
     /// its bytes could not be read. The content is not repeated back.
     #[error("GitHub sent file content that is not valid base64")]

@@ -5,18 +5,20 @@ use crate::pull_request::ListedPullRequest;
 use crate::pull_request::MergeableState;
 use crate::pull_request::ReviewThreadCount;
 
-/// An open pull request with everything that says whether it is ready to
-/// merge, as
+/// A pull request with everything that says whether it is ready to merge, as
 /// [`PullRequestService::fetch_pull_request_evidence`](crate::pull_request::PullRequestService::fetch_pull_request_evidence)
 /// reads it in one request alongside others.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct OpenPullRequest {
+pub struct PullRequestEvidence {
     /// The pull request as a listing names it, read in the same request as
-    /// everything else here.
-    pub listed: ListedPullRequest,
+    /// everything else here. [`ListedPullRequest::draft`] is what says it is
+    /// a draft.
+    pub pull_request: ListedPullRequest,
     /// What stands between it and a merge, as GitHub sums it up: the same
-    /// word its REST API gives, a draft's included.
+    /// word its REST API gives. A draft carries its real state, such as
+    /// [`MergeableState::Blocked`] or [`MergeableState::Dirty`], rather than
+    /// [`MergeableState::Draft`].
     pub mergeable_state: MergeableState,
     /// How many of its first hundred review threads are open and resolved,
     /// complete only when it has no more than those.
@@ -29,18 +31,18 @@ pub struct OpenPullRequest {
     pub head: Option<HeadChecks>,
 }
 
-impl OpenPullRequest {
-    /// `listed`, standing at `mergeable_state`, with `threads` and
+impl PullRequestEvidence {
+    /// `pull_request`, standing at `mergeable_state`, with `threads` and
     /// `comments`, and nothing read of its head until [`Self::with_head`]
     /// says otherwise.
     pub fn new(
-        listed: ListedPullRequest,
+        pull_request: ListedPullRequest,
         mergeable_state: MergeableState,
         threads: ReviewThreadCount,
         comments: Collected<IssueComment>,
     ) -> Self {
         Self {
-            listed,
+            pull_request,
             mergeable_state,
             threads,
             comments,
@@ -79,8 +81,8 @@ mod tests {
     }
 
     #[test]
-    fn an_open_pull_request_reads_no_head_until_given_one() {
-        let bare = OpenPullRequest::new(
+    fn evidence_reads_no_head_until_given_one() {
+        let bare = PullRequestEvidence::new(
             listed(),
             MergeableState::Blocked,
             ReviewThreadCount::new(1, 2, true),
@@ -94,11 +96,12 @@ mod tests {
         );
 
         assert_eq!(bare.head, None);
+        assert_eq!(bare.pull_request, listed());
         assert_eq!(bare.mergeable_state, MergeableState::Blocked);
         assert_eq!(bare.threads, ReviewThreadCount::new(1, 2, true));
         assert_eq!(
             bare.clone().with_head(head.clone()),
-            OpenPullRequest {
+            PullRequestEvidence {
                 head: Some(head),
                 ..bare
             }

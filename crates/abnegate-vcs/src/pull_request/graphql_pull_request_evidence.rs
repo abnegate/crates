@@ -14,7 +14,7 @@ use serde::Deserialize;
 #[serde(rename_all = "camelCase")]
 pub(super) struct GraphQlPullRequestEvidence {
     #[serde(flatten)]
-    pub(super) listed: GraphQlListedPullRequest,
+    pub(super) pull_request: GraphQlListedPullRequest,
     pub(super) repository: GraphQlNode,
     #[serde(default)]
     pub(super) merge_state_status: Option<String>,

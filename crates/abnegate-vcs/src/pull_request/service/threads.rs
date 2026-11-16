@@ -239,9 +239,7 @@ impl PullRequestService {
                     )
                     .await;
                 match read {
-                    Err(PullRequestError::GitHubApi(ref message))
-                        if message == OVERSIZED && asked > 1 =>
-                    {
+                    Err(ref failure) if oversized(failure) && asked > 1 => {
                         first = asked / 2;
                     }
                     read => break (read?, asked),

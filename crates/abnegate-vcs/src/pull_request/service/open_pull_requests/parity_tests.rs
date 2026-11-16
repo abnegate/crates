@@ -3,7 +3,6 @@ use crate::pull_request::IssueReference;
 use crate::pull_request::PullRequestDetail;
 use crate::pull_request::StateFilter;
 use crate::pull_request::WorkflowRunFilter;
-use std::collections::BTreeSet;
 use std::env;
 use std::fmt::Debug;
 use std::num::NonZeroU32;
@@ -18,6 +17,10 @@ const NEWEST_COMMENTS: u64 = 100;
 
 const ORDER_ROWS: u8 = 10;
 
+const DYNAMIC: &str = "dynamic";
+
+const SHOWN_DIFFERENCES: usize = 3;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Verdict {
     Same,
@@ -28,17 +31,18 @@ enum Verdict {
 }
 
 struct Row {
-    number: u64,
+    subject: String,
     field: &'static str,
     evidence: String,
     rest: String,
     verdict: Verdict,
 }
 
+#[derive(Clone, Copy)]
 struct Reads<'a> {
     number: u64,
-    first: &'a OpenPullRequest,
-    second: &'a OpenPullRequest,
+    first: &'a PullRequestEvidence,
+    second: &'a PullRequestEvidence,
     rest: &'a RestReads,
 }
 
@@ -65,10 +69,23 @@ fn judged<T: PartialEq>(first: &T, second: &T, rest: &T) -> Verdict {
     }
 }
 
+fn differences<T: PartialEq + Debug>(evidence: &[T], rest: &[T]) -> (String, String) {
+    let only = |from: &[T], other: &[T]| -> String {
+        let missing: Vec<String> = from
+            .iter()
+            .filter(|item| !other.contains(item))
+            .take(SHOWN_DIFFERENCES)
+            .map(|item| format!("{item:?}"))
+            .collect();
+        format!("{} rows; only here: {}", from.len(), missing.join(", "))
+    };
+    (only(evidence, rest), only(rest, evidence))
+}
+
 fn row<T: PartialEq + Debug>(
-    reads: &Reads<'_>,
+    reads: Reads<'_>,
     field: &'static str,
-    read: fn(&OpenPullRequest) -> T,
+    read: fn(&PullRequestEvidence) -> T,
     rest: T,
     summary: fn(&T) -> String,
 ) -> Row {
@@ -84,7 +101,7 @@ fn row<T: PartialEq + Debug>(
         _ => (summary(shown), summary(&rest)),
     };
     Row {
-        number: reads.number,
+        subject: format!("#{}", reads.number),
         field,
         evidence,
         rest,
@@ -92,7 +109,36 @@ fn row<T: PartialEq + Debug>(
     }
 }
 
-fn mergeability(reads: &Reads<'_>) -> Row {
+fn list_row<T: PartialEq + Debug>(
+    reads: Reads<'_>,
+    field: &'static str,
+    read: fn(&PullRequestEvidence) -> Vec<T>,
+    rest: Vec<T>,
+) -> Row {
+    let first = read(reads.first);
+    let second = read(reads.second);
+    let verdict = judged(&first, &second, &rest);
+    let shown = match verdict {
+        Verdict::SettledOnSecondRead => &second,
+        _ => &first,
+    };
+    let (evidence, rest) = match verdict {
+        Verdict::Different => differences(shown, &rest),
+        _ => (
+            format!("{} rows", shown.len()),
+            format!("{} rows", rest.len()),
+        ),
+    };
+    Row {
+        subject: format!("#{}", reads.number),
+        field,
+        evidence,
+        rest,
+        verdict,
+    }
+}
+
+fn mergeability(reads: Reads<'_>) -> Row {
     let first = reads.first.mergeable_state;
     let second = reads.second.mergeable_state;
     let rest = reads.rest.detail.mergeable_state;
@@ -106,7 +152,7 @@ fn mergeability(reads: &Reads<'_>) -> Row {
         Verdict::Different
     };
     Row {
-        number: reads.number,
+        subject: format!("#{}", reads.number),
         field: "mergeable state",
         evidence: format!("{first:?} then {second:?}"),
         rest: format!("{rest:?}"),
@@ -114,34 +160,45 @@ fn mergeability(reads: &Reads<'_>) -> Row {
     }
 }
 
-fn check_runs(collected: &Collected<CheckRun>) -> Vec<(Option<u64>, String, Option<String>)> {
-    let mut runs: Vec<(Option<u64>, String, Option<String>)> = collected
+fn check_runs(collected: &Collected<CheckRun>) -> Vec<CheckRun> {
+    let mut runs: Vec<CheckRun> = collected
         .items
         .iter()
-        .map(|run| (run.id, run.status.clone(), run.conclusion.clone()))
+        .cloned()
+        .map(|run| CheckRun {
+            started_at: None,
+            ..run
+        })
         .collect();
-    runs.sort();
+    runs.sort_by(|left, right| (left.id, &left.name).cmp(&(right.id, &right.name)));
     runs
 }
 
-fn statuses(collected: &Collected<CommitStatus>) -> Vec<(String, String)> {
-    let mut statuses: Vec<(String, String)> = collected
-        .items
-        .iter()
-        .map(|status| (status.context.clone(), status.state.clone()))
-        .collect();
-    statuses.sort();
+fn statuses(collected: &Collected<CommitStatus>) -> Vec<CommitStatus> {
+    let mut statuses = collected.items.clone();
+    statuses.sort_by(|left, right| left.context.cmp(&right.context));
     statuses
 }
 
-fn workflow_runs(
-    collected: &Collected<WorkflowRun>,
-) -> BTreeSet<(u64, Option<String>, Option<String>)> {
-    collected
+fn workflow_runs(collected: &Collected<WorkflowRun>) -> Vec<WorkflowRun> {
+    let mut runs: Vec<WorkflowRun> = collected
         .items
         .iter()
-        .map(|run| (run.id.get(), run.status.clone(), run.conclusion.clone()))
-        .collect()
+        .cloned()
+        .map(|run| {
+            let dynamic = run.event == DYNAMIC;
+            WorkflowRun {
+                attempt: None,
+                started_at: None,
+                name: run.name.filter(|_| !dynamic),
+                head_branch: run.head_branch.filter(|_| !dynamic),
+                path: run.path.chars().filter(|_| !dynamic).collect(),
+                ..run
+            }
+        })
+        .collect();
+    runs.sort_by_key(|run| run.id);
+    runs
 }
 
 fn comments(collected: &Collected<IssueComment>) -> (Vec<(u64, String)>, bool) {
@@ -155,24 +212,21 @@ fn comments(collected: &Collected<IssueComment>) -> (Vec<(u64, String)>, bool) {
     )
 }
 
-fn head(read: &OpenPullRequest) -> HeadChecks {
+fn head(read: &PullRequestEvidence) -> HeadChecks {
     read.head.clone().expect("a head read whole")
 }
 
-fn counted<T>(items: &[T]) -> String {
-    format!("{} rows", items.len())
+fn complete(read: &PullRequestEvidence) -> bool {
+    read.head.as_ref().is_some_and(|head| {
+        head.check_runs.complete && head.workflow_runs.complete && head.statuses.complete
+    })
 }
 
-fn head_rows(reads: &Reads<'_>) -> Vec<Row> {
+fn head_rows(reads: Reads<'_>) -> Vec<Row> {
     let rest = reads.rest;
-    let complete = |read: &OpenPullRequest| {
-        read.head.as_ref().is_some_and(|head| {
-            head.check_runs.complete && head.workflow_runs.complete && head.statuses.complete
-        })
-    };
     if !complete(reads.first) && !complete(reads.second) {
         return vec![Row {
-            number: reads.number,
+            subject: format!("#{}", reads.number),
             field: "head checks",
             evidence: "head moved or a list was cut short".to_string(),
             rest: "read again through REST".to_string(),
@@ -184,40 +238,37 @@ fn head_rows(reads: &Reads<'_>) -> Vec<Row> {
             true => reads.first,
             false => reads.second,
         },
-        ..*reads
+        ..reads
     };
     vec![
-        row(
-            &reads,
-            "check runs (id, status, conclusion)",
+        list_row(
+            reads,
+            "check runs, whole but started_at",
             |read| check_runs(&head(read).check_runs),
             check_runs(&rest.check_runs),
-            |runs| counted(runs),
         ),
-        row(
-            &reads,
-            "statuses (context, state)",
+        list_row(
+            reads,
+            "statuses, whole",
             |read| statuses(&head(read).statuses),
             statuses(&rest.statuses),
-            |statuses| counted(statuses),
         ),
-        row(
-            &reads,
-            "workflow runs (id, status, conclusion)",
+        list_row(
+            reads,
+            "workflow runs, whole but attempt, started_at, and a dynamic run's name, path, branch",
             |read| workflow_runs(&head(read).workflow_runs),
             workflow_runs(&rest.workflow_runs),
-            |runs| format!("{} rows", runs.len()),
         ),
     ]
 }
 
-fn compared(reads: &Reads<'_>) -> Vec<Row> {
+fn compared(reads: Reads<'_>) -> Vec<Row> {
     let rest = reads.rest;
     let mut rows = vec![
         row(
             reads,
             "draft",
-            |read| read.listed.draft,
+            |read| read.pull_request.draft,
             rest.detail.draft,
             |draft| draft.to_string(),
         ),
@@ -225,14 +276,14 @@ fn compared(reads: &Reads<'_>) -> Vec<Row> {
         row(
             reads,
             "author",
-            |read| read.listed.author_login.clone(),
+            |read| read.pull_request.author_login.clone(),
             rest.detail.author_login.clone(),
             |author| author.clone().unwrap_or_default(),
         ),
         row(
             reads,
             "head sha",
-            |read| read.listed.head_sha.clone(),
+            |read| read.pull_request.head_sha.clone(),
             Some(rest.detail.head_sha.clone()),
             |sha| {
                 sha.as_ref()
@@ -327,32 +378,63 @@ async fn rest_reads(
     }
 }
 
+async fn rest_order(
+    service: &PullRequestService,
+    token: &SecretValue,
+    repository: &Repository,
+) -> Vec<u64> {
+    let rows = NonZeroU8::new(ORDER_ROWS).unwrap();
+    service
+        .list_pull_requests(repository, token, StateFilter::Open, NonZeroU32::MIN, rows)
+        .await
+        .unwrap()
+        .items
+        .iter()
+        .map(|row| row.reference.number().get())
+        .collect()
+}
+
 async fn order_row(
     service: &PullRequestService,
     token: &SecretValue,
     repository: &Repository,
-) -> String {
-    let rows = NonZeroU8::new(ORDER_ROWS).unwrap();
-    let open = service
-        .fetch_open_pull_requests(repository, token, rows, None)
+) -> Row {
+    let before = rest_order(service, token, repository).await;
+    let open: Vec<u64> = service
+        .list_open_pull_requests(repository, token, NonZeroU8::new(ORDER_ROWS).unwrap(), None)
         .await
-        .unwrap();
-    let rest = service
-        .list_pull_requests(repository, token, StateFilter::Open, NonZeroU32::MIN, rows)
-        .await
-        .unwrap();
-    let numbers = |listed: &[ListedPullRequest]| -> Vec<u64> {
-        listed
-            .iter()
-            .map(|row| row.reference.number().get())
-            .collect()
-    };
-    format!(
-        "open order: graphql {:?}, rest {:?}, same {}",
-        numbers(&open.pull_requests),
-        numbers(&rest.items),
-        numbers(&open.pull_requests) == numbers(&rest.items)
-    )
+        .unwrap()
+        .items
+        .iter()
+        .map(|row| row.reference.number().get())
+        .collect();
+    let after = rest_order(service, token, repository).await;
+    Row {
+        subject: repository.to_string(),
+        field: "open order, first ten",
+        evidence: format!("{open:?}"),
+        rest: format!("{before:?}"),
+        verdict: judged(&open, &after, &before),
+    }
+}
+
+async fn evidence(
+    service: &PullRequestService,
+    token: &SecretValue,
+    repository: &Repository,
+    repository_id: &RepositoryId,
+    ids: &[String],
+) -> Vec<EvidenceSlot> {
+    let mut slots = Vec::new();
+    for batch in ids.chunks(PullRequestService::EVIDENCE_BATCH) {
+        slots.extend(
+            service
+                .fetch_pull_request_evidence(repository, token, repository_id, batch)
+                .await
+                .unwrap(),
+        );
+    }
+    slots
 }
 
 #[tokio::test]
@@ -368,9 +450,9 @@ async fn batched_evidence_reads_what_rest_reads() {
     let service = PullRequestService::new().unwrap();
     let repository = Repository::new(owner, name).unwrap();
 
-    let order = order_row(&service, &token, &repository).await;
+    let mut rows: Vec<Row> = vec![order_row(&service, &token, &repository).await];
     let repository_id = service
-        .fetch_open_pull_requests(&repository, &token, NonZeroU8::MIN, None)
+        .list_open_pull_requests(&repository, &token, NonZeroU8::MIN, None)
         .await
         .unwrap()
         .repository_id;
@@ -386,32 +468,26 @@ async fn batched_evidence_reads_what_rest_reads() {
         );
     }
 
-    let first = service
-        .fetch_pull_request_evidence(&repository, &token, &repository_id, &ids)
-        .await
-        .unwrap();
+    let first = evidence(&service, &token, &repository, &repository_id, &ids).await;
     let mut rest: Vec<RestReads> = Vec::new();
     for number in &numbers {
         rest.push(rest_reads(&service, &token, &repository, *number).await);
     }
-    let second = service
-        .fetch_pull_request_evidence(&repository, &token, &repository_id, &ids)
-        .await
-        .unwrap();
+    let second = evidence(&service, &token, &repository, &repository_id, &ids).await;
 
-    let mut rows: Vec<Row> = Vec::new();
     for (index, number) in numbers.iter().enumerate() {
-        let (Some(first), Some(second)) = (&first[index], &second[index]) else {
+        let (Some(first), Some(second)) = (first[index].evidence(), second[index].evidence())
+        else {
             rows.push(Row {
-                number: number.get(),
+                subject: format!("#{number}"),
                 field: "evidence",
-                evidence: "none".to_string(),
+                evidence: format!("{:?} then {:?}", first[index], second[index]),
                 rest: "read".to_string(),
                 verdict: Verdict::Different,
             });
             continue;
         };
-        rows.extend(compared(&Reads {
+        rows.extend(compared(Reads {
             number: number.get(),
             first,
             second,
@@ -419,22 +495,25 @@ async fn batched_evidence_reads_what_rest_reads() {
         }));
     }
 
-    println!("{order}");
-    println!("| PR | field | EVIDENCE | REST | verdict |");
+    println!("| subject | field | EVIDENCE | REST | verdict |");
     println!("|---|---|---|---|---|");
     for row in &rows {
         println!(
             "| {} | {} | {} | {} | {:?} |",
-            row.number, row.field, row.evidence, row.rest, row.verdict
+            row.subject, row.field, row.evidence, row.rest, row.verdict
         );
     }
-    let different: Vec<&Row> = rows
+    let different = rows
         .iter()
         .filter(|row| row.verdict == Verdict::Different)
-        .collect();
+        .count();
+    let heads_compared = rows
+        .iter()
+        .filter(|row| row.field.starts_with("check runs"))
+        .count();
+    assert_eq!(different, 0, "{different} unexplained differences");
     assert!(
-        different.is_empty(),
-        "{} unexplained differences",
-        different.len()
+        heads_compared > 0,
+        "no pull request's head checks were compared whole"
     );
 }
