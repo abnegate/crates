@@ -59,6 +59,7 @@ mod fixtures;
 mod graphql;
 mod issues;
 mod merging;
+mod open_pull_requests;
 mod pulls;
 #[cfg(test)]
 mod rate_limit_tests;
@@ -193,6 +194,9 @@ const GIT_SUFFIX: &str = ".git";
 ///   [`Self::delete_webhook`].
 /// - Finding and listing pull requests: [`Self::find_pull_request`],
 ///   [`Self::list_pull_requests`] and [`Self::list_files`].
+/// - Listing open pull requests with what says whether each is ready, a page
+///   and ten pull requests to a request: [`Self::fetch_open_pull_requests`]
+///   and [`Self::fetch_pull_request_evidence`].
 /// - Actions: [`Self::collect_workflow_runs`], [`Self::fetch_workflow_job`]
 ///   and [`Self::fetch_job_log`].
 /// - Releases: [`Self::list_releases`] and [`Self::fetch_release`].
@@ -205,8 +209,9 @@ const GIT_SUFFIX: &str = ".git";
 /// - Branches: [`Self::list_branches`].
 ///
 /// Review threads, resolving one, an administrator's merge, auto-merge,
-/// drafts and a repository's merge settings go to GitHub's GraphQL API;
-/// everything else goes to its REST API, at the same origin.
+/// drafts, a repository's merge settings, and open pull requests with their
+/// evidence go to GitHub's GraphQL API; everything else goes to its REST API,
+/// at the same origin.
 ///
 /// A read follows a redirect only while it stays on that origin, for at most
 /// ten hops. A write, meaning any request but a GET and so every GraphQL call,

@@ -13,7 +13,8 @@
 //! its releases; and registers, re-signs and removes the webhooks a
 //! repository delivers its events through. It talks to GitHub's REST API,
 //! and to its GraphQL API for review threads, an administrator's merge,
-//! auto-merge, drafts and a repository's merge settings. It addresses
+//! auto-merge, drafts, a repository's merge settings, and open pull requests
+//! read in batches with their checks, threads and comments. It addresses
 //! GitHub's own API by default and a GitHub Enterprise origin when one is
 //! configured; either way it only answers for repositories on the host that
 //! origin serves.
@@ -189,19 +190,39 @@ mod graphql_actor;
 mod graphql_auto_merge_request;
 mod graphql_automated_repository;
 mod graphql_automation;
+mod graphql_big_int;
+mod graphql_branch;
+mod graphql_check_run;
+mod graphql_check_suite;
+mod graphql_checked_commit;
+mod graphql_combined_status;
+mod graphql_commit_node;
 mod graphql_connection;
+mod graphql_counted_connection;
 mod graphql_error;
 mod graphql_identified;
+mod graphql_issue_comment;
+mod graphql_listed_pull_request;
 mod graphql_merge_settings;
+mod graphql_node;
+mod graphql_nodes;
+mod graphql_open_repository;
 mod graphql_page_info;
 mod graphql_pull_request;
+mod graphql_pull_request_evidence;
 mod graphql_query;
 mod graphql_repository;
 mod graphql_request;
 mod graphql_response;
 mod graphql_review_thread;
+mod graphql_status_context;
 mod graphql_thread_comment;
+mod graphql_thread_resolution;
 mod graphql_thread_state;
+mod graphql_workflow;
+mod graphql_workflow_file;
+mod graphql_workflow_run;
+mod head_checks;
 mod issue;
 mod issue_comment;
 mod issue_reference;
@@ -221,6 +242,8 @@ mod mergeable_state;
 mod merged;
 mod notes_request;
 mod object_kind;
+mod open_page;
+mod open_pull_request;
 mod origin;
 mod page;
 mod rate_limit;
@@ -312,6 +335,7 @@ pub use crate::pull_request::generated_notes::GeneratedNotes;
 pub use crate::pull_request::git_reference::GitReference;
 pub use crate::pull_request::github_branch::GitHubBranch;
 pub use crate::pull_request::github_pull_request::GitHubPullRequest;
+pub use crate::pull_request::head_checks::HeadChecks;
 pub use crate::pull_request::issue::Issue;
 pub use crate::pull_request::issue_comment::IssueComment;
 pub use crate::pull_request::issue_reference::IssueReference;
@@ -329,6 +353,8 @@ pub use crate::pull_request::mergeable_state::MergeableState;
 pub use crate::pull_request::merged::MergedPullRequest;
 pub use crate::pull_request::notes_request::NotesRequest;
 pub use crate::pull_request::object_kind::ObjectKind;
+pub use crate::pull_request::open_page::OpenPage;
+pub use crate::pull_request::open_pull_request::OpenPullRequest;
 pub use crate::pull_request::page::Page;
 pub use crate::pull_request::rate_limit::RateLimit;
 pub use crate::pull_request::reception::PullRequestReception;

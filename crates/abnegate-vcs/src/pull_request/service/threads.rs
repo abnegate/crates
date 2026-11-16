@@ -296,7 +296,7 @@ fn thread_rejection(errors: &[GraphQlError]) -> PullRequestError {
 
 /// Whether any of a set of GraphQL errors says nothing was found at exactly
 /// `path` in the query.
-fn missing(errors: &[GraphQlError], path: &[&str]) -> bool {
+pub(super) fn missing(errors: &[GraphQlError], path: &[&str]) -> bool {
     errors.iter().any(|error| {
         error.kind.as_deref() == Some(NOT_FOUND)
             && error.path.as_deref().is_some_and(|segments| {
@@ -310,13 +310,13 @@ fn missing(errors: &[GraphQlError], path: &[&str]) -> bool {
 
 /// Whether GitHub said no page follows the one that ended at `page`, rather
 /// than that one does or nothing at all.
-fn last(page: Option<&GraphQlPageInfo>) -> bool {
+pub(super) fn last(page: Option<&GraphQlPageInfo>) -> bool {
     page.and_then(|page| page.has_next_page) == Some(false)
 }
 
 /// The cursor to read the next page after: the one a page ended at, when
 /// GitHub says another page follows and that cursor moved on from `after`.
-fn next_cursor(page: Option<GraphQlPageInfo>, after: Option<&str>) -> Option<String> {
+pub(super) fn next_cursor(page: Option<GraphQlPageInfo>, after: Option<&str>) -> Option<String> {
     page.filter(|page| page.has_next_page == Some(true))
         .and_then(|page| page.end_cursor)
         .filter(|cursor| after != Some(cursor.as_str()))
